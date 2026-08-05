@@ -1,0 +1,21 @@
+.next/
+.next-build/
+node_modules/
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+*.log
+*.tsbuildinfo
+
+# Shared operational state (runtime data, not source)
+/data/
+/release/
+
+# Customer data — never commit. Real names, addresses and payment records
+# must not leave the local machine.
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.pdf
