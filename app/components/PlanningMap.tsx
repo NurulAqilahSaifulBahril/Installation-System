@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import L from "leaflet";
 import { useEffect, useMemo, useState } from "react";
@@ -138,10 +138,12 @@ export default function PlanningMap({
   groups,
   focusGroupId,
   highlightedGroupId,
+  highlightedCustomerId,
 }: {
   groups: MapGroup[];
   focusGroupId: string | null;
   highlightedGroupId: string | null;
+  highlightedCustomerId?: string | null;
 }) {
   const [coordinates, setCoordinates] = useState<Record<string, Coordinates>>(
     {},
@@ -170,36 +172,48 @@ export default function PlanningMap({
 
     async function locatePostcodes() {
       setLocating(true);
-      const next = { ...cached };
-      for (const group of missing) {
-        if (cancelled) break;
-        try {
-          const query = new URLSearchParams({
-            postalcode: group.postcode,
-            country: "Malaysia",
-            format: "jsonv2",
-            limit: "1",
-          });
-          const response = await fetch(
-            `https://nominatim.openstreetmap.org/search?${query}`,
-            { headers: { "Accept-Language": "en-MY,en" } },
-          );
-          const results = (await response.json()) as Array<{
-            lat: string;
-            lon: string;
-          }>;
-          if (results[0]) {
-            next[group.postcode] = {
-              lat: Number(results[0].lat),
-              lng: Number(results[0].lon),
-            };
-            if (!cancelled) setCoordinates({ ...next });
+      const updates = await Promise.all(
+        missing.map(async (group) => {
+          if (cancelled) return null;
+          try {
+            const query = new URLSearchParams({
+              postalcode: group.postcode,
+              country: "Malaysia",
+              format: "jsonv2",
+              limit: "1",
+            });
+            const response = await fetch(
+              `https://nominatim.openstreetmap.org/search?${query}`,
+              { headers: { "Accept-Language": "en-MY,en" } },
+            );
+            const results = (await response.json()) as Array<{
+              lat: string;
+              lon: string;
+            }>;
+            if (results[0]) {
+              return {
+                postcode: group.postcode,
+                coordinates: {
+                  lat: Number(results[0].lat),
+                  lng: Number(results[0].lon),
+                },
+              };
+            }
+          } catch {
+            // Keep the map usable while an approximate location is unavailable.
           }
-        } catch {
-          // Keep the map usable while an approximate location is unavailable.
+          return null;
+        }),
+      );
+
+      if (cancelled) return;
+      const next = { ...cached };
+      updates.forEach((update) => {
+        if (update) {
+          next[update.postcode] = update.coordinates;
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 1100));
-      }
+      });
+      setCoordinates(next);
       window.localStorage.setItem(CACHE_KEY, JSON.stringify(next));
       if (!cancelled) setLocating(false);
     }
@@ -230,14 +244,23 @@ export default function PlanningMap({
   const positions = markers.map(
     (marker) => [marker.position.lat, marker.position.lng] as [number, number],
   );
-  // Hovering temporarily takes priority over a previously clicked group. When
-  // the pointer leaves, the map returns to the clicked group (or the overview).
   const activeZoomGroupId = highlightedGroupId ?? focusGroupId;
-  const focusPositions = markers
-    .filter((marker) => marker.groupId === activeZoomGroupId)
-    .map(
-      (marker) => [marker.position.lat, marker.position.lng] as [number, number],
-    );
+  const customerFocusPositions = highlightedCustomerId
+    ? markers
+        .filter((marker) => marker.customer.id === highlightedCustomerId)
+        .map(
+          (marker) =>
+            [marker.position.lat, marker.position.lng] as [number, number],
+        )
+    : [];
+  const focusPositions = customerFocusPositions.length
+    ? customerFocusPositions
+    : markers
+        .filter((marker) => marker.groupId === activeZoomGroupId)
+        .map(
+          (marker) =>
+            [marker.position.lat, marker.position.lng] as [number, number],
+        );
 
   return (
     <aside className="planning-map-panel" aria-label="Customer planning map">
@@ -246,7 +269,7 @@ export default function PlanningMap({
           <strong>Customer map</strong>
           <span>Approximate postcode locations</span>
         </div>
-        <small>{locating ? "Locating…" : `${markers.length} markers`}</small>
+        <small>{locating ? "Locatingâ€¦" : `${markers.length} markers`}</small>
       </div>
       <MapContainer
         center={[4.2105, 101.9758]}
@@ -267,11 +290,15 @@ export default function PlanningMap({
             key={`${marker.groupId}-${marker.customer.id}`}
             position={[marker.position.lat, marker.position.lng]}
             icon={markerIcon(
-              !highlightedGroupId
-                ? "normal"
-                : marker.groupId === highlightedGroupId
+              highlightedCustomerId
+                ? marker.customer.id === highlightedCustomerId
                   ? "highlighted"
-                  : "muted",
+                  : "muted"
+                : !highlightedGroupId
+                  ? "normal"
+                  : marker.groupId === highlightedGroupId
+                    ? "highlighted"
+                    : "muted",
             )}
             interactive={false}
           />
@@ -283,8 +310,9 @@ export default function PlanningMap({
         </div>
       )}
       <div className="planning-map-legend">
-        <span>Hover a group to highlight · Click a group to zoom</span>
+        <span>Hover a group or customer name to highlight Â· Click a group to zoom</span>
       </div>
     </aside>
   );
 }
+

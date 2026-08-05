@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   AlertTriangle,
@@ -21,7 +21,14 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import dynamic from "next/dynamic";
 import type {
   InstallationJob,
@@ -36,7 +43,7 @@ const PlanningMap = dynamic(() => import("@/app/components/PlanningMap"), {
 type JobsResponse = {
   jobs: InstallationJob[];
   source: "live" | "demo";
-  persistence: "supabase" | "browser";
+  persistence: "api-db" | "browser";
   warning: string | null;
   syncedAt: string;
 };
@@ -123,6 +130,48 @@ function staffingLabel(staffing: "full" | "partial" | "none") {
   if (staffing === "full") return "Fully assigned";
   if (staffing === "partial") return "Partially assigned";
   return "Unassigned";
+}
+
+// Standard Malaysia federal public holidays. Islamic and Hindu calendar
+// dates (Raya, Wesak, Awal Muharram, Maulidur Rasul, Deepavali) are
+// estimates and should be checked against the official government
+// gazette closer to the date. State-specific holidays are not included.
+const MALAYSIA_PUBLIC_HOLIDAYS: Record<string, string> = {
+  "2026-01-01": "New Year's Day",
+  "2026-02-17": "Chinese New Year",
+  "2026-02-18": "Chinese New Year (2nd day)",
+  "2026-03-21": "Hari Raya Puasa",
+  "2026-03-22": "Hari Raya Puasa (2nd day)",
+  "2026-05-01": "Labour Day",
+  "2026-05-27": "Hari Raya Haji",
+  "2026-05-31": "Wesak Day",
+  "2026-06-01": "Agong's Birthday",
+  "2026-06-16": "Awal Muharram",
+  "2026-08-25": "Prophet Muhammad's Birthday",
+  "2026-08-31": "National Day",
+  "2026-09-16": "Malaysia Day",
+  "2026-11-08": "Deepavali",
+  "2026-12-25": "Christmas Day",
+};
+
+function holidayForDate(dateStr: string): string | null {
+  return MALAYSIA_PUBLIC_HOLIDAYS[dateStr] || null;
+}
+
+function formatWeekRange(weekDates: Date[]) {
+  const start = weekDates[0];
+  const end = weekDates[6];
+  const sameMonth = start.getMonth() === end.getMonth();
+  const startLabel = start.toLocaleDateString("en-MY", {
+    day: "numeric",
+    month: sameMonth ? undefined : "short",
+  });
+  const endLabel = end.toLocaleDateString("en-MY", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  return `${startLabel} â€“ ${endLabel}`;
 }
 
 const WEATHER_COORDINATES_BY_POSTCODE_PREFIX: Record<
@@ -325,30 +374,60 @@ function isReady(job: InstallationJob) {
   );
 }
 
-function mergeBrowserUpdates(jobs: InstallationJob[]) {
+function applyJobUpdates(
+  jobs: InstallationJob[],
+  updates: Record<string, JobUpdate>,
+) {
+  return jobs.map((job) => {
+    const merged = { ...job, ...(updates[job.id] ?? {}) };
+    return {
+      ...merged,
+      teams: merged.teams.map((team) => ({
+        ...team,
+        activity:
+          team.activity ??
+          (team.role === "wiring" ? "cable_trunking" : "pv_panels"),
+      })),
+    };
+  });
+}
+
+type SharedOpsState = {
+  groups: InstallationGroup[];
+  deliveryRuns: DeliveryRun[];
+  teamResources: TeamResource[];
+  teamWeekAssignments: TeamWeekAssignment[];
+  jobUpdates: Record<string, JobUpdate>;
+};
+
+function readLocalJson<T>(key: string, fallback: T): T {
   try {
-    const saved = JSON.parse(
-      window.localStorage.getItem(STORAGE_KEY) || "{}",
-    ) as Record<string, JobUpdate>;
-    return jobs.map((job) => {
-      const merged = { ...job, ...(saved[job.id] ?? {}) };
-      return {
-        ...merged,
-        teams: merged.teams.map((team) => ({
-          ...team,
-          activity:
-            team.activity ??
-            (team.role === "wiring" ? "cable_trunking" : "pv_panels"),
-        })),
-      };
-    });
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
   } catch {
-    return jobs;
+    return fallback;
   }
+}
+
+// The shared store lives on the dashboard server (data/ops-state.json), so
+// every browser and device on the network sees the same planning data.
+// localStorage remains a per-browser backup used only when the server call
+// fails mid-session.
+function persistOps(patch: Partial<SharedOpsState>) {
+  void fetch("/api/ops-state", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  }).catch(() => {
+    // Server unreachable; the localStorage mirror keeps the data locally.
+  });
 }
 
 export default function DashboardPage() {
   const [view, setView] = useState<DashboardView>("pipeline");
+  const [groupsWorkspace, setGroupsWorkspace] = useState<
+    "schedule" | "teams"
+  >("schedule");
   const [jobs, setJobs] = useState<InstallationJob[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -386,6 +465,53 @@ export default function DashboardPage() {
     installationGroupId: "",
   });
 
+  const jobUpdatesRef = useRef<Record<string, JobUpdate>>({});
+
+  const applySharedState = useCallback((state: SharedOpsState) => {
+    setGroups(state.groups);
+    setDeliveryRuns(state.deliveryRuns);
+    setTeamResources(
+      state.teamResources.length ? state.teamResources : defaultTeamResources,
+    );
+    setTeamWeekAssignments(state.teamWeekAssignments);
+    jobUpdatesRef.current = state.jobUpdates;
+    setJobs((current) =>
+      current.length ? applyJobUpdates(current, state.jobUpdates) : current,
+    );
+  }, []);
+
+  const loadSharedState = useCallback(
+    async (seedIfMissing: boolean) => {
+      const local: SharedOpsState = {
+        groups: readLocalJson(GROUPS_STORAGE_KEY, []),
+        deliveryRuns: readLocalJson(DELIVERY_RUNS_STORAGE_KEY, []),
+        teamResources: readLocalJson(TEAMS_STORAGE_KEY, defaultTeamResources),
+        teamWeekAssignments: readLocalJson(TEAM_WEEKS_STORAGE_KEY, []),
+        jobUpdates: readLocalJson(STORAGE_KEY, {}),
+      };
+      try {
+        const response = await fetch("/api/ops-state", { cache: "no-store" });
+        if (!response.ok) throw new Error("ops-state unavailable");
+        const data = (await response.json()) as {
+          exists: boolean;
+          state: SharedOpsState;
+        };
+        if (data.exists) {
+          applySharedState(data.state);
+        } else {
+          // First run against this server: seed the shared store with this
+          // browser's existing data so nothing already planned is lost.
+          if (seedIfMissing) persistOps(local);
+          applySharedState(local);
+        }
+      } catch {
+        // Server unreachable; fall back to this browser's own copy.
+        applySharedState(local);
+      }
+    },
+    [applySharedState],
+  );
+
   useEffect(() => {
     const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
     const useDark =
@@ -394,31 +520,23 @@ export default function DashboardPage() {
     setDarkMode(useDark);
     document.documentElement.dataset.theme = useDark ? "dark" : "light";
 
-    try {
-      setGroups(
-        JSON.parse(window.localStorage.getItem(GROUPS_STORAGE_KEY) || "[]"),
-      );
-      setDeliveryRuns(
-        JSON.parse(
-          window.localStorage.getItem(DELIVERY_RUNS_STORAGE_KEY) || "[]",
-        ),
-      );
-      setTeamResources(
-        JSON.parse(
-          window.localStorage.getItem(TEAMS_STORAGE_KEY) ||
-            JSON.stringify(defaultTeamResources),
-        ),
-      );
-      setTeamWeekAssignments(
-        JSON.parse(
-          window.localStorage.getItem(TEAM_WEEKS_STORAGE_KEY) || "[]",
-        ),
-      );
-    } catch {
-      setGroups([]);
-      setDeliveryRuns([]);
-    }
-  }, []);
+    void loadSharedState(true);
+  }, [loadSharedState]);
+
+  // Pick up colleagues' changes when returning to this tab. Uses
+  // visibilitychange (not window "focus") because focus fires far too
+  // readily â€” including from opening a native <select> or date picker
+  // inside the page â€” which was replacing `jobs` mid-interaction and
+  // interrupting clicks in open modals (e.g. the Team Planning preview).
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") {
+        void loadSharedState(false);
+      }
+    };
+    document.addEventListener("visibilitychange", refresh);
+    return () => document.removeEventListener("visibilitychange", refresh);
+  }, [loadSharedState]);
 
   const loadJobs = useCallback(async (manual = false) => {
     manual ? setSyncing(true) : setLoading(true);
@@ -427,7 +545,7 @@ export default function DashboardPage() {
       const response = await fetch("/api/jobs", { cache: "no-store" });
       const data = (await response.json()) as JobsResponse;
       if (!response.ok) throw new Error("Could not load installation jobs.");
-      const merged = mergeBrowserUpdates(data.jobs);
+      const merged = applyJobUpdates(data.jobs, jobUpdatesRef.current);
       setJobs(merged);
       setMeta({
         source: data.source,
@@ -604,21 +722,25 @@ export default function DashboardPage() {
   function saveGroups(next: InstallationGroup[]) {
     setGroups(next);
     window.localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(next));
+    persistOps({ groups: next });
   }
 
   function saveDeliveryRuns(next: DeliveryRun[]) {
     setDeliveryRuns(next);
     window.localStorage.setItem(DELIVERY_RUNS_STORAGE_KEY, JSON.stringify(next));
+    persistOps({ deliveryRuns: next });
   }
 
   function saveTeamResources(next: TeamResource[]) {
     setTeamResources(next);
     window.localStorage.setItem(TEAMS_STORAGE_KEY, JSON.stringify(next));
+    persistOps({ teamResources: next });
   }
 
   function saveTeamWeekAssignments(next: TeamWeekAssignment[]) {
     setTeamWeekAssignments(next);
     window.localStorage.setItem(TEAM_WEEKS_STORAGE_KEY, JSON.stringify(next));
+    persistOps({ teamWeekAssignments: next });
   }
 
   function toggleTheme() {
@@ -651,6 +773,7 @@ export default function DashboardPage() {
     });
     setComposer(null);
     setView("groups");
+    setGroupsWorkspace("schedule");
   }
 
   function createDeliveryRun() {
@@ -713,11 +836,13 @@ export default function DashboardPage() {
     const nextJobs = jobs.map((job) => (job.id === updated.id ? updated : job));
     setJobs(nextJobs);
 
-    const saved = JSON.parse(
-      window.localStorage.getItem(STORAGE_KEY) || "{}",
-    ) as Record<string, JobUpdate>;
-    saved[updated.id] = operationalUpdate(updated);
+    const saved = {
+      ...jobUpdatesRef.current,
+      [updated.id]: operationalUpdate(updated),
+    };
+    jobUpdatesRef.current = saved;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+    persistOps({ jobUpdates: saved });
 
     try {
       const response = await fetch(`/api/jobs/${encodeURIComponent(updated.id)}`, {
@@ -730,13 +855,13 @@ export default function DashboardPage() {
         }),
       });
       if (response.ok) {
-        setNotice("Installation job saved to Supabase.");
+        setNotice("Installation job saved to the API database.");
       } else {
-        setNotice("Saved in this browser. Add the Supabase service key for shared persistence.");
+        setNotice("Saved to the shared dashboard on this network.");
       }
       setEditMode(false);
     } catch {
-      setNotice("Saved in this browser. Supabase is currently unavailable.");
+      setNotice("Saved to the shared dashboard on this network.");
       setEditMode(false);
     } finally {
       setSaving(false);
@@ -790,14 +915,14 @@ export default function DashboardPage() {
             disabled={syncing}
           >
             <RefreshCw size={16} className={syncing ? "spin" : ""} />
-            {syncing ? "Checking…" : "Check for new jobs"}
+            {syncing ? "Checkingâ€¦" : "Check for new jobs"}
           </button>
         </div>
       </header>
 
       <section className="page-heading">
         <div>
-          <p className="eyebrow">Wednesday, 29 July 2026 · Malaysia time</p>
+          <p className="eyebrow">Wednesday, 29 July 2026 Â· Malaysia time</p>
           <h1>Installation dashboard</h1>
           <p>Plan customer dates, stock delivery, SEDA approval, and installation teams.</p>
         </div>
@@ -872,7 +997,7 @@ export default function DashboardPage() {
               <Search size={17} />
               <input
                 aria-label="Search installations"
-                placeholder="Search customer, invoice, address…"
+                placeholder="Search customer, invoice, addressâ€¦"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
               />
@@ -934,7 +1059,7 @@ export default function DashboardPage() {
           {loading ? (
             <div className="empty-state">
               <LoaderCircle className="spin" />
-              <p>Loading eligible installations…</p>
+              <p>Loading eligible installationsâ€¦</p>
             </div>
           ) : filteredJobs.length === 0 ? (
             <div className="empty-state">
@@ -970,7 +1095,7 @@ export default function DashboardPage() {
                       }}
                     >
                       <td>
-                        <strong>{formatPersonName(job.customerName)}</strong>
+                          <strong>{formatPersonName(job.customerName)}</strong>
                         <span>{job.city || job.state || job.invoiceNumber}</span>
                       </td>
                       <td>
@@ -1112,6 +1237,8 @@ export default function DashboardPage() {
               setInstallationDateFilter(date);
               setView("pipeline");
             }}
+            groupsWorkspace={groupsWorkspace}
+            onGroupsWorkspaceChange={setGroupsWorkspace}
           />
         )}
 
@@ -1119,7 +1246,13 @@ export default function DashboardPage() {
           <TeamPlanningView
             groups={groups}
             jobs={jobs}
-            onCreateSuggestedGroup={(name, area, jobIds) => {
+            onCreateSuggestedGroup={(
+              name,
+              area,
+              jobIds,
+              installationDate,
+              installationEndDate,
+            ) => {
               const movingJobIds = new Set(jobIds);
               saveGroups([
                 ...groups.map((group) => ({
@@ -1132,8 +1265,8 @@ export default function DashboardPage() {
                   id: crypto.randomUUID(),
                   name,
                   area,
-                  installationDate: "",
-                  installationEndDate: "",
+                  installationDate,
+                  installationEndDate,
                   jobIds,
                   installationTeam: "",
                   wiringTeam: "",
@@ -1141,6 +1274,7 @@ export default function DashboardPage() {
                 },
               ]);
               setView("groups");
+              setGroupsWorkspace("schedule");
             }}
             onUpdateJob={(job) => void saveAvailability(job)}
             onAssignCustomerToGroup={assignJobToGroup}
@@ -1199,7 +1333,7 @@ export default function DashboardPage() {
                     onChange={(event) =>
                       setGroupDraft({ ...groupDraft, name: event.target.value })
                     }
-                    placeholder="Example: JB North · 12 Aug"
+                    placeholder="Example: JB North Â· 12 Aug"
                   />
                 </label>
                 <label>
@@ -1310,7 +1444,7 @@ export default function DashboardPage() {
                     <option value="">Select customer group</option>
                     {groups.map((group) => (
                       <option value={group.id} key={group.id}>
-                        {group.name} · {group.area}
+                        {group.name} Â· {group.area}
                       </option>
                     ))}
                   </select>
@@ -1415,6 +1549,8 @@ function InstallationGroupsView({
   onWeekAssignmentsChange,
   onCreate,
   onJumpToDate,
+  groupsWorkspace,
+  onGroupsWorkspaceChange,
 }: {
   groups: InstallationGroup[];
   jobs: InstallationJob[];
@@ -1427,12 +1563,12 @@ function InstallationGroupsView({
   onWeekAssignmentsChange: (assignments: TeamWeekAssignment[]) => void;
   onCreate: () => void;
   onJumpToDate: (date: string) => void;
+  groupsWorkspace: "schedule" | "teams";
+  onGroupsWorkspaceChange: (workspace: "schedule" | "teams") => void;
 }) {
-  const [groupsWorkspace, setGroupsWorkspace] = useState<
-    "schedule" | "teams"
-  >("schedule");
+  const setGroupsWorkspace = onGroupsWorkspaceChange;
   const [openGroupId, setOpenGroupId] = useState<string | null>(null);
-  const [expandedWeekKey, setExpandedWeekKey] = useState<string | null>(null);
+  const [showFullCalendar, setShowFullCalendar] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -1657,22 +1793,6 @@ function InstallationGroupsView({
     });
   }
 
-  function formatWeekRange(weekDates: Date[]) {
-    const start = weekDates[0];
-    const end = weekDates[6];
-    const sameMonth = start.getMonth() === end.getMonth();
-    const startLabel = start.toLocaleDateString("en-MY", {
-      day: "numeric",
-      month: sameMonth ? undefined : "short",
-    });
-    const endLabel = end.toLocaleDateString("en-MY", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-    });
-    return `${startLabel} – ${endLabel}`;
-  }
-
   const unscheduledGroups = groups.filter((group) => !group.installationDate);
   const openGroup = groups.find((group) => group.id === openGroupId) || null;
 
@@ -1875,7 +1995,7 @@ function InstallationGroupsView({
                             >
                               <strong>{currentGroup?.name || "Group unavailable"}</strong>
                               <span>
-                                {currentGroup?.area || "Location unavailable"} ·{" "}
+                                {currentGroup?.area || "Location unavailable"} Â·{" "}
                                 {currentAssignment.startDate} to {currentAssignment.endDate}
                               </span>
                             </button>
@@ -1963,7 +2083,7 @@ function InstallationGroupsView({
                                   <option value="">Select installation group</option>
                                   {groups.map((group) => (
                                     <option value={group.id} key={group.id}>
-                                      {group.name} · {group.area}
+                                      {group.name} Â· {group.area}
                                     </option>
                                   ))}
                                 </select>
@@ -1993,7 +2113,7 @@ function InstallationGroupsView({
                                         <div>
                                           <strong>{assignmentGroup?.name || "Group unavailable"}</strong>
                                           <span>
-                                            {assignmentGroup?.area || "Location unavailable"} ·{" "}
+                                            {assignmentGroup?.area || "Location unavailable"} Â·{" "}
                                             {assignment.startDate} to {assignment.endDate}
                                           </span>
                                         </div>
@@ -2232,7 +2352,7 @@ function InstallationGroupsView({
             <option value="">Select available group</option>
             {groups.map((group) => (
               <option value={group.id} key={group.id}>
-                {group.name} · {group.area}
+                {group.name} Â· {group.area}
               </option>
             ))}
           </select>
@@ -2329,7 +2449,7 @@ function InstallationGroupsView({
                 )
               }
             >
-              ‹
+              â€¹
             </button>
             <strong>{calendarTitle}</strong>
             <button
@@ -2341,7 +2461,7 @@ function InstallationGroupsView({
                 )
               }
             >
-              ›
+              â€º
             </button>
             <span className="standard-calendar-spacer" />
             <button className="button primary" onClick={onCreate}>
@@ -2350,184 +2470,41 @@ function InstallationGroupsView({
             </button>
           </div>
 
-          <div className="week-list">
+          <div className="week-cards-row">
             {weekChunks.map((weekDates, weekIndex) => {
-              const weekKey = dateKey(weekDates[0]);
               const weekGroups = groupsForWeek(weekDates);
-              const isExpanded = expandedWeekKey === weekKey;
-              return (
-                <div
-                  className={`week-card${isExpanded ? " expanded" : ""}`}
-                  key={weekIndex}
-                >
-                  <button
-                    type="button"
-                    className="week-card-header"
-                    onClick={() =>
-                      setExpandedWeekKey(isExpanded ? null : weekKey)
-                    }
-                    aria-expanded={isExpanded}
-                  >
-                    <div className="week-card-header-text">
-                      <span className="week-row-range">
-                        {formatWeekRange(weekDates)}
-                      </span>
-                      <span className="week-row-groups">
-                        {weekGroups.length === 0 ? (
-                          <span className="week-row-empty">
-                            No groups scheduled
-                          </span>
-                        ) : (
-                          weekGroups.map((group) => {
-                            const staffing = groupStaffing(group);
-                            return (
-                              <span
-                                className={`week-row-group ${staffing}`}
-                                key={group.id}
-                              >
-                                {group.name}
-                                {group.area ? ` · ${group.area}` : ""}
-                                <span className="week-row-group-count">
-                                  <Users size={11} /> {group.jobIds.length}
-                                </span>
-                              </span>
-                            );
-                          })
-                        )}
-                      </span>
-                    </div>
-                    <ChevronRight size={16} className="week-card-chevron" />
-                  </button>
+              const weekHoliday = weekDates
+                .map((date) => holidayForDate(dateKey(date)))
+                .find(Boolean);
 
-                  {isExpanded && (
-                    <div className="week-card-body">
-                      {weekGroups.length > 0 && (
-                        <div className="week-view-groups">
-                          {weekGroups.map((group) => {
-                            const staffing = groupStaffing(group);
-                            return (
-                              <div
-                                className="week-view-group-bar"
-                                key={group.id}
-                              >
-                                <div className="week-view-group-info">
-                                  <span className="week-view-group-name">
-                                    {group.name}
-                                    {group.area ? ` · ${group.area}` : ""}
-                                  </span>
-                                  <span
-                                    className={`week-view-group-status ${staffing}`}
-                                  >
-                                    {staffingLabel(staffing)}
-                                  </span>
-                                  <span className="week-view-group-teams">
-                                    Install:{" "}
-                                    {group.installationTeam || "unassigned"} ·
-                                    Wiring:{" "}
-                                    {group.wiringTeam || "unassigned"}
-                                  </span>
-                                  <span className="week-view-group-count">
-                                    <Users size={12} /> {group.jobIds.length}{" "}
-                                    customers
-                                  </span>
-                                </div>
-                                <button
-                                  className="button secondary"
-                                  onClick={() => setOpenGroupId(group.id)}
-                                >
-                                  Edit group
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
+              if (weekGroups.length === 0) {
+                return (
+                  <div className="week-placeholder" key={weekIndex}>
+                    <span className="week-row-range">
+                      Week of {formatWeekRange(weekDates)}
+                    </span>
+                    <span className="week-row-empty">
+                      {weekHoliday
+                        ? `Public holiday: ${weekHoliday}`
+                        : "No group scheduled"}
+                    </span>
+                  </div>
+                );
+              }
 
-                      <div
-                        className="standard-calendar-weekdays"
-                        aria-hidden="true"
-                      >
-                        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(
-                          (day) => (
-                            <span key={day}>{day}</span>
-                          ),
-                        )}
-                      </div>
-
-                      <div className="week-view-days">
-                        {weekDates.map((date) => {
-                          const key = dateKey(date);
-                          const group = groupForDate(key);
-                          const staffing = group
-                            ? groupStaffing(group)
-                            : null;
-                          const dayCustomers = customersForDate(key);
-                          const dayDeliveryCount = deliveryRuns.filter(
-                            (run) => run.deliveryDate === key,
-                          ).length;
-                          const weather = calendarWeather[key];
-                          const weatherIcon = weather
-                            ? weather.weatherCode >= 95
-                              ? "⛈"
-                              : weather.weatherCode >= 51
-                                ? "🌧"
-                                : weather.weatherCode >= 1
-                                  ? "⛅"
-                                  : "☀"
-                            : "";
-                          const showWeather =
-                            weather && weather.rainProbability >= 40;
-                          return (
-                            <button
-                              key={key}
-                              type="button"
-                              className={`week-day-box${staffing ? ` ${staffing}` : ""}`}
-                              onClick={() => onJumpToDate(key)}
-                            >
-                              <div className="week-day-box-top">
-                                <span className="week-day-box-number">
-                                  {date.getDate()}
-                                </span>
-                                {showWeather && (
-                                  <span
-                                    className={`week-day-box-weather ${
-                                      weather.rainProbability >= 70
-                                        ? "high-risk"
-                                        : "medium-risk"
-                                    }`}
-                                  >
-                                    {weatherIcon} {weather.rainProbability}%
-                                  </span>
-                                )}
-                              </div>
-                              {dayCustomers.length > 0 && (
-                                <div className="week-day-box-customers">
-                                  {dayCustomers.slice(0, 3).map((job) => (
-                                    <span key={job.id}>
-                                      {formatPersonName(job.customerName)}
-                                    </span>
-                                  ))}
-                                  {dayCustomers.length > 3 && (
-                                    <span>
-                                      +{dayCustomers.length - 3} more
-                                    </span>
-                                  )}
-                                </div>
-                              )}
-                              {dayDeliveryCount > 0 && (
-                                <span className="week-day-box-delivery">
-                                  <Truck size={11} />
-                                  {dayDeliveryCount} delivery
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
+              return weekGroups.map((group) => (
+                <WeekGroupCard
+                  key={group.id}
+                  group={group}
+                  weekDates={weekDates}
+                  jobs={jobs}
+                  calendarWeather={calendarWeather}
+                  deliveryRunsForGroup={deliveryRunsForGroup}
+                  onOpenDrawer={() => setOpenGroupId(group.id)}
+                  onOpenCalendar={() => setShowFullCalendar(true)}
+                  onReassignTeam={() => setGroupsWorkspace("teams")}
+                />
+              ));
             })}
           </div>
 
@@ -2544,11 +2521,142 @@ function InstallationGroupsView({
                   onClick={() => setOpenGroupId(group.id)}
                 >
                   {group.name || "Untitled group"}
-                  {group.area ? ` · ${group.area}` : ""}
+                  {group.area ? ` Â· ${group.area}` : ""}
                 </button>
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {groupsWorkspace === "schedule" && showFullCalendar && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={() => setShowFullCalendar(false)}
+        >
+          <div
+            className="full-calendar-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Full month calendar"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="full-calendar-header">
+              <button
+                className="icon-button"
+                aria-label="Previous month"
+                onClick={() =>
+                  setCalendarMonth(
+                    new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1),
+                  )
+                }
+              >
+                â€¹
+              </button>
+              <strong>{calendarTitle}</strong>
+              <button
+                className="icon-button"
+                aria-label="Next month"
+                onClick={() =>
+                  setCalendarMonth(
+                    new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1),
+                  )
+                }
+              >
+                â€º
+              </button>
+              <span className="standard-calendar-spacer" />
+              <button
+                className="icon-button"
+                aria-label="Close"
+                onClick={() => setShowFullCalendar(false)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="standard-calendar-weekdays" aria-hidden="true">
+              {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => (
+                <span key={day}>{day}</span>
+              ))}
+            </div>
+
+            <div className="full-calendar-grid">
+              {calendarDays.map((date) => {
+                const key = dateKey(date);
+                const isCurrentMonth =
+                  date.getMonth() === calendarMonth.getMonth();
+                const group = groupForDate(key);
+                const staffing = group ? groupStaffing(group) : null;
+                const dayCustomers = customersForDate(key);
+                const dayDeliveryCount = deliveryRuns.filter(
+                  (run) => run.deliveryDate === key,
+                ).length;
+                const weather = calendarWeather[key];
+                const weatherIcon = weather
+                  ? weather.weatherCode >= 95
+                    ? "â›ˆ"
+                    : weather.weatherCode >= 51
+                      ? "ðŸŒ§"
+                      : weather.weatherCode >= 1
+                        ? "â›…"
+                        : "â˜€"
+                  : "";
+                const showWeather = weather && weather.rainProbability >= 40;
+                const holiday = holidayForDate(key);
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`week-day-box${staffing ? ` ${staffing}` : ""}${isCurrentMonth ? "" : " outside-month"}`}
+                    onClick={() => {
+                      setShowFullCalendar(false);
+                      onJumpToDate(key);
+                    }}
+                  >
+                    <div className="week-day-box-top">
+                      <span className="week-day-box-number">
+                        {date.getDate()}
+                      </span>
+                      {showWeather && (
+                        <span
+                          className={`week-day-box-weather ${
+                            weather.rainProbability >= 70
+                              ? "high-risk"
+                              : "medium-risk"
+                          }`}
+                        >
+                          {weatherIcon} {weather.rainProbability}%
+                        </span>
+                      )}
+                    </div>
+                    {holiday && (
+                      <span className="week-day-box-holiday">{holiday}</span>
+                    )}
+                    {dayCustomers.length > 0 && (
+                      <div className="week-day-box-customers">
+                        {dayCustomers.slice(0, 3).map((job) => (
+                          <span key={job.id}>
+                            {formatPersonName(job.customerName)}
+                          </span>
+                        ))}
+                        {dayCustomers.length > 3 && (
+                          <span>+{dayCustomers.length - 3} more</span>
+                        )}
+                      </div>
+                    )}
+                    {dayDeliveryCount > 0 && (
+                      <span className="week-day-box-delivery">
+                        <Truck size={11} />
+                        {dayDeliveryCount} delivery
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 
@@ -2568,6 +2676,159 @@ function InstallationGroupsView({
           onClose={() => setOpenGroupId(null)}
         />
       )}
+    </div>
+  );
+}
+
+function WeekGroupCard({
+  group,
+  weekDates,
+  jobs,
+  calendarWeather,
+  deliveryRunsForGroup,
+  onOpenDrawer,
+  onOpenCalendar,
+  onReassignTeam,
+}: {
+  group: InstallationGroup;
+  weekDates: Date[];
+  jobs: InstallationJob[];
+  calendarWeather: Record<string, { rainProbability: number; weatherCode: number }>;
+  deliveryRunsForGroup: (groupId: string) => DeliveryRun[];
+  onOpenDrawer: () => void;
+  onOpenCalendar: () => void;
+  onReassignTeam: () => void;
+}) {
+  const staffing = groupStaffing(group);
+  const linkedJobs = jobs.filter((job) => group.jobIds.includes(job.id));
+  const runs = deliveryRunsForGroup(group.id);
+  const weekHolidays = weekDates
+    .map((date) => holidayForDate(dateKey(date)))
+    .filter((holiday): holiday is string => Boolean(holiday));
+
+  return (
+    <div
+      className="week-group-card"
+      role="button"
+      tabIndex={0}
+      onClick={onOpenCalendar}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpenCalendar();
+        }
+      }}
+    >
+      <span className="week-group-card-range">
+        Week of {formatWeekRange(weekDates)}
+      </span>
+      <p className="week-group-card-name">{group.name}</p>
+      <p className="week-group-card-area">{group.area || "Area not set"}</p>
+      <span className={`week-group-card-status ${staffing}`}>
+        {staffingLabel(staffing)}
+      </span>
+      {weekHolidays.length > 0 && (
+        <span className="week-group-card-holiday">
+          {weekHolidays.join(" Â· ")}
+        </span>
+      )}
+
+      <div className="week-group-card-section">
+        <h4>Team assignment</h4>
+        <div className="week-group-card-row">
+          <span>Installation team</span>
+          <strong>{group.installationTeam || "Unassigned"}</strong>
+        </div>
+        <div className="week-group-card-row">
+          <span>Wiring team</span>
+          <strong>{group.wiringTeam || "Unassigned"}</strong>
+        </div>
+      </div>
+
+      <div className="week-group-card-section">
+        <h4>Customers this week</h4>
+        <p className="week-group-card-count">{linkedJobs.length} customers</p>
+        {linkedJobs.length > 0 && (
+          <p className="week-group-card-preview">
+            {linkedJobs
+              .slice(0, 3)
+              .map((job) => formatPersonName(job.customerName))
+              .join(", ")}
+            {linkedJobs.length > 3 ? ` +${linkedJobs.length - 3} more` : ""}
+          </p>
+        )}
+      </div>
+
+      <div className="week-group-card-section">
+        <h4>Stock delivery</h4>
+        {runs.length === 0 ? (
+          <p className="week-group-card-empty">No delivery run linked yet.</p>
+        ) : (
+          runs.map((run) => (
+            <div className="week-group-card-delivery" key={run.id}>
+              <div>
+                <strong>{run.name}</strong>
+                <span>
+                  {run.deliveryDate || "No date"} Â·{" "}
+                  {run.warehouse || "No warehouse"}
+                </span>
+              </div>
+              <span className="week-group-card-delivery-status">
+                {run.status.replace(/_/g, " ")}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="week-group-card-section">
+        <h4>Weather this week</h4>
+        <div className="week-group-card-weather-strip">
+          {weekDates.map((date) => {
+            const key = dateKey(date);
+            const weather = calendarWeather[key];
+            const weatherIcon = weather
+              ? weather.weatherCode >= 95
+                ? "â›ˆ"
+                : weather.weatherCode >= 51
+                  ? "ðŸŒ§"
+                  : weather.weatherCode >= 1
+                    ? "â›…"
+                    : "â˜€"
+              : "";
+            return (
+              <div key={key}>
+                <span>
+                  {date.toLocaleDateString("en-MY", { weekday: "short" })}
+                </span>
+                <strong>{weatherIcon || "â€“"}</strong>
+                <small>{weather ? `${weather.rainProbability}%` : "â€”"}</small>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="week-group-card-actions">
+        <button
+          className="button secondary"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenDrawer();
+          }}
+        >
+          Edit group
+        </button>
+        <button
+          className="button secondary"
+          onClick={(event) => {
+            event.stopPropagation();
+            onReassignTeam();
+          }}
+        >
+          Reassign team
+        </button>
+      </div>
     </div>
   );
 }
@@ -2758,7 +3019,7 @@ function GroupDrawer({
               <div className="group-drawer-row" key={run.id}>
                 <span>{run.name}</span>
                 <span>
-                  {run.deliveryDate || "No date"} ·{" "}
+                  {run.deliveryDate || "No date"} Â·{" "}
                   {run.warehouse || "No warehouse"}
                 </span>
               </div>
@@ -2779,7 +3040,7 @@ function GroupDrawer({
                       {date.toLocaleDateString("en-MY", { weekday: "short" })}
                     </span>
                     <strong>
-                      {weather ? `${weather.rainProbability}%` : "—"}
+                      {weather ? `${weather.rainProbability}%` : "â€”"}
                     </strong>
                   </div>
                 );
@@ -2817,6 +3078,8 @@ function TeamPlanningView({
     name: string,
     area: string,
     jobIds: string[],
+    installationDate: string,
+    installationEndDate: string,
   ) => void;
   onUpdateJob: (job: InstallationJob) => void;
   onAssignCustomerToGroup: (jobId: string, groupId: string) => void;
@@ -2833,11 +3096,25 @@ function TeamPlanningView({
     state: string;
     customers: InstallationJob[];
   } | null>(null);
+  const [pendingGroupSuggestion, setPendingGroupSuggestion] = useState<{
+    id: string;
+    area: string;
+    postcode: string;
+    state: string;
+    customers: InstallationJob[];
+  } | null>(null);
+  const [pendingGroupDate, setPendingGroupDate] = useState({
+    installationDate: "",
+    installationEndDate: "",
+  });
   const [addCustomerId, setAddCustomerId] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
   const [showCustomerPicker, setShowCustomerPicker] = useState(false);
   const [mapFocusGroupId, setMapFocusGroupId] = useState<string | null>(null);
   const [highlightedMapGroupId, setHighlightedMapGroupId] = useState<
+    string | null
+  >(null);
+  const [highlightedMapCustomerId, setHighlightedMapCustomerId] = useState<
     string | null
   >(null);
   const [suggestionOverrides, setSuggestionOverrides] = useState<
@@ -2962,21 +3239,32 @@ function TeamPlanningView({
       const town =
         job.city?.trim() || matchedLocation?.town || townshipForJob(job);
       const state = job.state?.trim() || matchedLocation?.state || "";
-      const key = `${town}|${postcode || "no-postcode"}|${state}`;
+      // Source data has inconsistent casing for the same town/state (e.g.
+      // "Johor Bahru" vs "JOHOR BAHRU", "JOHOR" vs "Johor" vs "johor").
+      // Group by a case/whitespace-insensitive key so those variants merge
+      // into one location instead of splitting into separate suggestions
+      // that then collide on the same display id (the freeze bug reported
+      // for Johor Bahru and Iskandar Puteri).
+      const normalizedTown = town.trim().toLowerCase();
+      const normalizedState = state.trim().toLowerCase();
+      const key = `${normalizedTown}|${postcode || "no-postcode"}|${normalizedState}`;
       const current = byLocation.get(key);
       byLocation.set(key, {
-        town,
+        town: current?.town || town,
         postcode,
-        state,
+        state: current?.state || state,
         customers: [...(current?.customers ?? []), job],
       });
     });
-    return Array.from(byLocation.values()).flatMap(
-      ({ town, postcode, state, customers }) => {
+    return Array.from(byLocation.entries()).flatMap(
+      ([key, { town, postcode, state, customers }]) => {
       const chunks = [];
       for (let index = 0; index < customers.length; index += 5) {
         chunks.push({
-          id: `${town}-${postcode || state}-${index / 5 + 1}`,
+          // Derive the id from the same key used to group customers so it
+          // is guaranteed unique across suggestions (no more duplicate
+          // React keys when town/state casing varies in the source data).
+          id: `${key}-${index / 5 + 1}`,
           area: town,
           postcode,
           state,
@@ -3067,6 +3355,29 @@ function TeamPlanningView({
     [filteredSuggestions],
   );
 
+  const previewMapGroups = useMemo(() => {
+    if (!previewSuggestion) return [];
+    return [
+      {
+        id: previewSuggestion.id,
+        town: previewSuggestion.area,
+        postcode: previewSuggestion.postcode,
+        state: previewSuggestion.state,
+        customers: previewSuggestion.customers.map((snapshotJob) => {
+          const job =
+            jobs.find((candidate) => candidate.id === snapshotJob.id) ||
+            snapshotJob;
+          return {
+            id: job.id,
+            name: job.customerName,
+            address: job.address,
+            paymentPercent: job.paymentPercent,
+          };
+        }),
+      },
+    ];
+  }, [previewSuggestion, jobs]);
+
   const customerSearchText = customerSearch.trim().toLowerCase();
   const addableCustomers = jobs
     .filter(
@@ -3141,7 +3452,7 @@ function TeamPlanningView({
   }
 
   return (
-    <div className="planning-panel">
+    <div className="planning-panel team-planning-panel">
       <div className="planning-heading">
         <div>
           <h2>Team planning</h2>
@@ -3159,6 +3470,8 @@ function TeamPlanningView({
                 setPreviewSuggestion(null);
                 setMapFocusGroupId(null);
                 setHighlightedMapGroupId(null);
+                setHighlightedMapCustomerId(null);
+                setHighlightedMapCustomerId(null);
                 setAddCustomerId("");
                 setCustomerSearch("");
                 setShowCustomerPicker(false);
@@ -3182,6 +3495,8 @@ function TeamPlanningView({
                 setPreviewSuggestion(null);
                 setMapFocusGroupId(null);
                 setHighlightedMapGroupId(null);
+                setHighlightedMapCustomerId(null);
+                setHighlightedMapCustomerId(null);
               }}
             />
           </label>
@@ -3215,6 +3530,7 @@ function TeamPlanningView({
           <PlanningMap
             focusGroupId={mapFocusGroupId}
             highlightedGroupId={highlightedMapGroupId}
+            highlightedCustomerId={highlightedMapCustomerId}
             groups={planningMapGroups}
           />
           <div className="table-wrap team-planning-table">
@@ -3227,6 +3543,7 @@ function TeamPlanningView({
                 <th>Ready for planning</th>
                 <th>Ready to schedule</th>
                 <th>SEDA pending</th>
+                <th>Customer availability</th>
                 <th>Planning range</th>
                 <th aria-label="Create group" />
               </tr>
@@ -3239,6 +3556,7 @@ function TeamPlanningView({
                   onMouseLeave={() => setHighlightedMapGroupId(null)}
                   onClick={() => {
                     setMapFocusGroupId(suggestion.id);
+                    setHighlightedMapCustomerId(null);
                     setPreviewSuggestion(suggestion);
                   }}
                 >
@@ -3246,7 +3564,7 @@ function TeamPlanningView({
                     <strong>{formatPersonName(suggestion.area)}</strong>
                     <span>
                       {suggestion.postcode || "Postcode unavailable"}
-                      {suggestion.state ? ` · ${suggestion.state}` : ""}
+                      {suggestion.state ? ` Â· ${suggestion.state}` : ""}
                     </span>
                     <span>
                       {suggestionOverrides[suggestion.id]
@@ -3277,24 +3595,22 @@ function TeamPlanningView({
                       (job) => normalizeSeda(job.sedaStatus) !== "Approved",
                     ).length}
                   </td>
+                  <td>
+                    {suggestion.customers.filter(
+                      (job) => job.customerAvailabilityStatus === "available",
+                    ).length}
+                  </td>
                   <td>Up to {rangeKm} km</td>
                   <td>
                     <button
                       className="button primary"
                       onClick={(event) => {
                         event.stopPropagation();
-                        clearSuggestionDraft(suggestion.id);
-                        onCreateSuggestedGroup(
-                          `${suggestion.area} · Suggested`,
-                          [
-                            suggestion.area,
-                            suggestion.postcode,
-                            suggestion.state,
-                          ]
-                            .filter(Boolean)
-                            .join(" · "),
-                          suggestion.customers.map((job) => job.id),
-                        );
+                        setPendingGroupSuggestion(suggestion);
+                        setPendingGroupDate({
+                          installationDate: "",
+                          installationEndDate: "",
+                        });
                       }}
                     >
                       Create group
@@ -3333,7 +3649,7 @@ function TeamPlanningView({
                 {unavailableJobs.map((job) => (
                   <tr key={job.id}>
                     <td>
-                      <strong>{formatPersonName(job.customerName)}</strong>
+                          <strong>{formatPersonName(job.customerName)}</strong>
                       <span>{job.customerPhone}</span>
                     </td>
                     <td>{formatPersonName(townshipForJob(job))}</td>
@@ -3382,7 +3698,7 @@ function TeamPlanningView({
                               disabled={group.jobIds.length >= 5}
                             >
                               {group.name} ({group.jobIds.length}/5)
-                              {group.jobIds.length >= 5 ? " · Full" : ""}
+                              {group.jobIds.length >= 5 ? " Â· Full" : ""}
                             </option>
                           ))}
                         </select>
@@ -3438,7 +3754,10 @@ function TeamPlanningView({
         <div
           className="modal-backdrop"
           role="presentation"
-          onMouseDown={() => setPreviewSuggestion(null)}
+          onMouseDown={() => {
+            setPreviewSuggestion(null);
+            setHighlightedMapCustomerId(null);
+          }}
         >
           <div
             className="suggestion-modal"
@@ -3464,7 +3783,10 @@ function TeamPlanningView({
                 <button
                   className="icon-button"
                   aria-label="Close customer list"
-                  onClick={() => setPreviewSuggestion(null)}
+                  onClick={() => {
+                    setPreviewSuggestion(null);
+                    setHighlightedMapCustomerId(null);
+                  }}
                 >
                   <X size={19} />
                 </button>
@@ -3504,13 +3826,13 @@ function TeamPlanningView({
                       );
                       return (
                         <option value={customer.id} key={customer.id}>
-                          {formatPersonName(customer.customerName)} ·{" "}
+                          {formatPersonName(customer.customerName)} Â·{" "}
                           {customer.paymentPercent.toFixed(0)}%
                           {customer.paymentPercent < 59
-                            ? " · Special case"
+                            ? " Â· Special case"
                             : ""}
                           {currentGroup
-                            ? ` · From ${currentGroup.name}`
+                            ? ` Â· From ${currentGroup.name}`
                             : ""}
                         </option>
                       );
@@ -3532,13 +3854,21 @@ function TeamPlanningView({
                 </span>
               </div>
             )}
-            <div className="table-wrap">
-              <table>
+            <div className="suggestion-modal-workspace">
+              <PlanningMap
+                focusGroupId={previewSuggestion.id}
+                highlightedGroupId={null}
+                highlightedCustomerId={highlightedMapCustomerId}
+                groups={previewMapGroups}
+              />
+              <div className="table-wrap">
+                <table>
                 <thead>
                   <tr>
                     <th>Customer</th>
                     <th>Address</th>
                     <th>Payment</th>
+                    <th>2nd payment date</th>
                     <th>SEDA</th>
                     <th>Customer availability</th>
                     <th>Preferred installation date</th>
@@ -3546,89 +3876,116 @@ function TeamPlanningView({
                   </tr>
                 </thead>
                 <tbody>
-                  {previewSuggestion.customers.map((job) => (
-                    <tr key={job.id}>
-                      <td>
-                        <strong>{formatPersonName(job.customerName)}</strong>
-                        <span className="phone-number">
-                          <Phone size={13} />
-                          {formatPhoneNumber(job.customerPhone)}
-                        </span>
-                        {job.paymentPercent < 59 && (
-                          <span className="special-case-label">
-                            Special case · Management approval required
+                  {previewSuggestion.customers.map((snapshotJob) => {
+                    // previewSuggestion.customers is a snapshot taken when
+                    // the popup opened (it only tracks *which* customers
+                    // are in the draft). Render and edit the live job from
+                    // `jobs` instead, or a status/date change would appear
+                    // to revert immediately since the controlled inputs
+                    // below would still be bound to the stale snapshot.
+                    const job =
+                      jobs.find((candidate) => candidate.id === snapshotJob.id) ||
+                      snapshotJob;
+                    return (
+                      <tr key={job.id}>
+                        <td>
+                          <span
+                            className="customer-name-hover-target"
+                            onMouseEnter={() => setHighlightedMapCustomerId(job.id)}
+                          >
+                            <strong>{formatPersonName(job.customerName)}</strong>
                           </span>
-                        )}
-                      </td>
-                      <td>
-                        {job.address
-                          ? formatCustomerAddress(job.address)
-                          : "Address not available"}
-                      </td>
-                      <td>{job.paymentPercent.toFixed(0)}%</td>
-                      <td>{normalizeSeda(job.sedaStatus)}</td>
-                      <td>
-                        <select
-                          value={job.customerAvailabilityStatus}
-                          onChange={(event) => {
-                            const status = event.target
-                              .value as InstallationJob["customerAvailabilityStatus"];
-                            onUpdateJob({
-                              ...job,
-                              customerAvailabilityStatus: status,
-                            });
-                            if (status === "unavailable") {
-                              setPreviewSuggestion((current) =>
-                                current
-                                  ? {
-                                      ...current,
-                                      customers: current.customers.filter(
-                                        (customer) => customer.id !== job.id,
-                                      ),
-                                    }
-                                  : current,
-                              );
+                          <span className="phone-number">
+                            <Phone size={13} />
+                            {formatPhoneNumber(job.customerPhone)}
+                          </span>
+                          {job.paymentPercent < 59 && (
+                            <span className="special-case-label">
+                              Special case Â· Management approval required
+                            </span>
+                          )}
+                        </td>
+                        <td className="suggestion-address-cell">
+                          {job.address
+                            ? formatCustomerAddress(job.address)
+                            : "Address not available"}
+                        </td>
+                        <td>{job.paymentPercent.toFixed(0)}%</td>
+                        <td>
+                          {job.secondPaymentDate
+                            ? new Intl.DateTimeFormat("en-MY", {
+                                day: "numeric",
+                                month: "short",
+                                year: "numeric",
+                                timeZone: "Asia/Kuala_Lumpur",
+                              }).format(new Date(job.secondPaymentDate))
+                            : "Not recorded"}
+                        </td>
+                        <td>{normalizeSeda(job.sedaStatus)}</td>
+                        <td>
+                          <select
+                            value={job.customerAvailabilityStatus}
+                            onChange={(event) => {
+                              const status = event.target
+                                .value as InstallationJob["customerAvailabilityStatus"];
+                              onUpdateJob({
+                                ...job,
+                                customerAvailabilityStatus: status,
+                              });
+                              if (status === "unavailable") {
+                                setPreviewSuggestion((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        customers: current.customers.filter(
+                                          (customer) => customer.id !== job.id,
+                                        ),
+                                      }
+                                    : current,
+                                );
+                              }
+                            }}
+                          >
+                            <option value="pending">Pending confirmation</option>
+                            <option value="available">Available</option>
+                            <option value="unavailable">Not available</option>
+                          </select>
+                        </td>
+                        <td>
+                          <input
+                            type="date"
+                            value={job.preferredInstallationDate ?? ""}
+                            onChange={(event) =>
+                              onUpdateJob({
+                                ...job,
+                                preferredInstallationDate:
+                                  event.target.value || null,
+                              })
                             }
-                          }}
-                        >
-                          <option value="pending">Pending confirmation</option>
-                          <option value="available">Available</option>
-                          <option value="unavailable">Not available</option>
-                        </select>
-                      </td>
-                      <td>
-                        <input
-                          type="date"
-                          value={job.preferredInstallationDate ?? ""}
-                          onChange={(event) =>
-                            onUpdateJob({
-                              ...job,
-                              preferredInstallationDate:
-                                event.target.value || null,
-                            })
-                          }
-                        />
-                      </td>
-                      <td>
-                        <input
-                          defaultValue={job.availabilityRemarks}
-                          placeholder="Customer availability notes"
-                          onBlur={(event) =>
-                            onUpdateJob({
-                              ...job,
-                              availabilityRemarks: event.target.value,
-                            })
-                          }
-                        />
-                      </td>
-                    </tr>
-                  ))}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            defaultValue={job.availabilityRemarks}
+                            placeholder="Customer availability notes"
+                            onBlur={(event) =>
+                              onUpdateJob({
+                                ...job,
+                                availabilityRemarks: event.target.value,
+                              })
+                            }
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
+              </div>
             </div>
             <div className="suggestion-actions">
               <span>
-                Maximum 5 customers · Approximate range {rangeKm} km
+                Maximum 5 customers Â· Approximate range {rangeKm} km
               </span>
               <button
                 className="button primary"
@@ -3643,6 +4000,96 @@ function TeamPlanningView({
                 <Check size={16} />
                 Save changes
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingGroupSuggestion && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={() => setPendingGroupSuggestion(null)}
+        >
+          <div
+            className="composer-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Set installation date"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="detail-header">
+              <div>
+                <p className="eyebrow">Create installation group</p>
+                <h2>{formatPersonName(pendingGroupSuggestion.area)}</h2>
+              </div>
+              <button
+                className="icon-button"
+                aria-label="Close"
+                onClick={() => setPendingGroupSuggestion(null)}
+              >
+                <X size={19} />
+              </button>
+            </div>
+            <div className="edit-form">
+              <label>
+                Installation from
+                <input
+                  type="date"
+                  value={pendingGroupDate.installationDate}
+                  onChange={(event) =>
+                    setPendingGroupDate((current) => ({
+                      ...current,
+                      installationDate: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                Installation until
+                <input
+                  type="date"
+                  min={pendingGroupDate.installationDate || undefined}
+                  value={pendingGroupDate.installationEndDate}
+                  onChange={(event) =>
+                    setPendingGroupDate((current) => ({
+                      ...current,
+                      installationEndDate: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <div className="form-actions">
+                <button
+                  className="button secondary"
+                  onClick={() => setPendingGroupSuggestion(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="button primary"
+                  disabled={!pendingGroupDate.installationDate}
+                  onClick={() => {
+                    clearSuggestionDraft(pendingGroupSuggestion.id);
+                    onCreateSuggestedGroup(
+                      `${pendingGroupSuggestion.area} Â· Suggested`,
+                      [
+                        pendingGroupSuggestion.area,
+                        pendingGroupSuggestion.postcode,
+                        pendingGroupSuggestion.state,
+                      ]
+                        .filter(Boolean)
+                        .join(" Â· "),
+                      pendingGroupSuggestion.customers.map((job) => job.id),
+                      pendingGroupDate.installationDate,
+                      pendingGroupDate.installationEndDate,
+                    );
+                    setPendingGroupSuggestion(null);
+                  }}
+                >
+                  Create group
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -3705,12 +4152,12 @@ function DeliveryPlanningView({
               <div>
                 <h3>{run.name}</h3>
                 <p>
-                  {run.deliveryDate || "Date not arranged"} ·{" "}
-                  {run.warehouse || "Warehouse not selected"} ·{" "}
+                  {run.deliveryDate || "Date not arranged"} Â·{" "}
+                  {run.warehouse || "Warehouse not selected"} Â·{" "}
                   {linkedGroup
                     ? `${linkedGroup.name} / ${linkedGroup.area}`
                     : "No group location"}{" "}
-                  · PIC: {run.deliveryPic || "Not assigned"} ·{" "}
+                  Â· PIC: {run.deliveryPic || "Not assigned"} Â·{" "}
                   {formatPhoneNumber(run.contactNumber || "")}
                 </p>
               </div>
@@ -3792,7 +4239,7 @@ function DeliveryPlanningView({
                   <option value="">No linked group</option>
                   {groups.map((group) => (
                     <option value={group.id} key={group.id}>
-                      {group.name} · {group.area}
+                      {group.name} Â· {group.area}
                     </option>
                   ))}
                 </select>
@@ -3901,7 +4348,7 @@ function JobDetail({
   const checkpoints = [
     {
       label: "Payment",
-      value: `${job.paymentPercent.toFixed(0)}% · ${
+      value: `${job.paymentPercent.toFixed(0)}% Â· ${
         job.paymentPercent >= 59 ? "Eligible" : "Review"
       }`,
       state: job.paymentPercent >= 59 ? "complete" : "blocked",
@@ -3935,7 +4382,7 @@ function JobDetail({
         <div className="detail-header">
           <div>
             <p className="eyebrow">Source drawing</p>
-            <h2>SLD · {job.customerName}</h2>
+            <h2>SLD Â· {job.customerName}</h2>
           </div>
           <button className="icon-button" aria-label="Close SLD" onClick={onCloseSld}>
             <X size={19} />
@@ -4041,11 +4488,11 @@ function JobDetail({
                 label="Solar panels"
                 value={
                   job.panelQuantity && job.panelRating
-                    ? `${job.panelQuantity} panels · ${job.panelRating}W each`
+                    ? `${job.panelQuantity} panels Â· ${job.panelRating}W each`
                     : job.panelQuantity
-                      ? `${job.panelQuantity} panels · Rating not provided`
+                      ? `${job.panelQuantity} panels Â· Rating not provided`
                       : job.panelRating
-                        ? `Quantity not provided · ${job.panelRating}W each`
+                        ? `Quantity not provided Â· ${job.panelRating}W each`
                         : "Panel specification not provided"
                 }
               />
@@ -4173,7 +4620,7 @@ function JobDetail({
                     ? "Not required"
                     : `${job.paymentOverrideStatus}${
                         job.paymentOverrideReason
-                          ? ` · ${job.paymentOverrideReason}`
+                          ? ` Â· ${job.paymentOverrideReason}`
                           : ""
                       }`
                 }
@@ -4212,7 +4659,7 @@ function JobDetail({
                           )?.label || "Installation activity"
                     }
                     value={`${team.teamName}${
-                      team.contact ? ` · ${team.contact}` : ""
+                      team.contact ? ` Â· ${team.contact}` : ""
                     }`}
                   />
                 ))
@@ -4688,7 +5135,7 @@ function EditJobForm({
           rows={4}
           value={draft.remarks}
           onChange={(event) => onChange({ ...draft, remarks: event.target.value })}
-          placeholder="Add blockers, customer confirmation, or special instructions…"
+          placeholder="Add blockers, customer confirmation, or special instructionsâ€¦"
         />
       </label>
 
@@ -4703,7 +5150,7 @@ function EditJobForm({
           disabled={saving || draft.teams.some((team) => !team.teamName.trim())}
         >
           {saving && <LoaderCircle size={16} className="spin" />}
-          {saving ? "Saving…" : "Save changes"}
+          {saving ? "Savingâ€¦" : "Save changes"}
         </button>
       </div>
     </div>
@@ -4752,3 +5199,5 @@ function SourceField({
     </div>
   );
 }
+
+

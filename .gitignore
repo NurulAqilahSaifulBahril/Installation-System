@@ -7,3 +7,7 @@ node_modules/
 npm-debug.log*
 *.log
 *.tsbuildinfo
+
+# Shared operational state (runtime data, not source)
+/data/
+/release/

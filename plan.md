@@ -1,11 +1,11 @@
-# Installation Management System Plan
+﻿# Installation Management System Plan
 
 ## 1. Purpose
 
 Build a new, standalone installation management system that:
 
 - receives customer, sales, payment, and equipment information from an external API;
-- stores delivery, scheduling, team assignment, status, remarks, and audit history in Supabase;
+- stores delivery, scheduling, team assignment, status, remarks, and audit history in the API database;
 - creates a new installation job when the API reports that payment has reached at least 59%;
 - allows an authorized user to approve an exceptional installation when payment is below 59%;
 - gives scheduling administrators one clear view of every job from payment readiness to installation completion.
@@ -18,7 +18,7 @@ The first version will run as a new localhost application. It must not reuse or 
 
 - **Source API**: the read-only API that supplies eligible customer/order information.
 - **New localhost application**: a completely separate web application for installation operations.
-- **Installation Supabase**: the new operational database used only by the installation system.
+- **Installation API database**: the new operational database used only by the installation system.
 
 ### Ownership of data
 
@@ -27,10 +27,10 @@ The first version will run as a new localhost application. It must not reuse or 
 | Customer, agent, address, invoice total amount (Sales Price) | Source system through API | Imported snapshot, read-only in the job |
 | Payment percentage and balance | Source system through API | Imported and refreshed |
 | Panel, inverter, battery, phase, SLD | Source system through API | Imported snapshot/reference |
-| Delivery planning and stock details | Installation Supabase | Read/write |
-| Installation dates and statuses | Installation Supabase | Read/write |
-| Team directory and assignments | Installation Supabase | Read/write |
-| Overrides, remarks, and history | Installation Supabase | Read/write |
+| Delivery planning and stock details | API database | Read/write |
+| Installation dates and statuses | API database | Read/write |
+| Team directory and assignments | API database | Read/write |
+| Overrides, remarks, and history | API database | Read/write |
 
 ### Do not reproduce the original workflow
 
@@ -48,15 +48,15 @@ Use a secure server-side sync process:
 
 1. Call the Source API from the new application's backend.
 2. Request records whose payment is at least 59%, plus any specifically approved below-59% records if the API supports them.
-3. Create a new Supabase installation job when its unique external installation/site reference has not been seen before.
+3. Create a new installation job in the API database when its unique external installation/site reference has not been seen before.
 4. If the job already exists, refresh only the selected source-owned fields, such as payment and contact details.
 5. Never overwrite delivery, scheduling, team assignment, remarks, or status entered by installation users.
 6. Store the last successful sync time and any sync error.
 7. Never send installation changes back to the source system unless a future API integration explicitly requires it.
 
-For the MVP, poll the API every 5–15 minutes and include a manual **Check for New Jobs** action.
+For the MVP, poll the API every 5â€“15 minutes and include a manual **Check for New Jobs** action.
 
-API credentials and Supabase service credentials must only be used by the backend and must never be exposed in the browser.
+API credentials and API database service credentials must only be used by the backend and must never be exposed in the browser.
 
 ---
 
@@ -80,11 +80,11 @@ Each installation job should display:
 14. External quotation, sales order, invoice, project, and site reference IDs where available
 15. Last API sync time
 
-Do not merge “client contact number,” “site contact number,” and “delivery contact number.” They may be the same, but they serve different purposes and should be separately selectable.
+Do not merge â€œclient contact number,â€ â€œsite contact number,â€ and â€œdelivery contact number.â€ They may be the same, but they serve different purposes and should be separately selectable.
 
 ---
 
-## 4. Operational Data Stored in Supabase
+## 4. Operational Data Stored in the API Database
 
 ### Delivery
 
@@ -305,7 +305,7 @@ Operational plans are created first. The Active Installation Pipeline must not b
 
 5. **Create a new installation pipeline row**
    - The new application checks whether the external job ID already exists.
-   - If it does not exist, the system creates one new installation job in Supabase.
+   - If it does not exist, the system creates one new installation job in the API database.
    - Its initial status is `ready_to_schedule`.
    - The row appears in the Scheduling Admin's **New / Ready to Schedule** queue.
 
@@ -353,7 +353,7 @@ Operational plans are created first. The Active Installation Pipeline must not b
 
 ---
 
-## 7. Suggested Supabase Data Model
+## 7. Suggested API Database Data Model
 
 ### Core tables
 
@@ -500,7 +500,7 @@ Stores every important status change, including old value, new value, user, time
 
 #### `attachments`
 
-Stores metadata and secure Supabase Storage paths for SLDs, delivery proof, approval documents, and completion evidence. Source-owned SLDs may instead remain as secure links to the source system.
+Stores metadata and secure storage paths for SLDs, delivery proof, approval documents, and completion evidence. Source-owned SLDs may instead remain as secure links to the source system.
 
 ### Important constraints
 
@@ -509,7 +509,7 @@ Stores metadata and secure Supabase Storage paths for SLDs, delivery proof, appr
 - Phone numbers should be stored as text.
 - Dates/times should include timezone; display them in the business timezone.
 - Status values should be controlled, not free text.
-- “Other” status/reason requires a remark.
+- â€œOtherâ€ status/reason requires a remark.
 - Rescheduling creates history; it must not erase the previous schedule.
 - Use soft deletion/archive for operational records where audit history matters.
 
@@ -656,7 +656,7 @@ Suggested roles:
 - **Finance/Manager**: approve or reject payment overrides.
 - **System Admin**: manage users, teams, settings, and integrations.
 
-Use Supabase Auth and Row Level Security. At minimum, protect:
+Use application auth and Row Level Security. At minimum, protect:
 
 - customer personal data;
 - payment information;
@@ -689,7 +689,7 @@ WhatsApp is the preferred external notification channel, but it will be implemen
 
 ## 11. MVP Scope
 
-### Phase 1 — Confirm rules and source mapping
+### Phase 1 â€” Confirm rules and source mapping
 
 - define the small Source API response needed by the installation system;
 - confirm the stable external installation/site ID and the source quotation, sales order, invoice, project, and site references;
@@ -697,15 +697,15 @@ WhatsApp is the preferred external notification channel, but it will be implemen
 - agree on statuses, permissions, and readiness rules;
 - confirm the minimum imported fields and avoid reproducing the original workflow.
 
-### Phase 2 — Database, authentication, and sync
+### Phase 2 â€” Database, authentication, and sync
 
-- create Supabase tables, constraints, roles, and audit history;
+- create database tables, constraints, roles, and audit history;
 - create a completely new localhost application;
 - build the read-only Source API import;
 - implement sync monitoring and **Check for New Jobs**;
 - import a test set and verify duplicate prevention.
 
-### Phase 3 — Operational MVP
+### Phase 3 â€” Operational MVP
 
 - installation pipeline;
 - job detail page;
@@ -715,7 +715,7 @@ WhatsApp is the preferred external notification channel, but it will be implemen
 - team assignment;
 - filters and basic dashboard counts.
 
-### Phase 4 — Calendar and operational controls
+### Phase 4 â€” Calendar and operational controls
 
 - scheduling calendar;
 - team conflict checks;
@@ -723,7 +723,7 @@ WhatsApp is the preferred external notification channel, but it will be implemen
 - attachments and completion evidence;
 - exports and management reporting.
 
-### Phase 5 — Optional enhancements
+### Phase 5 â€” Optional enhancements
 
 - customer/team notifications;
 - route or map support;
@@ -762,7 +762,7 @@ The MVP is ready when:
 4. Payment percentage comes from PostgreSQL through the API.
 5. An Admin can request a below-59% exception, but management must approve it.
 6. SEDA approval is required for every installation in this system. A job paid at least 59% can enter the installation queue before SEDA approval, but it must show `Pending SEDA Approval` and cannot become fully ready until approval is received.
-7. Stock has no current external data source. Stock and material records will be entered and stored in Supabase.
+7. Stock has no current external data source. Stock and material records will be entered and stored in the API database.
 8. The required SLD drawing comes from PostgreSQL through the API.
 9. Multiple installation teams can be assigned to one job with roles, including roof/panel, wiring/electrical, battery/inverter, and supervisor roles.
 10. WhatsApp is the preferred external notification channel, but it will be added after the MVP.
@@ -774,7 +774,7 @@ The MVP is ready when:
 ### Remaining decisions
 
 1. What authentication method will the Source API use?
-2. Does “yes” mean the API returns all sales, or only jobs whose payment has reached at least 59%?
+2. Does â€œyesâ€ mean the API returns all sales, or only jobs whose payment has reached at least 59%?
 3. If the API has no installation/site ID, which stable source fields identify each location: for example `order_id + site_sequence`, a source site ID, or another location reference?
 4. Apart from the SLD, are completion photos, delivery proof, or customer sign-off required?
 
@@ -782,7 +782,7 @@ The MVP is ready when:
 
 ## 14. Recommended First Workshop
 
-Before coding, use 5–10 real jobs to walk through:
+Before coding, use 5â€“10 real jobs to walk through:
 
 - one normal job above 59%;
 - one job below 59% with approval;
@@ -793,3 +793,4 @@ Before coding, use 5–10 real jobs to walk through:
 - one job using separate installation teams.
 
 For each example, confirm its source fields, owner, allowed actions, readiness result, and expected final status. This will expose workflow exceptions before they become database or UI rework.
+
