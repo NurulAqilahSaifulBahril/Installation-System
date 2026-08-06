@@ -36,7 +36,7 @@ from reportlab.platypus import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "docs" / "Installation Desktop app_user_guide.pdf"
+OUT = ROOT / "Installation Desktop app_user_guide.pdf"
 
 VERSION = "1.0.0"
 DATE_LABEL = "August 2026"

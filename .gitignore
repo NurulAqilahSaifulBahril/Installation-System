@@ -22,4 +22,4 @@ npm-debug.log*
 
 # ...but the user guide is written by us and contains no customer data, so it
 # ships with the repo. Regenerate with: python scripts/build-user-guide.py
-!docs/Installation Desktop app_user_guide.pdf
+!Installation Desktop app_user_guide.pdf
