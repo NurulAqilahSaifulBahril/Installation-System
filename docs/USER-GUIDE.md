@@ -1,6 +1,6 @@
 # Installation Dashboard — User Guide
 
-**Version 0.1.0 · For the installation scheduling team**
+**Version 1.0.0 · For the installation scheduling team**
 
 ---
 
@@ -25,16 +25,17 @@ You need:
 - A Windows PC (Windows 10 or 11)
 - An internet connection
 - About 5 minutes
-- The download link — **[ASK NURUL FOR THE DOWNLOAD LINK]**
 
 ---
 
 ## Step 1 — Download
 
-Open the download link and save the file:
+Go to the **[Installation System download page](https://github.com/NurulAqilahSaifulBahril/Installation-System/releases/latest)**.
+
+Scroll down to the **Assets** list and click the file named:
 
 ```
-Installation System Setup 0.1.0.exe
+Installation-System-Setup-1.0.0.exe
 ```
 
 It will go to your **Downloads** folder unless you choose somewhere else.
@@ -55,8 +56,11 @@ Double-click the file you just downloaded.
 >
 > If you do not see "Run anyway", make sure you clicked **More info** first.
 
-The installer runs and finishes on its own. When it is done you will have an
-**Installation Dashboard** shortcut on your desktop and in the Start Menu.
+Click **Next** through the screens, tick **Create a desktop shortcut** if you
+would like one, then click **Install**.
+
+When it is done you will have an **Installation System** shortcut on your
+desktop and in the Start Menu.
 
 ---
 
@@ -71,18 +75,21 @@ launch. Later launches are faster.
 You should then see the dashboard, with today's date and **Malaysia time** at
 the top.
 
+There are no keys to paste in and no login to create. **You are done.**
+
 ---
 
 ## ⚠️ Step 4 — Check you are seeing real customers
 
 **Do this every time you open the app. It takes two seconds.**
 
-Look at the customer names on screen.
+Look at the top right of the screen for the connection dot, and at the customer
+names below it.
 
 | What you see | What it means | What to do |
 |---|---|---|
-| Names you recognise | Connected. Everything is fine. | Carry on working |
-| **DEMO CUSTOMER ONE**, **DEMO CUSTOMER TWO**, **DEMO CUSTOMER THREE** | **Not connected.** These are fake examples. | Stop. See below. |
+| **Live source** and names you recognise | Connected. Everything is fine. | Carry on working |
+| **Demo source**, or **DEMO CUSTOMER ONE / TWO / THREE** | **Not connected.** These are fake examples. | Stop. See below. |
 
 If you see the DEMO CUSTOMER names, the app cannot reach the database. There
 will also be a warning message across the top of the screen.
@@ -188,6 +195,31 @@ to go looking for the file separately.
 
 ---
 
+## Updating
+
+**Short version: you don't have to do anything.** The app checks for new
+versions by itself and tells you when one is ready.
+
+### When an update is ready
+
+An **Install Update** button appears in the **top bar**, next to *Check for new
+jobs*, showing the new version number.
+
+1. Click **Install Update**.
+2. Wait. The button shows the download progress, then the app closes and
+   reopens by itself on the new version. This takes a minute or two.
+3. **Do not close the window while it is working.**
+
+### Things worth knowing
+
+- **Nothing of yours is lost.** All your data lives in the shared database. An
+  update only replaces the program itself.
+- **You never download the installer again.** Steps 1–3 above are one time only.
+- **If an update fails**, the app keeps working on the current version. Tell
+  Nurul so it can be looked into.
+
+---
+
 ## Common questions
 
 **Do I need to save?**
@@ -223,6 +255,7 @@ Yes, as long as you have internet. It does not need to be on the office network.
 | Seeing DEMO CUSTOMER names | Not connected. Check internet, reopen. Do not enter any data |
 | Warning bar across the top | Read it — it explains what is not working |
 | App will not start at all | Restart your PC, then try again |
+| An update failed | Tell Nurul — the app keeps working on the current version |
 | Anything else | Contact Nurul. Say what you were doing and what you saw |
 
 **Please report problems rather than working around them.** In these early
@@ -234,13 +267,11 @@ thing worth reporting.
 
 ## Things to know about this version
 
-This is **version 0.1.0**, the first release.
+This is **version 1.0.0**.
 
-- **Updates are manual.** When there is a new version you will be sent a new
-  file to install. It installs over the old one; nothing is lost.
 - **Nothing is stored on your PC.** All data lives in the shared database, so
   there is nothing to back up and nothing lost if your PC is replaced.
-- **To uninstall:** Settings → Apps → Installation Dashboard → Uninstall.
+- **To uninstall:** Settings → Apps → Installation System → Uninstall.
 
 ---
 

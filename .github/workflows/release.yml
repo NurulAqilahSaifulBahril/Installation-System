@@ -1,0 +1,115 @@
+name: Release
+
+# Push a version tag to cut a release:
+#   git tag v1.0.1 && git push origin v1.0.1
+#
+# Publishes the assets electron-updater needs to auto-update the app:
+#   Installation-System-Setup-<version>.exe            first-time Windows installer
+#   Installation-System-Setup-<version>.exe.blockmap   used for differential downloads
+#   latest.yml                                          feed electron-updater polls for new versions
+#
+# The dashes matter: electron-updater's latest.yml always references the
+# artifact with spaces replaced by dashes, so the nsis.artifactName override
+# in package.json must produce that exact name or auto-update breaks.
+#
+# Requires three repository secrets (Settings > Secrets and variables >
+# Actions) so the packaged app ships with a working connection to the real
+# database, same as a local build's .env.local:
+#   PG_PROXY_URL, PG_PROXY_DATABASE, PG_PROXY_TOKEN
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. 1.0.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $v = "${{ github.event.inputs.version }}".TrimStart("v")
+          } else {
+            $v = "${{ github.ref_name }}".TrimStart("v")
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "tag=v$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Building version $v"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Sync package.json version with the release tag
+        shell: pwsh
+        run: npm version --no-git-tag-version --allow-same-version ${{ steps.ver.outputs.version }}
+
+      - name: Write .env.local from repository secrets
+        shell: pwsh
+        env:
+          PG_PROXY_URL: ${{ secrets.PG_PROXY_URL }}
+          PG_PROXY_DATABASE: ${{ secrets.PG_PROXY_DATABASE }}
+          PG_PROXY_TOKEN: ${{ secrets.PG_PROXY_TOKEN }}
+        run: |
+          if (-not $env:PG_PROXY_TOKEN) {
+            throw "PG_PROXY_TOKEN repository secret is not set - see Settings > Secrets and variables > Actions."
+          }
+          @"
+          PG_PROXY_URL=$env:PG_PROXY_URL
+          PG_PROXY_DATABASE=$env:PG_PROXY_DATABASE
+          PG_PROXY_TOKEN=$env:PG_PROXY_TOKEN
+          "@ | Set-Content -Path .env.local -Encoding utf8
+
+      - name: Install dependencies
+        shell: pwsh
+        run: npm ci
+
+      - name: Build installer
+        shell: pwsh
+        run: npm run dist:win
+
+      - name: Verify expected assets were produced
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $outDir = "C:/tmp/installation-system-release"
+          foreach ($f in @("Installation-System-Setup-$v.exe",
+                            "Installation-System-Setup-$v.exe.blockmap",
+                            "latest.yml")) {
+            $full = Join-Path $outDir $f
+            if (!(Test-Path $full)) { throw "Missing expected artifact: $full" }
+          }
+          Get-ChildItem $outDir -File | Format-Table Name, Length
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          body: |
+            ## Installation System ${{ steps.ver.outputs.tag }}
+
+            **New here?** Download **Installation-System-Setup-${{ steps.ver.outputs.version }}.exe** below and run it.
+
+            **Already installed?** Do nothing — the dashboard checks for this
+            release on its own and shows an **Install Update** button in the
+            top bar when it's ready.
+          files: |
+            C:/tmp/installation-system-release/Installation-System-Setup-${{ steps.ver.outputs.version }}.exe
+            C:/tmp/installation-system-release/Installation-System-Setup-${{ steps.ver.outputs.version }}.exe.blockmap
+            C:/tmp/installation-system-release/latest.yml

@@ -1,71 +1,79 @@
 {
-    "name":  "eternalgy-installation-ops",
-    "version":  "0.1.0",
-    "private":  true,
-    "scripts":  {
-                    "dev":  "next dev --webpack -H 0.0.0.0 -p 3000",
-                    "build":  "next build",
-                    "start":  "next start -H 0.0.0.0 -p 3000",
-                    "lint":  "next lint",
-                    "typecheck":  "tsc --noEmit",
-                    "desktop":  "electron .",
-                    "dist:win":  "node scripts/build-installer.cjs",
-                    "pack:win":  "node scripts/build-installer.cjs --dir"
-                },
-    "dependencies":  {
-                         "@types/leaflet":  "^1.9.22",
-                         "leaflet":  "^1.9.4",
-                         "lucide-react":  "^0.468.0",
-                         "next":  "^16.2.12",
-                         "postcss":  "^8.5.24",
-                         "react":  "^19.2.8",
-                         "react-dom":  "^19.2.8",
-                         "react-leaflet":  "^5.0.0",
-                         "sharp":  "^0.35.3",
-                         "zod":  "^3.25.76"
-                     },
-    "devDependencies":  {
-                            "@types/node":  "^22.16.5",
-                            "@types/react":  "^19.1.8",
-                            "@types/react-dom":  "^19.1.6",
-                            "electron":  "^43.3.0",
-                            "electron-builder":  "^26.15.3",
-                            "typescript":  "^5.8.3"
-                        },
-    "overrides":  {
-                      "next":  {
-                                   "postcss":  "8.5.24",
-                                   "sharp":  "0.35.3"
-                               }
-                  },
-    "main":  "electron/main.cjs",
-    "build":  {
-                  "appId":  "com.nurulaqilah.installationsystem",
-                  "productName":  "Installation System",
-                  "asar":  false,
-                  "directories":  {
-                                      "output":  "C:/tmp/installation-system-release"
-                                  },
-                  "files":  [
-                                "app/**/*",
-                                "electron/**/*",
-                                "lib/**/*",
-                                "public/**/*",
-                                ".next-build/**/*",
-                                "package.json",
-                                "next.config.ts",
-                                "next-env.d.ts"
-                            ],
-                  "win":  {
-                              "target":  [
-                                             "nsis"
-                                         ]
-                          },
-                  "nsis":  {
-                               "oneClick":  false,
-                               "allowToChangeInstallationDirectory":  true,
-                               "createDesktopShortcut":  true,
-                               "createStartMenuShortcut":  true
-                           }
-              }
+    "name": "eternalgy-installation-ops",
+    "version": "1.0.0",
+    "private": true,
+    "scripts": {
+        "dev": "next dev --webpack -H 0.0.0.0 -p 3000",
+        "build": "next build",
+        "start": "next start -H 0.0.0.0 -p 3000",
+        "lint": "next lint",
+        "typecheck": "tsc --noEmit",
+        "desktop": "electron .",
+        "dist:win": "node scripts/build-installer.cjs",
+        "pack:win": "node scripts/build-installer.cjs --dir"
+    },
+    "dependencies": {
+        "@types/leaflet": "^1.9.22",
+        "electron-updater": "^6.8.9",
+        "leaflet": "^1.9.4",
+        "lucide-react": "^0.468.0",
+        "next": "^16.2.12",
+        "postcss": "^8.5.24",
+        "react": "^19.2.8",
+        "react-dom": "^19.2.8",
+        "react-leaflet": "^5.0.0",
+        "sharp": "^0.35.3",
+        "zod": "^3.25.76"
+    },
+    "devDependencies": {
+        "@types/node": "^22.16.5",
+        "@types/react": "^19.1.8",
+        "@types/react-dom": "^19.1.6",
+        "electron": "^43.3.0",
+        "electron-builder": "^26.15.3",
+        "typescript": "^5.8.3"
+    },
+    "overrides": {
+        "next": {
+            "postcss": "8.5.24",
+            "sharp": "0.35.3"
+        }
+    },
+    "main": "electron/main.cjs",
+    "build": {
+        "appId": "com.nurulaqilah.installationsystem",
+        "productName": "Installation System",
+        "asar": false,
+        "directories": {
+            "output": "C:/tmp/installation-system-release"
+        },
+        "files": [
+            "app/**/*",
+            "electron/**/*",
+            "lib/**/*",
+            "public/**/*",
+            ".next-build/**/*",
+            "package.json",
+            "next.config.ts",
+            "next-env.d.ts",
+            ".env.local"
+        ],
+        "win": {
+            "target": [
+                "nsis"
+            ]
+        },
+        "nsis": {
+            "oneClick": false,
+            "allowToChangeInstallationDirectory": true,
+            "createDesktopShortcut": true,
+            "createStartMenuShortcut": true,
+            "artifactName": "Installation-System-Setup-${version}.${ext}"
+        },
+        "publish": {
+            "provider": "github",
+            "owner": "NurulAqilahSaifulBahril",
+            "repo": "Installation-System"
+        }
+    }
 }

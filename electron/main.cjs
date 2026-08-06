@@ -1,4 +1,6 @@
-﻿const { app, BrowserWindow, dialog, shell } = require('electron');
+﻿const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { autoUpdater } = require('electron-updater');
+const fs = require('fs');
 const http = require('http');
 const next = require('next');
 const net = require('net');
@@ -9,10 +11,122 @@ const PORT = Number(process.env.PORT || 3000);
 const START_URL = process.env.ELECTRON_START_URL || `http://${HOST}:${PORT}`;
 const ROOT_DIR = path.resolve(__dirname, '..');
 
+// Load connection settings from the bundled .env.local before Next starts.
+// Next reads env files itself, but doing it explicitly means a packaged build
+// cannot silently fall back to demo data because of a working-directory quirk.
+function loadEnvFile() {
+  const envPath = path.join(ROOT_DIR, '.env.local');
+  if (!fs.existsSync(envPath)) {
+    return;
+  }
+
+  for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+    const trimmed = line.trim().replace(/^﻿/, '');
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue;
+    }
+
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+
+    if (!process.env[key]) {
+      process.env[key] = value;
+    }
+  }
+}
+
+loadEnvFile();
+
 let server = null;
 let nextApp = null;
 let mainWindow = null;
 let shuttingDown = false;
+let installRequested = false;
+let updateDownloaded = false;
+
+// Auto-update: checks the app-update.yml embedded at build time (points at
+// the Installation-System GitHub releases feed). Downloads only happen when
+// the renderer explicitly asks for one via the "Install Update" button, and
+// installing quits+relaunches the app, so both are opt-in from the user.
+autoUpdater.autoDownload = false;
+
+function broadcastUpdate(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
+}
+
+autoUpdater.on('checking-for-update', () => {
+  broadcastUpdate('update:status', { state: 'checking' });
+});
+
+autoUpdater.on('update-available', (info) => {
+  broadcastUpdate('update:status', { state: 'available', version: info.version });
+});
+
+autoUpdater.on('update-not-available', () => {
+  broadcastUpdate('update:status', { state: 'not-available' });
+});
+
+autoUpdater.on('download-progress', (progress) => {
+  broadcastUpdate('update:status', { state: 'downloading', percent: progress.percent });
+});
+
+autoUpdater.on('update-downloaded', (info) => {
+  updateDownloaded = true;
+  broadcastUpdate('update:status', { state: 'downloaded', version: info.version });
+  if (installRequested) {
+    autoUpdater.quitAndInstall();
+  }
+});
+
+autoUpdater.on('error', (error) => {
+  broadcastUpdate('update:status', {
+    state: 'error',
+    message: error instanceof Error ? error.message : 'Update check failed.',
+  });
+});
+
+function checkForUpdates() {
+  if (!app.isPackaged) {
+    return;
+  }
+  autoUpdater.checkForUpdates().catch((error) => {
+    broadcastUpdate('update:status', {
+      state: 'error',
+      message: error instanceof Error ? error.message : 'Update check failed.',
+    });
+  });
+}
+
+ipcMain.handle('update:check', () => {
+  checkForUpdates();
+});
+
+ipcMain.handle('update:install', () => {
+  installRequested = true;
+  if (updateDownloaded) {
+    autoUpdater.quitAndInstall();
+    return;
+  }
+  autoUpdater.downloadUpdate().catch((error) => {
+    broadcastUpdate('update:status', {
+      state: 'error',
+      message: error instanceof Error ? error.message : 'Update download failed.',
+    });
+  });
+});
 
 function isPortOpen(host, port, timeoutMs = 500) {
   return new Promise((resolve) => {
@@ -115,6 +229,7 @@ async function createWindow() {
   });
 
   await mainWindow.loadURL(START_URL);
+  checkForUpdates();
 }
 
 async function boot() {

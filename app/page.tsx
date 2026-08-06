@@ -6,6 +6,7 @@ import {
   Check,
   ChevronRight,
   Clock3,
+  Download,
   FileSearch,
   Filter,
   LoaderCircle,
@@ -35,6 +36,7 @@ import type {
   JobUpdate,
   TeamAssignment,
 } from "@/lib/types";
+import type { UpdateStatus } from "@/lib/electron-desktop";
 
 const PlanningMap = dynamic(() => import("@/app/components/PlanningMap"), {
   ssr: false,
@@ -442,6 +444,7 @@ export default function DashboardPage() {
   const [editMode, setEditMode] = useState(false);
   const [sldOpen, setSldOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [groups, setGroups] = useState<InstallationGroup[]>([]);
   const [deliveryRuns, setDeliveryRuns] = useState<DeliveryRun[]>([]);
   const [teamResources, setTeamResources] =
@@ -537,6 +540,37 @@ export default function DashboardPage() {
     document.addEventListener("visibilitychange", refresh);
     return () => document.removeEventListener("visibilitychange", refresh);
   }, [loadSharedState]);
+
+  // Only present in the packaged Electron app (see electron/preload.cjs) —
+  // absent in a plain browser tab, so this is a no-op there.
+  useEffect(() => {
+    const desktop = window.installationDesktop;
+    if (!desktop) {
+      return;
+    }
+    const unsubscribe = desktop.onUpdateStatus((status) => {
+      setUpdateStatus(status);
+      if (status.state === "error") {
+        setNotice(status.message);
+      }
+    });
+    void desktop.checkForUpdates();
+    return unsubscribe;
+  }, []);
+
+  const updateButtonLabel = useMemo(() => {
+    if (!updateStatus) return null;
+    switch (updateStatus.state) {
+      case "available":
+        return `Install Update (v${updateStatus.version})`;
+      case "downloading":
+        return `Downloading update… ${Math.round(updateStatus.percent)}%`;
+      case "downloaded":
+        return "Installing…";
+      default:
+        return null;
+    }
+  }, [updateStatus]);
 
   const loadJobs = useCallback(async (manual = false) => {
     manual ? setSyncing(true) : setLoading(true);
@@ -909,6 +943,16 @@ export default function DashboardPage() {
             <span className={`connection-dot ${meta?.source === "live" ? "live" : ""}`} />
             {meta?.source === "live" ? "Live source" : "Demo source"}
           </div>
+          {updateButtonLabel && (
+            <button
+              className="button primary"
+              onClick={() => void window.installationDesktop?.installUpdate()}
+              disabled={updateStatus?.state === "downloading" || updateStatus?.state === "downloaded"}
+            >
+              <Download size={16} />
+              {updateButtonLabel}
+            </button>
+          )}
           <button
             className="button primary"
             onClick={() => void loadJobs(true)}
