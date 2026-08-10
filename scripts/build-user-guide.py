@@ -612,7 +612,9 @@ def build_story():
                 "again.",
                 "<b>You never download the installer again.</b> Steps 1–3 "
                 "above are one time only.",
-                "<b>To check your version:</b> look at the bottom-left panel.",
+                "<b>To check your version:</b> Settings &#8594; Apps &#8594; "
+                "Installation System. The app itself does not show a version "
+                "number on screen.",
                 "<b>If an update fails</b>, the app keeps working on the version "
                 "you already have. Tell Nurul so it can be looked into.",
             ],

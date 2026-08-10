@@ -236,8 +236,8 @@ versions by itself and tells you when one is ready.
 
 ### When an update is ready
 
-An **Install Update** button appears in the **bottom left panel**, showing the
-new version number.
+An **Install Update** button appears in the **top bar**, next to *Check for new
+jobs*, showing the new version number.
 
 1. Click **Install Update**.
 2. Wait. The button shows the download progress, then the app closes and
@@ -252,7 +252,8 @@ new version number.
   again.
 - **You never download the installer again, and never re-enter the connection
   details.** Steps 1–4 above are one time only.
-- **To check your version:** look at the bottom-left panel.
+- **To check your version:** Settings → Apps → Installation System. The app
+  itself does not show a version number on screen.
 - **If an update fails**, the app keeps working on the current version. Tell
   Nurul so it can be looked into.
 
