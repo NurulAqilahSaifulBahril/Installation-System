@@ -454,6 +454,13 @@ def build_story():
             "— the app brings everything it needs with it."
         )
     )
+    story.append(
+        para(
+            "<b>Ask Nurul for the connection details before you begin:</b> a "
+            "server address, a database name and an access token. You enter these "
+            "once, in Step 4, and never again."
+        )
+    )
 
     story.append(h3("Step 1 — Download the app"))
     story.append(para("Go to the Installation System download page:"))
@@ -463,8 +470,9 @@ def build_story():
         steps(
             [
                 "Scroll down to the <b>Assets</b> list.",
-                f"Click the file named {code(f'Installation-System-Setup-{VERSION}.exe')} "
-                "to download it.",
+                f"Click the file starting {code('Installation-System-Setup')} and "
+                "ending in <b>.exe</b> to download it. Always take the newest "
+                "version the page offers.",
                 "It will go to your <b>Downloads</b> folder unless you choose "
                 "somewhere else.",
             ]
@@ -509,21 +517,56 @@ def build_story():
     )
     story.append(
         para(
-            "There are no keys to paste in and no login to create. "
-            "<b>You are done.</b>"
+            "It opens showing <b>Demo source</b> in the top right. That is "
+            "expected — it does not know where your database is yet."
+        )
+    )
+
+    story.append(h3("Step 4 — Enter the connection details"))
+    story.append(
+        para(
+            "This is the one-time setup. You need the three details from Nurul."
+        )
+    )
+    story.append(
+        steps(
+            [
+                "Click <b>Set up connection</b> in the top right.",
+                "Enter the <b>Server address</b> (it starts with "
+                f"{code('https://')}), the <b>Database name</b>, and the "
+                "<b>Access token</b>. The token stays hidden as you type.",
+                "Click <b>Save and connect</b>.",
+            ]
+        )
+    )
+    story.append(Spacer(1, 8))
+    story.append(
+        para(
+            "The list reloads by itself. When it works, the top right changes "
+            "from <b>Demo source</b> to <b>Live source</b> and you will see "
+            "customer names you recognise. <b>You are done.</b>"
+        )
+    )
+    story.append(
+        para(
+            "If it does not work, a message explains what was wrong and the box "
+            "stays open so you can correct it. Usually it is a missing "
+            f"{code('https://')} at the front of the address, or a space copied "
+            "along with the token."
         )
     )
     story.append(Spacer(1, 4))
     story.append(
         callout(
-            "Before you start working, check the top right",
+            "Check the top right every time you open the app",
             [
                 "It should say <b>Live source</b>. If it says <b>Demo source</b>, "
                 "or you see customers called <b>DEMO CUSTOMER ONE / TWO / THREE</b>, "
                 "the app cannot reach the database and those names are fake "
                 "examples.",
-                "<b>Anything you type in that state will not be saved.</b> Close "
-                "the app, check your internet connection and open it again. If the "
+                "<b>Anything you type in that state will not be saved.</b> Click "
+                "the <b>Demo source</b> text to check your connection details, "
+                "then check your internet connection and reopen the app. If the "
                 "demo names are still there, contact Nurul — do not carry on "
                 "working.",
             ],
@@ -543,8 +586,8 @@ def build_story():
     story.append(h3("When an update is ready"))
     story.append(
         para(
-            "An <b>Install Update</b> button appears in the <b>bottom left "
-            "panel</b>, showing the new version number."
+            "An <b>Install Update</b> button appears in the <b>top bar</b>, "
+            "next to <i>Check for new jobs</i>, showing the new version number."
         )
     )
     story.append(
@@ -563,7 +606,10 @@ def build_story():
             "Things worth knowing",
             [
                 "<b>Nothing of yours is lost.</b> All your data lives in the "
-                "shared database, so an update only replaces the program itself.",
+                "shared database and your connection details are stored "
+                "separately from the program, so an update only replaces the "
+                "program itself. You will not be asked to set up the connection "
+                "again.",
                 "<b>You never download the installer again.</b> Steps 1–3 "
                 "above are one time only.",
                 "<b>To check your version:</b> look at the bottom-left panel.",
@@ -591,8 +637,18 @@ def build_story():
                     "Wait 10 seconds. If still blank, close it completely and reopen",
                 ],
                 [
+                    "A <b>Set up connection</b> button is showing",
+                    "The connection details have not been entered yet. See Step 4",
+                ],
+                [
                     "It says <b>Demo source</b>, or you see DEMO CUSTOMER names",
-                    "Not connected. Check internet, reopen. Do not enter any data",
+                    "Not connected. Click <b>Demo source</b> to check the details, "
+                    "then check internet and reopen. Do not enter any data",
+                ],
+                [
+                    "Saved the details but still on <b>Demo source</b>",
+                    "Read the message in the box — usually a missing "
+                    "<b>https://</b> or a stray space in the token",
                 ],
                 [
                     "Warning bar across the top",

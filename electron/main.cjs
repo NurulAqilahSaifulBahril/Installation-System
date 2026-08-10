@@ -46,7 +46,37 @@ function loadEnvFile() {
   }
 }
 
+// Connection settings the user types into the app. Kept in userData rather than
+// beside the executable, because an update replaces the program directory and
+// would otherwise wipe them. Applied after loadEnvFile so a value entered by the
+// user always beats a stale one baked into the build.
+const CONNECTION_KEYS = ['PG_PROXY_URL', 'PG_PROXY_DATABASE', 'PG_PROXY_TOKEN'];
+
+function connectionConfigPath() {
+  return path.join(app.getPath('userData'), 'connection.json');
+}
+
+function loadUserConfig() {
+  try {
+    const configPath = connectionConfigPath();
+    if (!fs.existsSync(configPath)) {
+      return;
+    }
+
+    const saved = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    for (const key of CONNECTION_KEYS) {
+      const value = saved[key];
+      if (typeof value === 'string' && value.trim()) {
+        process.env[key] = value.trim();
+      }
+    }
+  } catch (error) {
+    console.error('Could not read saved connection settings:', error);
+  }
+}
+
 loadEnvFile();
+loadUserConfig();
 
 let server = null;
 let nextApp = null;
@@ -126,6 +156,53 @@ ipcMain.handle('update:install', () => {
       message: error instanceof Error ? error.message : 'Update download failed.',
     });
   });
+});
+
+// The token is never handed back to the renderer — only whether one is stored.
+// The window is local, but there is no reason for a secret to make the trip.
+ipcMain.handle('settings:get', () => ({
+  url: process.env.PG_PROXY_URL || '',
+  database: process.env.PG_PROXY_DATABASE || '',
+  hasToken: Boolean(process.env.PG_PROXY_TOKEN),
+}));
+
+ipcMain.handle('settings:save', (_event, settings) => {
+  const url = String(settings?.url ?? '').trim();
+  const database = String(settings?.database ?? '').trim();
+  const typedToken = String(settings?.token ?? '').trim();
+  // A blank token field means "leave the stored one alone", so someone fixing a
+  // typo in the URL does not have to paste the token again.
+  const token = typedToken || process.env.PG_PROXY_TOKEN || '';
+
+  if (!url || !database || !token) {
+    return { ok: false, message: 'Address, database and access token are all required.' };
+  }
+
+  try {
+    new URL(url);
+  } catch {
+    return { ok: false, message: 'Address must be a full URL, starting with https://' };
+  }
+
+  const values = {
+    PG_PROXY_URL: url,
+    PG_PROXY_DATABASE: database,
+    PG_PROXY_TOKEN: token,
+  };
+
+  try {
+    fs.writeFileSync(connectionConfigPath(), JSON.stringify(values, null, 2), 'utf8');
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : 'Could not save the settings.',
+    };
+  }
+
+  // The Next server runs inside this process, so the API routes read these on
+  // their next request. No restart needed.
+  Object.assign(process.env, values);
+  return { ok: true };
 });
 
 function isPortOpen(host, port, timeoutMs = 500) {

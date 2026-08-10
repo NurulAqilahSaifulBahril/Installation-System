@@ -1,6 +1,6 @@
 # Installation Dashboard — User Guide
 
-**Version 1.0.0 · For the installation scheduling team**
+**For the installation scheduling team**
 
 ---
 
@@ -25,6 +25,9 @@ You need:
 - A Windows PC (Windows 10 or 11)
 - An internet connection
 - About 5 minutes
+- **The three connection details from Nurul** — a server address, a database
+  name and an access token. Ask for these before you begin. You enter them once,
+  the first time you open the app, and never again.
 
 ---
 
@@ -32,11 +35,9 @@ You need:
 
 Go to the **[Installation System download page](https://github.com/NurulAqilahSaifulBahril/Installation-System/releases/latest)**.
 
-Scroll down to the **Assets** list and click the file named:
-
-```
-Installation-System-Setup-1.0.0.exe
-```
+Scroll down to the **Assets** list and click the file that starts with
+`Installation-System-Setup` and ends in `.exe`. There will be a version number
+in the middle — always take the newest one the page offers.
 
 It will go to your **Downloads** folder unless you choose somewhere else.
 
@@ -75,11 +76,38 @@ launch. Later launches are faster.
 You should then see the dashboard, with today's date and **Malaysia time** at
 the top.
 
-There are no keys to paste in and no login to create. **You are done.**
+---
+
+## Step 4 — Enter the connection details (first time only)
+
+The app arrives empty. It does not know where your customer database is until
+you tell it, so on first launch it shows **Demo source** in the top right and a
+**Set up connection** button next to it.
+
+1. Click **Set up connection**.
+2. Fill in the three details Nurul gave you:
+   - **Server address** — starts with `https://`
+   - **Database name**
+   - **Access token** — the long one; it stays hidden as you type
+3. Click **Save and connect**.
+
+The list reloads by itself. If it worked, the top right changes from **Demo
+source** to **Live source** and you will see customer names you recognise.
+
+If it did not work, a message appears explaining what was wrong and the box
+stays open so you can correct it. The most common causes are a missing
+`https://` at the front of the address, or a space accidentally copied along
+with the token.
+
+**You only do this once.** The details are saved on your PC and survive every
+future update. To check or change them later, click the **Live source** /
+**Demo source** text in the top right at any time. You will not need to retype
+the token to fix a typo elsewhere — leave that box blank and it keeps the one
+already saved.
 
 ---
 
-## ⚠️ Step 4 — Check you are seeing real customers
+## ⚠️ Step 5 — Check you are seeing real customers
 
 **Do this every time you open the app. It takes two seconds.**
 
@@ -94,9 +122,15 @@ names below it.
 If you see the DEMO CUSTOMER names, the app cannot reach the database. There
 will also be a warning message across the top of the screen.
 
-**Anything you type while in this state will not be saved.** Close the app,
-check your internet connection, and open it again. If the demo names are still
-there, contact Nurul — do not carry on working.
+**Anything you type while in this state will not be saved.** Work through these
+in order:
+
+1. Click the **Demo source** text in the top right and check the connection
+   details are still filled in and correct.
+2. Check your internet connection.
+3. Close the app completely and open it again.
+
+If the demo names are still there, contact Nurul — do not carry on working.
 
 ---
 
@@ -212,9 +246,12 @@ new version number.
 
 ### Things worth knowing
 
-- **Nothing of yours is lost.** All your data lives in the shared database. An
-  update only replaces the program itself.
-- **You never download the installer again.** Steps 1–3 above are one time only.
+- **Nothing of yours is lost.** All your data lives in the shared database, and
+  your connection details are stored separately from the program. An update only
+  replaces the program itself — you will not be asked to set up the connection
+  again.
+- **You never download the installer again, and never re-enter the connection
+  details.** Steps 1–4 above are one time only.
 - **To check your version:** look at the bottom-left panel.
 - **If an update fails**, the app keeps working on the current version. Tell
   Nurul so it can be looked into.
@@ -253,7 +290,9 @@ Yes, as long as you have internet. It does not need to be on the office network.
 |---|---|
 | Blue "Windows protected your PC" screen | Normal. Click **More info** → **Run anyway** |
 | Window is blank or white | Wait 10 seconds. If still blank, close it completely and reopen |
-| Seeing DEMO CUSTOMER names | Not connected. Check internet, reopen. Do not enter any data |
+| Seeing DEMO CUSTOMER names | Not connected. Click **Demo source** top right and check the details, then check internet and reopen. Do not enter any data |
+| "Set up connection" button showing | The connection details have not been entered yet. See Step 4 |
+| Saved the details but still on Demo source | Read the message in the box — usually a missing `https://` or a stray space in the token |
 | Warning bar across the top | Read it — it explains what is not working |
 | App will not start at all | Restart your PC, then try again |
 | An update failed | Tell Nurul — the app keeps working on the current version |
@@ -266,12 +305,14 @@ thing worth reporting.
 
 ---
 
-## Things to know about this version
+## Things to know
 
-This is **version 1.0.0**.
-
-- **Nothing is stored on your PC.** All data lives in the shared database, so
-  there is nothing to back up and nothing lost if your PC is replaced.
+- **Your work is not stored on your PC.** All customer and scheduling data lives
+  in the shared database, so there is nothing to back up and nothing lost if
+  your PC is replaced.
+- **Only the connection details are kept locally.** That is why a new PC needs
+  Step 4 again — ask Nurul for the details rather than copying them off an old
+  machine.
 - **To uninstall:** Settings → Apps → Installation System → Uninstall.
 
 ---

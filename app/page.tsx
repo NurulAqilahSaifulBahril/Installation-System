@@ -16,6 +16,7 @@ import {
   Phone,
   RefreshCw,
   Search,
+  Settings,
   Sun,
   Truck,
   Users,
@@ -294,6 +295,50 @@ function normalizeSeda(status: string) {
     : status || "Pending";
 }
 
+function calculateDaysSince(dateStr: string): number | null {
+  if (!dateStr) return null;
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffTime = now.getTime() - date.getTime();
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  return diffDays >= 0 ? diffDays : null;
+}
+
+function getPendingInstallationMetrics(jobs: InstallationJob[]) {
+  // Calculate 30 days before today
+  const today = new Date('2026-07-29'); // Use app's current date
+  const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0]; // Returns "2026-05-30"
+
+  // Find all jobs with 2nd payment date before the 30-day cutoff
+  const overdue = jobs.filter((job) => {
+    if (!job.secondPaymentDate) return false;
+    // Compare ISO date strings directly (e.g., "2025-03-07" < "2026-05-30")
+    return job.secondPaymentDate < thirtyDaysAgoStr;
+  });
+
+  const breakdown = {
+    days30to60: overdue.filter(job => {
+      const days = calculateDaysSince(job.secondPaymentDate!);
+      return days !== null && days >= 30 && days < 60;
+    }).length,
+    days60to90: overdue.filter(job => {
+      const days = calculateDaysSince(job.secondPaymentDate!);
+      return days !== null && days >= 60 && days < 90;
+    }).length,
+    days90plus: overdue.filter(job => {
+      const days = calculateDaysSince(job.secondPaymentDate!);
+      return days !== null && days >= 90;
+    }).length,
+  };
+
+  return {
+    total: overdue.length,
+    breakdown,
+    jobs: overdue,
+  };
+}
+
 const knownTownships = [
   "Mount Austin",
   "Johor Jaya",
@@ -453,6 +498,17 @@ export default function DashboardPage() {
     TeamWeekAssignment[]
   >([]);
   const [composer, setComposer] = useState<"group" | "delivery" | null>(null);
+  const [showPendingModal, setShowPendingModal] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsForm, setSettingsForm] = useState({
+    url: "",
+    database: "",
+    token: "",
+  });
+  const [settingsHasToken, setSettingsHasToken] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const [groupDraft, setGroupDraft] = useState({
     name: "",
     area: "",
@@ -548,6 +604,7 @@ export default function DashboardPage() {
     if (!desktop) {
       return;
     }
+    setIsDesktop(true);
     const unsubscribe = desktop.onUpdateStatus((status) => {
       setUpdateStatus(status);
       if (status.state === "error") {
@@ -601,6 +658,49 @@ export default function DashboardPage() {
   useEffect(() => {
     void loadJobs();
   }, [loadJobs]);
+
+  const openSettings = useCallback(async () => {
+    setSettingsError(null);
+    const desktop = window.installationDesktop;
+    if (desktop) {
+      const current = await desktop.getSettings();
+      setSettingsForm({
+        url: current.url,
+        database: current.database,
+        token: "",
+      });
+      setSettingsHasToken(current.hasToken);
+    }
+    setShowSettings(true);
+  }, []);
+
+  const saveSettings = useCallback(async () => {
+    const desktop = window.installationDesktop;
+    if (!desktop) {
+      return;
+    }
+
+    setSettingsSaving(true);
+    setSettingsError(null);
+    try {
+      const result = await desktop.saveSettings(settingsForm);
+      if (!result.ok) {
+        setSettingsError(result.message);
+        return;
+      }
+      setShowSettings(false);
+      setSettingsForm((form) => ({ ...form, token: "" }));
+      // Prove the new details actually work rather than just claiming success —
+      // the connection dot tells the user whether it took.
+      await loadJobs(true);
+    } catch (error) {
+      setSettingsError(
+        error instanceof Error ? error.message : "Could not save the settings.",
+      );
+    } finally {
+      setSettingsSaving(false);
+    }
+  }, [settingsForm, loadJobs]);
 
   const states = useMemo(
     () =>
@@ -662,8 +762,9 @@ export default function DashboardPage() {
 
   const selected = jobs.find((job) => job.id === selectedId) ?? null;
 
-  const metrics = useMemo(
-    () => ({
+  const metrics = useMemo(() => {
+    const pendingData = getPendingInstallationMetrics(jobs);
+    return {
       newJobs: jobs.filter((job) => job.scheduleStatus === "ready_to_schedule")
         .length,
       ready: jobs.filter(isReady).length,
@@ -674,9 +775,9 @@ export default function DashboardPage() {
           job.paymentPercent < 59,
       ).length,
       scheduled: jobs.filter((job) => Boolean(job.installationDate)).length,
-    }),
-    [jobs],
-  );
+      pendingInstallation: pendingData,
+    };
+  }, [jobs]);
 
   const groupByJobId = useMemo(() => {
     const result = new Map<string, InstallationGroup>();
@@ -939,10 +1040,20 @@ export default function DashboardPage() {
           >
             {darkMode ? <Sun size={18} /> : <Moon size={18} />}
           </button>
-          <div className="connection">
+          <button
+            className="connection connection-button"
+            onClick={() => void openSettings()}
+            title="Connection settings"
+          >
             <span className={`connection-dot ${meta?.source === "live" ? "live" : ""}`} />
             {meta?.source === "live" ? "Live source" : "Demo source"}
-          </div>
+          </button>
+          {isDesktop && meta?.source !== "live" && (
+            <button className="button primary" onClick={() => void openSettings()}>
+              <Settings size={16} />
+              Set up connection
+            </button>
+          )}
           {updateButtonLabel && (
             <button
               className="button primary"
@@ -1032,6 +1143,45 @@ export default function DashboardPage() {
           icon={<CalendarDays size={18} />}
         />
       </section>
+
+      <section className="metrics pending-installation-monitoring" aria-label="Installation monitoring" style={{ display: 'grid' }}>
+          <div
+            className="metric-card pending-installation-card"
+            onClick={() => setShowPendingModal(true)}
+            style={{ cursor: "pointer" }}
+          >
+            <div className="metric-content">
+              <div className="metric-icon pending">
+                <Clock3 size={18} />
+              </div>
+              <div className="metric-text">
+                <div className="metric-label">Pending installation</div>
+                <div className="metric-value">{metrics.pendingInstallation.total}</div>
+                <div className="metric-note">2nd payment &gt; 30 days ago</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="metric-card overdue-breakdown-card">
+            <div className="metric-content">
+              <div className="metric-label breakdown-title">Overdue breakdown</div>
+              <div className="breakdown-rows">
+                <div className="breakdown-row">
+                  <span className="breakdown-label">30–60 days</span>
+                  <span className="breakdown-value">{metrics.pendingInstallation.breakdown.days30to60}</span>
+                </div>
+                <div className="breakdown-row">
+                  <span className="breakdown-label">60–90 days</span>
+                  <span className="breakdown-value">{metrics.pendingInstallation.breakdown.days60to90}</span>
+                </div>
+                <div className="breakdown-row critical">
+                  <span className="breakdown-label">90+ days</span>
+                  <span className="breakdown-value">{metrics.pendingInstallation.breakdown.days90plus}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
 
       <section className="workspace">
         {view === "pipeline" && (
@@ -1574,6 +1724,188 @@ export default function DashboardPage() {
               }}
               availableTeams={teamResources}
             />
+          </div>
+        </div>
+      )}
+
+      {showSettings && (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="composer-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Connection settings"
+          >
+            <div className="detail-header">
+              <div>
+                <p className="eyebrow">Setup</p>
+                <h2>Connection settings</h2>
+                <p>
+                  These come from Nurul. You only enter them once — they stay
+                  saved when the app updates.
+                </p>
+              </div>
+              <button
+                className="icon-button"
+                aria-label="Close"
+                onClick={() => setShowSettings(false)}
+              >
+                <X size={19} />
+              </button>
+            </div>
+
+            <div className="settings-form">
+              <label>
+                <span>Server address</span>
+                <input
+                  type="text"
+                  value={settingsForm.url}
+                  placeholder="https://..."
+                  onChange={(event) =>
+                    setSettingsForm((form) => ({ ...form, url: event.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                <span>Database name</span>
+                <input
+                  type="text"
+                  value={settingsForm.database}
+                  onChange={(event) =>
+                    setSettingsForm((form) => ({
+                      ...form,
+                      database: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                <span>Access token</span>
+                <input
+                  type="password"
+                  value={settingsForm.token}
+                  placeholder={
+                    settingsHasToken ? "Saved — leave blank to keep it" : ""
+                  }
+                  onChange={(event) =>
+                    setSettingsForm((form) => ({ ...form, token: event.target.value }))
+                  }
+                />
+              </label>
+
+              {settingsError && <p className="settings-error">{settingsError}</p>}
+
+              <div className="detail-actions">
+                <button
+                  className="button primary"
+                  disabled={settingsSaving}
+                  onClick={() => void saveSettings()}
+                >
+                  {settingsSaving ? "Saving…" : "Save and connect"}
+                </button>
+                <button
+                  className="button"
+                  onClick={() => setShowSettings(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showPendingModal && (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="pending-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Pending installations monitoring"
+          >
+            <div className="detail-header">
+              <div>
+                <p className="eyebrow">Installation monitoring</p>
+                <h2>Pending installations</h2>
+                <p>Customers awaiting installation beyond 30 days from 2nd payment date</p>
+              </div>
+              <button
+                className="icon-button"
+                aria-label="Close"
+                onClick={() => setShowPendingModal(false)}
+              >
+                <X size={19} />
+              </button>
+            </div>
+
+            <div className="pending-modal-content">
+              <div className="pending-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Customer / site</th>
+                      <th>Agent</th>
+                      <th>2nd payment date</th>
+                      <th>Days since</th>
+                      <th>Location</th>
+                      <th>Installation date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {metrics.pendingInstallation.jobs
+                      .sort((a, b) => {
+                        const daysA = calculateDaysSince(a.secondPaymentDate!) || 0;
+                        const daysB = calculateDaysSince(b.secondPaymentDate!) || 0;
+                        return daysB - daysA;
+                      })
+                      .map((job) => {
+                        const daysSince = calculateDaysSince(job.secondPaymentDate!);
+                        const rowClass =
+                          daysSince && daysSince >= 90
+                            ? "critical-overdue"
+                            : daysSince && daysSince >= 60
+                            ? "severe-overdue"
+                            : "overdue";
+
+                        return (
+                          <tr key={job.id} className={`pending-row ${rowClass}`}>
+                            <td>
+                              <strong>{formatPersonName(job.customerName)}</strong>
+                              <span>{job.invoiceNumber}</span>
+                            </td>
+                            <td>
+                              <strong>{formatPersonName(job.agentName)}</strong>
+                              <span>Sales agent</span>
+                            </td>
+                            <td>
+                              <strong>
+                                {job.secondPaymentDate
+                                  ? new Intl.DateTimeFormat("en-MY", {
+                                      day: "numeric",
+                                      month: "short",
+                                      year: "numeric",
+                                    }).format(new Date(job.secondPaymentDate))
+                                  : "Not recorded"}
+                              </strong>
+                            </td>
+                            <td>
+                              <strong className={`days-badge ${rowClass}`}>
+                                {daysSince ? `${daysSince}d` : "—"}
+                              </strong>
+                            </td>
+                            <td>
+                              <span>{townshipForJob(job)}</span>
+                            </td>
+                            <td>
+                              <strong className="not-scheduled">Not scheduled</strong>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       )}
