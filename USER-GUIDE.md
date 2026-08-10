@@ -202,8 +202,8 @@ versions by itself and tells you when one is ready.
 
 ### When an update is ready
 
-An **Install Update** button appears in the **top bar**, next to *Check for new
-jobs*, showing the new version number.
+An **Install Update** button appears in the **bottom left panel**, showing the
+new version number.
 
 1. Click **Install Update**.
 2. Wait. The button shows the download progress, then the app closes and
@@ -215,6 +215,7 @@ jobs*, showing the new version number.
 - **Nothing of yours is lost.** All your data lives in the shared database. An
   update only replaces the program itself.
 - **You never download the installer again.** Steps 1–3 above are one time only.
+- **To check your version:** look at the bottom-left panel.
 - **If an update fails**, the app keeps working on the current version. Tell
   Nurul so it can be looked into.
 

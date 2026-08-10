@@ -543,8 +543,8 @@ def build_story():
     story.append(h3("When an update is ready"))
     story.append(
         para(
-            "An <b>Install Update</b> button appears in the <b>top bar</b>, next "
-            "to <i>Check for new jobs</i>, showing the new version number."
+            "An <b>Install Update</b> button appears in the <b>bottom left "
+            "panel</b>, showing the new version number."
         )
     )
     story.append(
@@ -566,6 +566,7 @@ def build_story():
                 "shared database, so an update only replaces the program itself.",
                 "<b>You never download the installer again.</b> Steps 1–3 "
                 "above are one time only.",
+                "<b>To check your version:</b> look at the bottom-left panel.",
                 "<b>If an update fails</b>, the app keeps working on the version "
                 "you already have. Tell Nurul so it can be looked into.",
             ],
