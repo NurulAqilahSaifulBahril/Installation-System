@@ -305,16 +305,13 @@ function calculateDaysSince(dateStr: string): number | null {
 }
 
 function getPendingInstallationMetrics(jobs: InstallationJob[]) {
-  // Calculate 30 days before today
-  const today = new Date('2026-07-29'); // Use app's current date
-  const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
-  const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0]; // Returns "2026-05-30"
-
-  // Find all jobs with 2nd payment date before the 30-day cutoff
+  // Overdue is 30+ days since the second payment. calculateDaysSince is the only
+  // thing that decides how old a job is, here and in the breakdown below, so the
+  // total can never disagree with the three buckets it is split into.
   const overdue = jobs.filter((job) => {
     if (!job.secondPaymentDate) return false;
-    // Compare ISO date strings directly (e.g., "2025-03-07" < "2026-05-30")
-    return job.secondPaymentDate < thirtyDaysAgoStr;
+    const days = calculateDaysSince(job.secondPaymentDate);
+    return days !== null && days >= 30;
   });
 
   const breakdown = {
