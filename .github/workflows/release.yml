@@ -144,10 +144,14 @@ jobs:
           body: |
             ## Installation System ${{ steps.ver.outputs.tag }}
 
-            **New here?** Download **Installation-System-Setup-${{ steps.ver.outputs.version }}.exe** below and run it.
+            **Download for your platform:**
+            - **Windows**: Installation-System-Setup-${{ steps.ver.outputs.version }}.exe
 
-            **Already installed?** Do nothing — the dashboard detects this release
-            on its own and shows an **Install Update** button in the top bar.
+            Existing users: Auto-update is enabled in the dashboard.
+
+            Windows will show a "Windows protected your PC" warning on first run —
+            click **More info**, then **Run anyway**. See the
+            [user guide](https://github.com/NurulAqilahSaifulBahril/Installation-System/blob/main/USER-GUIDE.md).
           files: |
             C:/tmp/installation-system-release/Installation-System-Setup-${{ steps.ver.outputs.version }}.exe
             C:/tmp/installation-system-release/Installation-System-Setup-${{ steps.ver.outputs.version }}.exe.blockmap
