@@ -13,10 +13,13 @@ name: Release
 # artifact with spaces replaced by dashes, so the nsis.artifactName override
 # in package.json must produce that exact name or auto-update breaks.
 #
-# Requires three repository secrets (Settings > Secrets and variables >
-# Actions) so the packaged app ships with a working connection to the real
-# database, same as a local build's .env.local:
-#   PG_PROXY_URL, PG_PROXY_DATABASE, PG_PROXY_TOKEN
+# No secrets are required. The installer ships key-free and the app asks for
+# the connection details on first run, storing them per-user in userData.
+#
+# Setting PG_PROXY_URL, PG_PROXY_DATABASE and PG_PROXY_TOKEN as repository
+# secrets makes the build seed those details instead, so staff enter nothing -
+# but that is refused on a public repository, because the credentials would
+# then be readable inside an installer anyone can download.
 
 on:
   push:
@@ -62,13 +65,30 @@ jobs:
       - name: Write .env.local from repository secrets
         shell: pwsh
         env:
+          HAS_KEYS: ${{ secrets.PG_PROXY_TOKEN != '' }}
+          IS_PRIVATE: ${{ github.event.repository.private }}
           PG_PROXY_URL: ${{ secrets.PG_PROXY_URL }}
           PG_PROXY_DATABASE: ${{ secrets.PG_PROXY_DATABASE }}
           PG_PROXY_TOKEN: ${{ secrets.PG_PROXY_TOKEN }}
         run: |
-          # Report every secret by name before failing. A bare "it's missing"
-          # cannot distinguish a typo'd name from an Environment-scoped secret
-          # (which this job would not see) from one that was never added.
+          # No secrets is the normal path. The app asks for the connection
+          # details on first run and stores them in userData, so a key-free
+          # installer is a complete one - not a degraded build.
+          if ($env:HAS_KEYS -ne 'true') {
+            Write-Host "No PG_* secrets configured - building a key-free installer."
+            exit 0
+          }
+
+          # Seeding only makes sense for a private repo. A seeded installer on a
+          # public release page hands live database credentials to anyone with
+          # the URL, so refuse rather than quietly publish one.
+          if ($env:IS_PRIVATE -ne 'true') {
+            throw "PG_* secrets are configured but this repository is PUBLIC. A seeded installer attached to a public release exposes live database credentials to anyone who finds the URL. Make the repository private before tagging, or remove the secrets."
+          }
+
+          # Report every secret by name. A bare "it's missing" cannot distinguish
+          # a typo'd name from an Environment-scoped secret (which this job would
+          # not see) from one that was never added.
           $missing = @()
           foreach ($name in @("PG_PROXY_URL", "PG_PROXY_DATABASE", "PG_PROXY_TOKEN")) {
             $value = [Environment]::GetEnvironmentVariable($name)
@@ -83,12 +103,13 @@ jobs:
 
           if ($missing.Count -gt 0) {
             throw @"
-          Missing repository secret(s): $($missing -join ', ')
+          Partially configured: $($missing -join ', ') missing.
 
           Add them under Settings > Secrets and variables > Actions, on the
           "Secrets" tab (not "Variables"), as *Repository* secrets - names are
           case-sensitive and must match exactly. Environment secrets will not
           work here: this job declares no environment, so it cannot read them.
+          Or remove all three to build a key-free installer.
           "@
           }
 
