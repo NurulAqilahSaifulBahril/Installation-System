@@ -117,7 +117,10 @@ autoUpdater.on('update-downloaded', (info) => {
   updateDownloaded = true;
   broadcastUpdate('update:status', { state: 'downloaded', version: info.version });
   if (installRequested) {
-    autoUpdater.quitAndInstall();
+    // (isSilent, isForceRunAfter): skip the NSIS wizard on update and relaunch
+    // straight away. The installer is "assisted" so a first-time install still
+    // offers a folder choice; an update belongs where the app already lives.
+    autoUpdater.quitAndInstall(true, true);
   }
 });
 
@@ -147,7 +150,7 @@ ipcMain.handle('update:check', () => {
 ipcMain.handle('update:install', () => {
   installRequested = true;
   if (updateDownloaded) {
-    autoUpdater.quitAndInstall();
+    autoUpdater.quitAndInstall(true, true);
     return;
   }
   autoUpdater.downloadUpdate().catch((error) => {
