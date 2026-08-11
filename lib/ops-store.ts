@@ -5,6 +5,7 @@ export type OpsState = {
   deliveryRuns: unknown[];
   teamResources: unknown[];
   teamWeekAssignments: unknown[];
+  availableSuggestions: unknown[];
   jobUpdates: Record<string, unknown>;
 };
 
@@ -13,6 +14,7 @@ export const EMPTY_OPS_STATE: OpsState = {
   deliveryRuns: [],
   teamResources: [],
   teamWeekAssignments: [],
+  availableSuggestions: [],
   jobUpdates: {},
 };
 

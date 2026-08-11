@@ -1,0 +1,180 @@
+name: Release
+
+# Push a version tag to cut a release:
+#   git tag v1.0.1 && git push origin v1.0.1
+#
+# Publishes the assets electron-updater needs to auto-update the app:
+#   Installation-System-Setup-<version>.exe            first-time Windows installer
+#   Installation-System-Setup-<version>.exe.blockmap   used for differential downloads
+#   latest.yml                                          feed electron-updater polls for new versions
+#   SHA256SUMS.txt                                      checksums so a download can be verified
+#
+# The dashes matter: electron-updater's latest.yml always references the
+# artifact with spaces replaced by dashes, so the nsis.artifactName override
+# in package.json must produce that exact name or auto-update breaks.
+#
+# No secrets are required. The installer ships key-free and the app asks for
+# the connection details on first run, storing them per-user in userData.
+#
+# Setting PG_PROXY_URL, PG_PROXY_DATABASE and PG_PROXY_TOKEN as repository
+# secrets makes the build seed those details instead, so staff enter nothing -
+# but that is refused on a public repository, because the credentials would
+# then be readable inside an installer anyone can download.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. 1.0.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $v = "${{ github.event.inputs.version }}".TrimStart("v")
+          } else {
+            $v = "${{ github.ref_name }}".TrimStart("v")
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "tag=v$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Building version $v"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Sync package.json version with the release tag
+        shell: pwsh
+        run: npm version --no-git-tag-version --allow-same-version ${{ steps.ver.outputs.version }}
+
+      - name: Write .env.local from repository secrets
+        shell: pwsh
+        env:
+          HAS_KEYS: ${{ secrets.PG_PROXY_TOKEN != '' }}
+          IS_PRIVATE: ${{ github.event.repository.private }}
+          PG_PROXY_URL: ${{ secrets.PG_PROXY_URL }}
+          PG_PROXY_DATABASE: ${{ secrets.PG_PROXY_DATABASE }}
+          PG_PROXY_TOKEN: ${{ secrets.PG_PROXY_TOKEN }}
+        run: |
+          # No secrets is the normal path. The app asks for the connection
+          # details on first run and stores them in userData, so a key-free
+          # installer is a complete one - not a degraded build.
+          if ($env:HAS_KEYS -ne 'true') {
+            Write-Host "No PG_* secrets configured - building a key-free installer."
+            exit 0
+          }
+
+          # Seeding only makes sense for a private repo. A seeded installer on a
+          # public release page hands live database credentials to anyone with
+          # the URL, so refuse rather than quietly publish one.
+          if ($env:IS_PRIVATE -ne 'true') {
+            throw "PG_* secrets are configured but this repository is PUBLIC. A seeded installer attached to a public release exposes live database credentials to anyone who finds the URL. Make the repository private before tagging, or remove the secrets."
+          }
+
+          # Report every secret by name. A bare "it's missing" cannot distinguish
+          # a typo'd name from an Environment-scoped secret (which this job would
+          # not see) from one that was never added.
+          $missing = @()
+          foreach ($name in @("PG_PROXY_URL", "PG_PROXY_DATABASE", "PG_PROXY_TOKEN")) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($value)) {
+              Write-Host "  MISSING  $name"
+              $missing += $name
+            } else {
+              # Length only - never the value itself, which would land in the log.
+              Write-Host "  present  $name ($($value.Length) chars)"
+            }
+          }
+
+          if ($missing.Count -gt 0) {
+            throw @"
+          Partially configured: $($missing -join ', ') missing.
+
+          Add them under Settings > Secrets and variables > Actions, on the
+          "Secrets" tab (not "Variables"), as *Repository* secrets - names are
+          case-sensitive and must match exactly. Environment secrets will not
+          work here: this job declares no environment, so it cannot read them.
+          Or remove all three to build a key-free installer.
+          "@
+          }
+
+          @"
+          PG_PROXY_URL=$env:PG_PROXY_URL
+          PG_PROXY_DATABASE=$env:PG_PROXY_DATABASE
+          PG_PROXY_TOKEN=$env:PG_PROXY_TOKEN
+          "@ | Set-Content -Path .env.local -Encoding utf8
+
+      - name: Install dependencies
+        shell: pwsh
+        run: npm ci
+
+      - name: Build installer
+        shell: pwsh
+        run: npm run dist:win
+
+      - name: Verify expected assets were produced
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $outDir = "C:/tmp/installation-system-release"
+          foreach ($f in @("Installation-System-Setup-$v.exe",
+                            "Installation-System-Setup-$v.exe.blockmap",
+                            "latest.yml")) {
+            $full = Join-Path $outDir $f
+            if (!(Test-Path $full)) { throw "Missing expected artifact: $full" }
+          }
+          Get-ChildItem $outDir -File | Format-Table Name, Length
+
+      # sha256sum -c format: lowercase hash, two spaces, bare filename. Lets
+      # anyone confirm the .exe they downloaded is the one this run built.
+      - name: Write SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $outDir = "C:/tmp/installation-system-release"
+          $lines = foreach ($f in @("Installation-System-Setup-$v.exe",
+                                    "Installation-System-Setup-$v.exe.blockmap",
+                                    "latest.yml")) {
+            $hash = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $outDir $f)).Hash.ToLower()
+            "$hash  $f"
+          }
+          $lines | Set-Content -Path (Join-Path $outDir "SHA256SUMS.txt") -Encoding ascii
+          Get-Content (Join-Path $outDir "SHA256SUMS.txt")
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          body: |
+            ## Installation System ${{ steps.ver.outputs.tag }}
+
+            **Download for your platform:**
+            - **Windows**: Installation-System-Setup-${{ steps.ver.outputs.version }}.exe
+
+            Existing users: Auto-update is enabled in the dashboard.
+
+            Windows will show a "Windows protected your PC" warning on first run —
+            click **More info**, then **Run anyway**. See the
+            [user guide](https://github.com/NurulAqilahSaifulBahril/Installation-System/blob/main/USER-GUIDE.md).
+          files: |
+            C:/tmp/installation-system-release/Installation-System-Setup-${{ steps.ver.outputs.version }}.exe
+            C:/tmp/installation-system-release/Installation-System-Setup-${{ steps.ver.outputs.version }}.exe.blockmap
+            C:/tmp/installation-system-release/latest.yml
+            C:/tmp/installation-system-release/SHA256SUMS.txt

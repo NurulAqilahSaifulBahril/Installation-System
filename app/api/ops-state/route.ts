@@ -8,6 +8,7 @@ const ALLOWED_KEYS: (keyof OpsState)[] = [
   "deliveryRuns",
   "teamResources",
   "teamWeekAssignments",
+  "availableSuggestions",
   "jobUpdates",
 ];
 

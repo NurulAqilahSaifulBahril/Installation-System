@@ -35,7 +35,10 @@ removeIfExists(tempOutputDir);
 
 run(process.execPath, [path.join(rootDir, 'node_modules', 'next', 'dist', 'bin', 'next'), 'build']);
 
-const builderArgs = ['--win', 'nsis'];
+// --publish never: on CI with a tag, electron-builder would otherwise try to
+// publish to the GitHub feed in package.json and fail for want of GH_TOKEN.
+// The release workflow publishes the assets itself, so the builder must not.
+const builderArgs = ['--win', 'nsis', '--publish', 'never'];
 if (packOnly) {
   builderArgs.push('--dir');
 }

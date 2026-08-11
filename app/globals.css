@@ -74,6 +74,44 @@ button:disabled {
   opacity: 0.62;
 }
 
+.app-layout {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  align-items: start;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 18px 14px;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.sidebar-toggle {
+  width: 28px;
+  height: 28px;
+  align-self: flex-end;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: -12px 0 -8px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.sidebar-toggle:hover {
+  color: var(--ink);
+}
+
 .app-shell {
   width: min(1480px, calc(100% - 40px));
   margin: 0 auto;
@@ -84,7 +122,7 @@ button:disabled {
   min-height: 64px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 20px;
   border-bottom: 1px solid var(--line);
 }
@@ -103,6 +141,14 @@ button:disabled {
 
 .brand {
   gap: 16px;
+}
+
+.sidebar .brand {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 8px 18px;
+  border-bottom: 1px solid var(--line);
 }
 
 .brand-logo {
@@ -275,11 +321,19 @@ button:disabled {
   background: transparent;
 }
 
+/* Eight cards: two even rows of four, dropping to two rows of two on
+   narrower screens. */
 .metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 18px;
+}
+
+@media (max-width: 1180px) {
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .metric {
@@ -328,6 +382,12 @@ button:disabled {
   color: var(--ink);
   background: var(--surface-soft);
   border-radius: 8px;
+}
+
+/* Non-clickable cards carry an explanatory tooltip; the help cursor is the
+   only cue that hovering does anything. Clickable ones keep the pointer. */
+article.metric[title] {
+  cursor: help;
 }
 
 .metric.warning .metric-icon {
@@ -423,19 +483,16 @@ textarea:focus {
 
 .dashboard-tabs {
   display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-bottom: 18px;
-  padding-bottom: 10px;
-  overflow-x: auto;
-  border-bottom: 1px solid var(--line);
+  align-items: stretch;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .dashboard-tabs button {
   min-height: 38px;
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 10px;
   padding: 0 13px;
   color: var(--muted);
   background: transparent;
@@ -443,6 +500,7 @@ textarea:focus {
   border-radius: 8px;
   white-space: nowrap;
   font-weight: 600;
+  text-align: left;
 }
 
 .dashboard-tabs button:hover {
@@ -452,8 +510,54 @@ textarea:focus {
 
 .dashboard-tabs button.active {
   color: var(--ink);
-  background: var(--surface);
+  background: var(--surface-soft);
   box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* Collapsed rail. These must sit after the .brand and .dashboard-tabs rules
+   they override — `.brand > div:last-child` outweighs a two-class selector. */
+.app-layout.sidebar-is-collapsed {
+  grid-template-columns: 68px minmax(0, 1fr);
+}
+
+.sidebar-is-collapsed .sidebar {
+  padding: 18px 10px;
+}
+
+.sidebar-is-collapsed .sidebar-toggle {
+  align-self: center;
+}
+
+.sidebar-is-collapsed .brand .brand-text,
+.sidebar-is-collapsed .dashboard-tabs .tab-label {
+  display: none;
+}
+
+.sidebar-is-collapsed .sidebar .brand {
+  align-items: center;
+  padding: 4px 0 16px;
+}
+
+/* Show only the infinity mark: the source PNG is 1754x628 with the mark at
+   x 212-566, y 226-400, so scale to 10% and offset the crop into a 40px box. */
+.sidebar-is-collapsed .brand .brand-logo {
+  position: relative;
+  width: 40px;
+  height: 40px;
+}
+
+.sidebar-is-collapsed .brand .brand-logo img {
+  position: absolute;
+  left: -19px;
+  top: -11px;
+  width: 176px;
+  max-width: none;
+}
+
+.sidebar-is-collapsed .dashboard-tabs button {
+  justify-content: center;
+  gap: 0;
+  padding: 0;
 }
 
 .theme-toggle {
@@ -542,6 +646,167 @@ tbody tr.selected {
   background: #2e2e2b;
 }
 
+/* Team planning: towns marked available pin to the top and carry the column
+   header's surface so the shortlist reads as one block. */
+.team-planning-table tbody tr.suggestion-available,
+.team-planning-table tbody tr.suggestion-available:hover {
+  background: var(--surface-soft);
+}
+
+/* Pinned rows are contiguous at the top, so the first unpinned row after them
+   carries the divider. */
+.team-planning-table tbody tr.suggestion-available + tr:not(.suggestion-available) td {
+  border-top: 2px solid var(--line);
+}
+
+/* Active installation pipeline: bare header, and the four assignment columns
+   tinted to the search field's surface so they read as one band. */
+.pipeline-table th {
+  background: transparent;
+  color: var(--ink);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pipeline-table tbody td:nth-child(6),
+.pipeline-table tbody td:nth-child(7),
+.pipeline-table tbody td:nth-child(8),
+.pipeline-table tbody td:nth-child(9) {
+  background: var(--surface-soft);
+}
+
+/* The tint sits above the row background, so it needs its own hover step or
+   hovered rows look half-highlighted. */
+.pipeline-table tbody tr:hover td:nth-child(6),
+.pipeline-table tbody tr:hover td:nth-child(7),
+.pipeline-table tbody tr:hover td:nth-child(8),
+.pipeline-table tbody tr:hover td:nth-child(9),
+.pipeline-table tbody tr.selected td:nth-child(6),
+.pipeline-table tbody tr.selected td:nth-child(7),
+.pipeline-table tbody tr.selected td:nth-child(8),
+.pipeline-table tbody tr.selected td:nth-child(9) {
+  background: #e8e8e3;
+}
+
+:root[data-theme="dark"] .pipeline-table tbody tr:hover td:nth-child(6),
+:root[data-theme="dark"] .pipeline-table tbody tr:hover td:nth-child(7),
+:root[data-theme="dark"] .pipeline-table tbody tr:hover td:nth-child(8),
+:root[data-theme="dark"] .pipeline-table tbody tr:hover td:nth-child(9),
+:root[data-theme="dark"] .pipeline-table tbody tr.selected td:nth-child(6),
+:root[data-theme="dark"] .pipeline-table tbody tr.selected td:nth-child(7),
+:root[data-theme="dark"] .pipeline-table tbody tr.selected td:nth-child(8),
+:root[data-theme="dark"] .pipeline-table tbody tr.selected td:nth-child(9) {
+  background: #34342f;
+}
+
+/* Arranged customers pin to the top of the pipeline, shaded by how many of the
+   three arrangement columns are filled: green = all three, amber = two, grey =
+   one. Placed after the column-band rules so the row tier wins on every cell,
+   and paired with a left bar so the tier survives for colour-blind readers. */
+.pipeline-table tbody tr.arranged td:first-child {
+  box-shadow: inset 3px 0 0 var(--line);
+}
+
+.pipeline-table tbody tr.arranged-3 td,
+.pipeline-table tbody tr.arranged-3 td:nth-child(6),
+.pipeline-table tbody tr.arranged-3 td:nth-child(7),
+.pipeline-table tbody tr.arranged-3 td:nth-child(8),
+.pipeline-table tbody tr.arranged-3 td:nth-child(9) {
+  background: var(--green-soft);
+}
+
+.pipeline-table tbody tr.arranged-3 td:first-child {
+  box-shadow: inset 3px 0 0 var(--green);
+}
+
+.pipeline-table tbody tr.arranged-2 td,
+.pipeline-table tbody tr.arranged-2 td:nth-child(6),
+.pipeline-table tbody tr.arranged-2 td:nth-child(7),
+.pipeline-table tbody tr.arranged-2 td:nth-child(8),
+.pipeline-table tbody tr.arranged-2 td:nth-child(9) {
+  background: var(--amber-soft);
+}
+
+.pipeline-table tbody tr.arranged-2 td:first-child {
+  box-shadow: inset 3px 0 0 var(--amber);
+}
+
+.pipeline-table tbody tr.arranged-1 td,
+.pipeline-table tbody tr.arranged-1 td:nth-child(6),
+.pipeline-table tbody tr.arranged-1 td:nth-child(7),
+.pipeline-table tbody tr.arranged-1 td:nth-child(8),
+.pipeline-table tbody tr.arranged-1 td:nth-child(9) {
+  background: var(--surface-soft);
+}
+
+/* Each tier needs its own hover step, otherwise the row tint sits above the
+   row background and hovering an arranged row does nothing visible. */
+.pipeline-table tbody tr.arranged-3:hover td,
+.pipeline-table tbody tr.arranged-3.selected td {
+  background: #dfeee5;
+}
+
+.pipeline-table tbody tr.arranged-2:hover td,
+.pipeline-table tbody tr.arranged-2.selected td {
+  background: #f3e9cd;
+}
+
+.pipeline-table tbody tr.arranged-1:hover td,
+.pipeline-table tbody tr.arranged-1.selected td {
+  background: #e8e8e3;
+}
+
+:root[data-theme="dark"] .pipeline-table tbody tr.arranged-3:hover td,
+:root[data-theme="dark"] .pipeline-table tbody tr.arranged-3.selected td {
+  background: #27422f;
+}
+
+:root[data-theme="dark"] .pipeline-table tbody tr.arranged-2:hover td,
+:root[data-theme="dark"] .pipeline-table tbody tr.arranged-2.selected td {
+  background: #453922;
+}
+
+:root[data-theme="dark"] .pipeline-table tbody tr.arranged-1:hover td,
+:root[data-theme="dark"] .pipeline-table tbody tr.arranged-1.selected td {
+  background: #34342f;
+}
+
+/* The first unarranged row closes the pinned block. */
+.pipeline-table tbody tr.arranged + tr:not(.arranged) td {
+  border-top: 2px solid var(--line);
+}
+
+/* A cancellation outranks the arrangement tier: a job with teams and a
+   delivery run booked still needs to read as cancelled, so this comes last
+   and wins on every cell. */
+.pipeline-table tbody tr.availability-cancelled td,
+.pipeline-table tbody tr.availability-cancelled td:nth-child(6),
+.pipeline-table tbody tr.availability-cancelled td:nth-child(7),
+.pipeline-table tbody tr.availability-cancelled td:nth-child(8),
+.pipeline-table tbody tr.availability-cancelled td:nth-child(9) {
+  background: var(--red-soft);
+}
+
+.pipeline-table tbody tr.availability-cancelled td:first-child {
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
+.pipeline-table tbody tr.availability-cancelled:hover td,
+.pipeline-table tbody tr.availability-cancelled:hover td:nth-child(6),
+.pipeline-table tbody tr.availability-cancelled:hover td:nth-child(7),
+.pipeline-table tbody tr.availability-cancelled:hover td:nth-child(8),
+.pipeline-table tbody tr.availability-cancelled:hover td:nth-child(9),
+.pipeline-table tbody tr.availability-cancelled.selected td {
+  background: #f5dcd9;
+}
+
+:root[data-theme="dark"] .pipeline-table tbody tr.availability-cancelled:hover td,
+:root[data-theme="dark"] .pipeline-table tbody tr.availability-cancelled.selected td {
+  background: #4b2c2a;
+}
+
+
 td strong,
 td span {
   display: block;
@@ -607,7 +872,7 @@ td span {
 }
 
 .customer-modal {
-  width: min(920px, 100%);
+  width: min(1560px, 100%);
   max-height: calc(100vh - 48px);
   overflow-y: auto;
   background: var(--surface);
@@ -664,7 +929,7 @@ td span {
 
 .checkpoints {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
   margin: 15px 0;
 }
@@ -931,21 +1196,49 @@ td span {
   flex-wrap: wrap;
 }
 
+/* Stacked by default so the suggestions table always gets the full width and
+   never needs sideways scrolling. Side by side only above 1500px, where the
+   map's 360px and the table's ~780px both fit without squeezing the table. */
 .team-planning-workspace {
   display: grid;
-  grid-template-columns: minmax(360px, 0.8fr) minmax(720px, 1.6fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
-  min-height: 620px;
 }
 
 .planning-map-panel {
-  position: sticky;
-  top: 16px;
   z-index: 0;
   isolation: isolate;
   min-width: 0;
-  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
   background: var(--surface);
+}
+
+/* Long headers wrap instead of forcing the table wider than its container. */
+.team-planning-table th {
+  white-space: normal;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+@media (min-width: 1500px) {
+  .team-planning-workspace {
+    grid-template-columns: minmax(360px, 0.8fr) minmax(0, 1.7fr);
+    min-height: 620px;
+  }
+
+  .planning-map-panel {
+    position: sticky;
+    top: 16px;
+    border-right: 1px solid var(--line);
+    border-bottom: 0;
+  }
+
+  .planning-map {
+    height: 510px;
+  }
 }
 
 .planning-map-heading {
@@ -975,7 +1268,7 @@ td span {
 
 .planning-map {
   width: 100%;
-  height: 510px;
+  height: 380px;
   background: var(--surface-soft);
 }
 
@@ -1061,19 +1354,8 @@ td span {
     border-bottom: 1px solid var(--line);
   }
 
-  .team-planning-workspace {
-    grid-template-columns: 1fr;
-  }
-
-  .planning-map-panel {
-    position: static;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .planning-map {
-    height: 420px;
-  }
+  /* The team planning workspace is stacked by default now, so it needs no
+     override here. */
 }
 
 .planning-note {
@@ -1092,6 +1374,45 @@ td span {
 .group-header {
   padding: 14px 18px;
   background: var(--surface-soft);
+}
+
+.delivery-run-summary {
+  display: grid;
+  gap: 3px;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.delivery-run-summary h3 {
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  transition: text-decoration-color 120ms ease;
+}
+
+.delivery-run-summary:hover h3 {
+  text-decoration-color: currentColor;
+}
+
+.delivery-run-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 90%;
+  max-width: 1100px;
+  max-height: 80vh;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 20px 25px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  z-index: 100;
 }
 
 .run-controls {
@@ -1143,30 +1464,6 @@ td span {
   border-bottom: 1px solid var(--line);
 }
 
-.groups-workspace-tabs {
-  display: flex;
-  gap: 4px;
-  padding: 10px 18px 0;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  background: var(--surface-soft);
-}
-
-.groups-workspace-tabs button {
-  padding: 10px 14px;
-  color: var(--muted);
-  background: transparent;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.groups-workspace-tabs button.active {
-  color: var(--text);
-  border-bottom-color: var(--accent);
-}
-
 .team-management-workspace {
   display: grid;
   grid-template-columns: minmax(520px, 1.08fr) minmax(440px, 0.92fr);
@@ -1182,27 +1479,7 @@ td span {
 }
 
 .unified-team-table table {
-  min-width: 1080px;
-}
-
-.team-assignment-summary {
-  display: grid;
-  gap: 3px;
-  width: 100%;
-  padding: 0;
-  color: var(--text);
-  text-align: left;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-}
-
-.team-assignment-summary span,
-.muted-cell,
-.expanded-assignment-heading span,
-.assignment-chip span {
-  color: var(--muted);
-  font-size: 11px;
+  min-width: 1200px;
 }
 
 .row-actions {
@@ -1211,51 +1488,61 @@ td span {
   gap: 6px;
 }
 
-.expanded-team-assignment-row > td {
-  padding: 0 !important;
-  background: var(--surface-soft);
-}
-
-.expanded-team-assignment {
+.member-tag-input {
   display: grid;
-  gap: 12px;
-  padding: 16px 18px;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+  gap: 6px;
+  min-width: 180px;
 }
 
-.expanded-assignment-heading > div,
-.assignment-chip > div {
-  display: grid;
-  gap: 2px;
-}
-
-.inline-weekly-assignment {
-  display: grid;
-  grid-template-columns: 0.8fr 0.8fr 1.4fr auto;
-  gap: 8px;
-}
-
-.inline-weekly-assignment input,
-.inline-weekly-assignment select {
-  min-height: 38px;
-  padding: 7px 9px;
-}
-
-.assignment-chip-list {
-  display: grid;
-  gap: 7px;
-}
-
-.assignment-chip {
+.member-tag-list {
   display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.member-tag {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 9px 10px;
-  background: var(--surface);
+  gap: 4px;
+  padding: 3px 6px 3px 9px;
+  color: var(--ink);
+  background: var(--surface-soft);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.member-tag button {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+}
+
+.member-tag button:hover {
+  color: var(--ink);
+  background: var(--line);
+}
+
+.member-tag-add {
+  display: flex;
+  gap: 4px;
+}
+
+.member-tag-add input {
+  flex: 1;
+  min-width: 0;
+}
+
+.member-tag-add .icon-button {
+  width: 30px;
+  height: 30px;
+  flex: none;
 }
 
 .team-management-workspace > .team-directory {
@@ -1503,8 +1790,35 @@ td span {
 }
 
 .week-group-card-weather-strip strong {
-  display: block;
-  font-size: 12px;
+  display: flex;
+  justify-content: center;
+  padding: 3px 0;
+}
+
+.weather-glyph {
+  flex-shrink: 0;
+}
+
+.weather-glyph.sunny {
+  color: var(--amber);
+}
+
+.weather-glyph.cloudy {
+  color: var(--muted);
+}
+
+.weather-glyph.rain,
+.weather-glyph.storm {
+  color: #3d7ab8;
+}
+
+:root[data-theme="dark"] .weather-glyph.rain,
+:root[data-theme="dark"] .weather-glyph.storm {
+  color: #79b0e0;
+}
+
+.weather-glyph.none {
+  color: var(--line);
 }
 
 .week-group-card-weather-strip small {
@@ -1602,11 +1916,19 @@ td span {
 }
 
 .week-day-box-weather {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   padding: 2px 6px;
   border-radius: 20px;
   font-size: 10px;
   font-weight: 700;
   white-space: nowrap;
+}
+
+/* The chip already colours by rain risk, so the glyph follows it. */
+.week-day-box-weather .weather-glyph {
+  color: inherit;
 }
 
 .week-day-box-weather.medium-risk {
@@ -2228,6 +2550,76 @@ td span {
   }
 }
 
+@media (max-width: 900px) {
+  /* The rail has nowhere to collapse to once the sidebar is a top strip, so
+     the stored collapsed choice is ignored below this width. */
+  .app-layout,
+  .app-layout.sidebar-is-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar-toggle {
+    display: none;
+  }
+
+  .sidebar-is-collapsed .brand .brand-text {
+    display: flex;
+  }
+
+  .sidebar-is-collapsed .dashboard-tabs .tab-label {
+    display: inline;
+  }
+
+  .sidebar-is-collapsed .sidebar {
+    padding: 14px 16px;
+  }
+
+  .sidebar-is-collapsed .sidebar .brand {
+    align-items: flex-start;
+    padding: 4px 8px 14px;
+  }
+
+  .sidebar-is-collapsed .brand .brand-logo {
+    position: static;
+    width: 154px;
+    height: 46px;
+  }
+
+  .sidebar-is-collapsed .brand .brand-logo img {
+    position: static;
+    width: 100%;
+  }
+
+  .sidebar-is-collapsed .dashboard-tabs button {
+    justify-content: center;
+    gap: 10px;
+    padding: 0 13px;
+  }
+
+  .sidebar {
+    position: static;
+    height: auto;
+    gap: 14px;
+    padding: 14px 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .sidebar .brand {
+    padding-bottom: 14px;
+  }
+
+  .dashboard-tabs {
+    align-items: center;
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .dashboard-tabs button {
+    flex: 0 0 auto;
+  }
+}
+
 @media (max-width: 560px) {
   .modal-backdrop {
     align-items: end;
@@ -2322,4 +2714,541 @@ td span {
   .team-row .icon-button {
     justify-self: end;
   }
+}
+
+/* Clickable metrics render as <button>, so reset the button defaults and give
+   them the lift-on-hover affordance. */
+.metric-clickable {
+  text-align: left;
+  cursor: pointer;
+  transition:
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.metric-clickable:hover {
+  box-shadow: 0 2px 6px rgba(20, 20, 18, 0.1);
+  transform: translateY(-1px);
+}
+
+.metric-accent-amber {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.metric-accent-amber.metric-clickable:hover {
+  box-shadow: 0 2px 6px rgba(152, 107, 22, 0.16);
+}
+
+.metric-accent-red {
+  border-color: var(--red);
+  background: var(--red-soft);
+}
+
+.metric-accent-red .metric-icon {
+  color: var(--red);
+  background: rgba(179, 58, 50, 0.12);
+}
+
+:root[data-theme="dark"] .metric-accent-red .metric-icon {
+  background: rgba(236, 130, 122, 0.16);
+}
+
+.schedule-modal {
+  width: min(1720px, 100%);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(20, 20, 18, 0.24);
+}
+
+.schedule-modal-content {
+  overflow-y: auto;
+  padding: 0 20px 20px;
+}
+
+/* The view already carries its own panel chrome; inside the modal that would
+   double up on borders and padding. */
+.schedule-modal-content .planning-panel {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+/* On the page the week cards are a horizontal scroller. In the modal they wrap
+   instead, so every group is readable without scrolling left and right. */
+.schedule-modal-content .week-cards-row {
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+
+.pending-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 90%;
+  max-width: 1200px;
+  max-height: 80vh;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 20px 25px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+}
+
+.detail-header {
+  padding: 24px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.detail-header div {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.detail-header h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.detail-header p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.detail-header .eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.pending-modal-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.pending-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.pending-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.pending-table-wrap thead {
+  background: var(--surface-soft);
+  position: sticky;
+  top: 0;
+}
+
+.pending-table-wrap th {
+  padding: 12px 16px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.pending-table-wrap td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.pending-row {
+  transition: background-color 0.15s ease;
+}
+
+.pending-row.overdue {
+  background-color: var(--amber-soft);
+}
+
+.pending-row.severe-overdue {
+  background-color: #fde4cc;
+}
+
+.pending-row.critical-overdue {
+  background-color: var(--red-soft);
+}
+
+.pending-row td strong {
+  font-weight: 600;
+}
+
+.pending-row td span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.days-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.days-badge.overdue {
+  background: rgba(152, 107, 22, 0.15);
+  color: var(--amber);
+}
+
+.days-badge.severe-overdue {
+  background: rgba(233, 140, 53, 0.15);
+  color: #e98c35;
+}
+
+.days-badge.critical-overdue {
+  background: rgba(179, 58, 50, 0.15);
+  color: var(--red);
+}
+
+.not-scheduled {
+  color: var(--red);
+  font-weight: 600;
+}
+
+@media (max-width: 768px) {
+  .pending-modal {
+    width: 95%;
+    max-height: 90vh;
+  }
+
+  .pending-table-wrap {
+    font-size: 12px;
+  }
+
+  .pending-table-wrap th,
+  .pending-table-wrap td {
+    padding: 10px 12px;
+  }
+}
+
+.connection-button {
+  padding: 0;
+  font: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.connection-button:hover {
+  color: var(--ink);
+}
+
+.settings-form {
+  display: grid;
+  gap: 13px;
+}
+
+.settings-form label {
+  display: grid;
+  gap: 5px;
+}
+
+.settings-form label span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-error {
+  margin: 0;
+  padding: 9px 11px;
+  color: var(--red, #b3261e);
+  font-size: 13px;
+  background: var(--red-soft, rgba(179, 38, 30, 0.08));
+  border-radius: 9px;
+}
+
+
+/* ============================================================
+   Installation record - datasheet layout
+   Dense label/value blocks under ruled uppercase headings, so a
+   record scans like a spec sheet instead of a form.
+   ============================================================ */
+.record {
+  display: block;
+}
+
+.record-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.record-identity h2 {
+  margin: 3px 0 12px;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.record-idstrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 0;
+}
+
+.record-idstrip span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0 16px;
+  border-left: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.record-idstrip span:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.record-idstrip small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.record-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.record .checkpoints {
+  margin: 0;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.record-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 18px;
+  padding: 18px 22px 22px;
+}
+
+.spec-block {
+  min-width: 0;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.spec-block > h4 {
+  margin: 0;
+  padding: 9px 14px;
+  color: var(--ink);
+  background: transparent;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.spec-block dl {
+  margin: 0;
+}
+
+.spec-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 38%) minmax(0, 1fr);
+  gap: 12px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.spec-row:last-child {
+  border-bottom: 0;
+}
+
+.spec-row dt {
+  margin: 0;
+  color: var(--muted);
+}
+
+.spec-row dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.spec-row.emphasis dd {
+  color: var(--green);
+}
+
+/* The Installation roof spans the record and holds its three sub-blocks. */
+.spec-roof {
+  grid-column: 1 / -1;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.spec-roof > h3 {
+  margin: 0;
+  padding: 10px 14px;
+  color: var(--ink);
+  background: transparent;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.spec-roof-body {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.spec-block.nested {
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+}
+
+.spec-block.nested:last-child {
+  border-right: 0;
+}
+
+.spec-block.wide {
+  grid-column: 1 / -1;
+}
+
+.record-remarks-view {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+}
+
+.record-remarks-view p {
+  margin: 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.record-remarks-edit {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.record-remarks-edit textarea {
+  width: 100%;
+  padding: 10px;
+  border-radius: 8px;
+  resize: vertical;
+}
+
+@media (max-width: 1180px) {
+  .record-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .spec-roof-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .spec-block.nested {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .spec-block.nested:last-child {
+    border-bottom: 0;
+  }
+
+  .record .checkpoints {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Installation details is the one editable block: work item + team, added and
+   removed inline. Saved into the job's teams field. */
+.work-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.7fr) 30px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.work-activity {
+  color: var(--muted);
+}
+
+.work-team {
+  font-weight: 600;
+}
+
+.work-row .icon-button {
+  width: 26px;
+  height: 26px;
+}
+
+.work-empty {
+  padding: 10px 14px;
+  color: var(--muted);
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+}
+
+.work-add {
+  display: grid;
+  gap: 6px;
+  padding: 10px 14px;
+}
+
+.work-add select,
+.work-add input {
+  width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.work-add .button {
+  min-height: 34px;
 }

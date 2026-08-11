@@ -11,3 +11,15 @@ npm-debug.log*
 # Shared operational state (runtime data, not source)
 /data/
 /release/
+
+# Customer data — never commit. Real names, addresses and payment records
+# must not leave the local machine.
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.pdf
+
+# ...but the user guide is written by us and contains no customer data, so it
+# ships with the repo. Regenerate with: python scripts/build-user-guide.py
+!Installation Desktop app_user_guide.pdf

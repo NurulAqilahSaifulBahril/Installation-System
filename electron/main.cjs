@@ -1,4 +1,6 @@
-﻿const { app, BrowserWindow, dialog, shell } = require('electron');
+﻿const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { autoUpdater } = require('electron-updater');
+const fs = require('fs');
 const http = require('http');
 const next = require('next');
 const net = require('net');
@@ -9,10 +11,199 @@ const PORT = Number(process.env.PORT || 3000);
 const START_URL = process.env.ELECTRON_START_URL || `http://${HOST}:${PORT}`;
 const ROOT_DIR = path.resolve(__dirname, '..');
 
+// Load connection settings from the bundled .env.local before Next starts.
+// Next reads env files itself, but doing it explicitly means a packaged build
+// cannot silently fall back to demo data because of a working-directory quirk.
+function loadEnvFile() {
+  const envPath = path.join(ROOT_DIR, '.env.local');
+  if (!fs.existsSync(envPath)) {
+    return;
+  }
+
+  for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+    const trimmed = line.trim().replace(/^﻿/, '');
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue;
+    }
+
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+
+    if (!process.env[key]) {
+      process.env[key] = value;
+    }
+  }
+}
+
+// Connection settings the user types into the app. Kept in userData rather than
+// beside the executable, because an update replaces the program directory and
+// would otherwise wipe them. Applied after loadEnvFile so a value entered by the
+// user always beats a stale one baked into the build.
+const CONNECTION_KEYS = ['PG_PROXY_URL', 'PG_PROXY_DATABASE', 'PG_PROXY_TOKEN'];
+
+function connectionConfigPath() {
+  return path.join(app.getPath('userData'), 'connection.json');
+}
+
+function loadUserConfig() {
+  try {
+    const configPath = connectionConfigPath();
+    if (!fs.existsSync(configPath)) {
+      return;
+    }
+
+    const saved = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    for (const key of CONNECTION_KEYS) {
+      const value = saved[key];
+      if (typeof value === 'string' && value.trim()) {
+        process.env[key] = value.trim();
+      }
+    }
+  } catch (error) {
+    console.error('Could not read saved connection settings:', error);
+  }
+}
+
+loadEnvFile();
+loadUserConfig();
+
 let server = null;
 let nextApp = null;
 let mainWindow = null;
 let shuttingDown = false;
+let installRequested = false;
+let updateDownloaded = false;
+
+// Auto-update: checks the app-update.yml embedded at build time (points at
+// the Installation-System GitHub releases feed). Downloads only happen when
+// the renderer explicitly asks for one via the "Install Update" button, and
+// installing quits+relaunches the app, so both are opt-in from the user.
+autoUpdater.autoDownload = false;
+
+function broadcastUpdate(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
+}
+
+autoUpdater.on('checking-for-update', () => {
+  broadcastUpdate('update:status', { state: 'checking' });
+});
+
+autoUpdater.on('update-available', (info) => {
+  broadcastUpdate('update:status', { state: 'available', version: info.version });
+});
+
+autoUpdater.on('update-not-available', () => {
+  broadcastUpdate('update:status', { state: 'not-available' });
+});
+
+autoUpdater.on('download-progress', (progress) => {
+  broadcastUpdate('update:status', { state: 'downloading', percent: progress.percent });
+});
+
+autoUpdater.on('update-downloaded', (info) => {
+  updateDownloaded = true;
+  broadcastUpdate('update:status', { state: 'downloaded', version: info.version });
+  if (installRequested) {
+    autoUpdater.quitAndInstall();
+  }
+});
+
+autoUpdater.on('error', (error) => {
+  broadcastUpdate('update:status', {
+    state: 'error',
+    message: error instanceof Error ? error.message : 'Update check failed.',
+  });
+});
+
+function checkForUpdates() {
+  if (!app.isPackaged) {
+    return;
+  }
+  autoUpdater.checkForUpdates().catch((error) => {
+    broadcastUpdate('update:status', {
+      state: 'error',
+      message: error instanceof Error ? error.message : 'Update check failed.',
+    });
+  });
+}
+
+ipcMain.handle('update:check', () => {
+  checkForUpdates();
+});
+
+ipcMain.handle('update:install', () => {
+  installRequested = true;
+  if (updateDownloaded) {
+    autoUpdater.quitAndInstall();
+    return;
+  }
+  autoUpdater.downloadUpdate().catch((error) => {
+    broadcastUpdate('update:status', {
+      state: 'error',
+      message: error instanceof Error ? error.message : 'Update download failed.',
+    });
+  });
+});
+
+// The token is never handed back to the renderer — only whether one is stored.
+// The window is local, but there is no reason for a secret to make the trip.
+ipcMain.handle('settings:get', () => ({
+  url: process.env.PG_PROXY_URL || '',
+  database: process.env.PG_PROXY_DATABASE || '',
+  hasToken: Boolean(process.env.PG_PROXY_TOKEN),
+}));
+
+ipcMain.handle('settings:save', (_event, settings) => {
+  const url = String(settings?.url ?? '').trim();
+  const database = String(settings?.database ?? '').trim();
+  const typedToken = String(settings?.token ?? '').trim();
+  // A blank token field means "leave the stored one alone", so someone fixing a
+  // typo in the URL does not have to paste the token again.
+  const token = typedToken || process.env.PG_PROXY_TOKEN || '';
+
+  if (!url || !database || !token) {
+    return { ok: false, message: 'Address, database and access token are all required.' };
+  }
+
+  try {
+    new URL(url);
+  } catch {
+    return { ok: false, message: 'Address must be a full URL, starting with https://' };
+  }
+
+  const values = {
+    PG_PROXY_URL: url,
+    PG_PROXY_DATABASE: database,
+    PG_PROXY_TOKEN: token,
+  };
+
+  try {
+    fs.writeFileSync(connectionConfigPath(), JSON.stringify(values, null, 2), 'utf8');
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : 'Could not save the settings.',
+    };
+  }
+
+  // The Next server runs inside this process, so the API routes read these on
+  // their next request. No restart needed.
+  Object.assign(process.env, values);
+  return { ok: true };
+});
 
 function isPortOpen(host, port, timeoutMs = 500) {
   return new Promise((resolve) => {
@@ -115,6 +306,7 @@ async function createWindow() {
   });
 
   await mainWindow.loadURL(START_URL);
+  checkForUpdates();
 }
 
 async function boot() {

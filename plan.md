@@ -54,7 +54,7 @@ Use a secure server-side sync process:
 6. Store the last successful sync time and any sync error.
 7. Never send installation changes back to the source system unless a future API integration explicitly requires it.
 
-For the MVP, poll the API every 5â€“15 minutes and include a manual **Check for New Jobs** action.
+For the MVP, poll the API every 5–15 minutes and include a manual **Check for New Jobs** action.
 
 API credentials and API database service credentials must only be used by the backend and must never be exposed in the browser.
 
@@ -80,7 +80,7 @@ Each installation job should display:
 14. External quotation, sales order, invoice, project, and site reference IDs where available
 15. Last API sync time
 
-Do not merge â€œclient contact number,â€ â€œsite contact number,â€ and â€œdelivery contact number.â€ They may be the same, but they serve different purposes and should be separately selectable.
+Do not merge “client contact number,” “site contact number,” and “delivery contact number.” They may be the same, but they serve different purposes and should be separately selectable.
 
 ---
 
@@ -509,7 +509,7 @@ Stores metadata and secure storage paths for SLDs, delivery proof, approval docu
 - Phone numbers should be stored as text.
 - Dates/times should include timezone; display them in the business timezone.
 - Status values should be controlled, not free text.
-- â€œOtherâ€ status/reason requires a remark.
+- “Other” status/reason requires a remark.
 - Rescheduling creates history; it must not erase the previous schedule.
 - Use soft deletion/archive for operational records where audit history matters.
 
@@ -689,7 +689,7 @@ WhatsApp is the preferred external notification channel, but it will be implemen
 
 ## 11. MVP Scope
 
-### Phase 1 â€” Confirm rules and source mapping
+### Phase 1 — Confirm rules and source mapping
 
 - define the small Source API response needed by the installation system;
 - confirm the stable external installation/site ID and the source quotation, sales order, invoice, project, and site references;
@@ -697,7 +697,7 @@ WhatsApp is the preferred external notification channel, but it will be implemen
 - agree on statuses, permissions, and readiness rules;
 - confirm the minimum imported fields and avoid reproducing the original workflow.
 
-### Phase 2 â€” Database, authentication, and sync
+### Phase 2 — Database, authentication, and sync
 
 - create database tables, constraints, roles, and audit history;
 - create a completely new localhost application;
@@ -705,7 +705,7 @@ WhatsApp is the preferred external notification channel, but it will be implemen
 - implement sync monitoring and **Check for New Jobs**;
 - import a test set and verify duplicate prevention.
 
-### Phase 3 â€” Operational MVP
+### Phase 3 — Operational MVP
 
 - installation pipeline;
 - job detail page;
@@ -715,7 +715,7 @@ WhatsApp is the preferred external notification channel, but it will be implemen
 - team assignment;
 - filters and basic dashboard counts.
 
-### Phase 4 â€” Calendar and operational controls
+### Phase 4 — Calendar and operational controls
 
 - scheduling calendar;
 - team conflict checks;
@@ -723,7 +723,7 @@ WhatsApp is the preferred external notification channel, but it will be implemen
 - attachments and completion evidence;
 - exports and management reporting.
 
-### Phase 5 â€” Optional enhancements
+### Phase 5 — Optional enhancements
 
 - customer/team notifications;
 - route or map support;
@@ -774,7 +774,7 @@ The MVP is ready when:
 ### Remaining decisions
 
 1. What authentication method will the Source API use?
-2. Does â€œyesâ€ mean the API returns all sales, or only jobs whose payment has reached at least 59%?
+2. Does “yes” mean the API returns all sales, or only jobs whose payment has reached at least 59%?
 3. If the API has no installation/site ID, which stable source fields identify each location: for example `order_id + site_sequence`, a source site ID, or another location reference?
 4. Apart from the SLD, are completion photos, delivery proof, or customer sign-off required?
 
@@ -782,7 +782,7 @@ The MVP is ready when:
 
 ## 14. Recommended First Workshop
 
-Before coding, use 5â€“10 real jobs to walk through:
+Before coding, use 5–10 real jobs to walk through:
 
 - one normal job above 59%;
 - one job below 59% with approval;
