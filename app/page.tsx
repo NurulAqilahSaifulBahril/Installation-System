@@ -2,29 +2,38 @@
 
 import {
   AlertTriangle,
+  Ban,
   CalendarDays,
+  CalendarOff,
   Check,
+  ChevronLeft,
   ChevronRight,
   Clock3,
+  CloudLightning,
+  CloudRain,
+  CloudSun,
   Download,
   FileSearch,
   Filter,
   LoaderCircle,
   MapPin,
+  Package,
   Moon,
   PackageCheck,
   Phone,
+  Plus,
   RefreshCw,
   Search,
   Settings,
   Sun,
+  TrendingDown,
   Truck,
   Users,
+  Wallet,
   X,
   Zap,
 } from "lucide-react";
 import {
-  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -101,7 +110,10 @@ const DELIVERY_RUNS_STORAGE_KEY = "installation-ops-delivery-runs-v1";
 const TEAMS_STORAGE_KEY = "installation-ops-team-resources-v1";
 const TEAM_WEEKS_STORAGE_KEY = "installation-ops-team-weeks-v1";
 const TEAM_SUGGESTIONS_STORAGE_KEY = "installation-ops-team-suggestions-v1";
+const AVAILABLE_SUGGESTIONS_STORAGE_KEY =
+  "installation-ops-available-suggestions-v1";
 const THEME_STORAGE_KEY = "installation-ops-theme";
+const SIDEBAR_STORAGE_KEY = "installation-ops-sidebar";
 
 function formatPersonName(name: string) {
   return name
@@ -174,7 +186,7 @@ function formatWeekRange(weekDates: Date[]) {
     month: "short",
     year: "numeric",
   });
-  return `${startLabel} â€“ ${endLabel}`;
+  return `${startLabel} – ${endLabel}`;
 }
 
 const WEATHER_COORDINATES_BY_POSTCODE_PREFIX: Record<
@@ -195,6 +207,44 @@ const WEATHER_COORDINATES_BY_POSTCODE_PREFIX: Record<
   "837": { latitude: 2.014, longitude: 103.065 },
   "860": { latitude: 2.031, longitude: 103.318 },
 };
+
+// Postcode prefixes run in rough geographic order, so an unknown prefix falls
+// back to the nearest known one instead of dropping the group's weather. The
+// range is kept tight (same district, roughly) so e.g. a Selangor postcode
+// never borrows a Johor forecast. Paloh (86600) resolves to 860 / Kluang.
+const WEATHER_PREFIX_FALLBACK_RANGE = 20;
+
+// Open-Meteo forecasts 16 days ahead; anything further out simply has no data.
+const NO_FORECAST_HINT = "No forecast yet — available about 2 weeks ahead";
+
+function weatherCoordinatesForPostcode(postcode: string) {
+  const prefix = postcode.slice(0, 3);
+  if (!prefix) return null;
+
+  const exact = WEATHER_COORDINATES_BY_POSTCODE_PREFIX[prefix];
+  if (exact) return { prefix, coordinates: exact };
+
+  const target = Number(prefix);
+  if (!Number.isFinite(target)) return null;
+
+  let nearest: { prefix: string; distance: number } | null = null;
+  for (const known of Object.keys(WEATHER_COORDINATES_BY_POSTCODE_PREFIX)) {
+    const distance = Math.abs(Number(known) - target);
+    if (
+      distance <= WEATHER_PREFIX_FALLBACK_RANGE &&
+      (!nearest || distance < nearest.distance)
+    ) {
+      nearest = { prefix: known, distance };
+    }
+  }
+
+  return nearest
+    ? {
+        prefix: nearest.prefix,
+        coordinates: WEATHER_COORDINATES_BY_POSTCODE_PREFIX[nearest.prefix],
+      }
+    : null;
+}
 
 const defaultTeamResources: TeamResource[] = [
   { id: "install-a", name: "Installation Team A", role: "installation", baseLocation: "Johor Bahru", contact: "", members: [] },
@@ -223,6 +273,25 @@ const statusLabels: Record<InstallationJob["scheduleStatus"], string> = {
   reschedule_required: "Reschedule",
 };
 
+const availabilityLabels: Record<
+  InstallationJob["customerAvailabilityStatus"],
+  string
+> = {
+  pending: "Pending confirmation",
+  available: "Available",
+  unavailable: "Not available",
+  cancelled: "Cancellation",
+};
+
+// Both statuses take the customer out of planning: they drop out of the
+// suggestion lists and are removed from any installation group.
+function isOutOfPlanning(job: InstallationJob) {
+  return (
+    job.customerAvailabilityStatus === "unavailable" ||
+    job.customerAvailabilityStatus === "cancelled"
+  );
+}
+
 const approvalLabels: Record<
   InstallationJob["installationApprovalStatus"],
   string
@@ -241,12 +310,14 @@ const deliveryLabels: Record<InstallationJob["deliveryStatus"], string> = {
   partially_delivered: "Partially delivered",
 };
 
-const teamRoles: { value: TeamAssignment["role"]; label: string }[] = [
-  { value: "roof", label: "Roof / panel" },
-  { value: "wiring", label: "Wiring / electrical" },
-  { value: "battery_inverter", label: "Battery / inverter" },
-  { value: "supervisor", label: "Site supervisor" },
-];
+// Delivery runs carry their own status, separate from the per-job delivery
+// status the source seeds.
+const deliveryRunStatusLabels: Record<DeliveryRun["status"], string> = {
+  pending_stock: "Pending stock",
+  ready: "Ready",
+  in_transit: "In transit",
+  delivered: "Delivered",
+};
 
 const installationActivities: {
   value: TeamAssignment["activity"];
@@ -436,13 +507,45 @@ function applyJobUpdates(
   });
 }
 
+type AvailableSuggestion = {
+  id: string;
+  label: string;
+  jobIds: string[];
+};
+
 type SharedOpsState = {
   groups: InstallationGroup[];
   deliveryRuns: DeliveryRun[];
   teamResources: TeamResource[];
   teamWeekAssignments: TeamWeekAssignment[];
+  // Towns marked available on the Team planning page. Pinned to the top of
+  // that table, and shared so the whole team sees the same shortlist. The
+  // label and member ids are stored alongside the id so the pipeline can show
+  // the town in a customer's Location / group without recomputing suggestions.
+  availableSuggestions: AvailableSuggestion[];
   jobUpdates: Record<string, JobUpdate>;
 };
+
+// An earlier build stored bare suggestion ids here. Those carry no label or
+// member list, so they are dropped rather than rendered as a half-populated
+// pin; the town simply needs marking available again.
+function normalizeAvailableSuggestions(value: unknown): AvailableSuggestion[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const { id, label, jobIds } = entry as Partial<AvailableSuggestion>;
+    if (typeof id !== "string") return [];
+    return [
+      {
+        id,
+        label: typeof label === "string" && label ? label : id,
+        jobIds: Array.isArray(jobIds)
+          ? jobIds.filter((jobId): jobId is string => typeof jobId === "string")
+          : [],
+      },
+    ];
+  });
+}
 
 function readLocalJson<T>(key: string, fallback: T): T {
   try {
@@ -469,15 +572,19 @@ function persistOps(patch: Partial<SharedOpsState>) {
 
 export default function DashboardPage() {
   const [view, setView] = useState<DashboardView>("pipeline");
-  const [groupsWorkspace, setGroupsWorkspace] = useState<
-    "schedule" | "teams"
-  >("schedule");
+  // Schedule & assign is no longer a tab on the groups page; it opens as a
+  // modal from the "Dates arranged" card.
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [jobs, setJobs] = useState<InstallationJob[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("active");
   const [stateFilter, setStateFilter] = useState("all");
   const [installationDateFilter, setInstallationDateFilter] = useState("");
+  const [monthFilter, setMonthFilter] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -486,6 +593,7 @@ export default function DashboardPage() {
   const [editMode, setEditMode] = useState(false);
   const [sldOpen, setSldOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [groups, setGroups] = useState<InstallationGroup[]>([]);
   const [deliveryRuns, setDeliveryRuns] = useState<DeliveryRun[]>([]);
@@ -493,6 +601,9 @@ export default function DashboardPage() {
     useState<TeamResource[]>(defaultTeamResources);
   const [teamWeekAssignments, setTeamWeekAssignments] = useState<
     TeamWeekAssignment[]
+  >([]);
+  const [availableSuggestions, setAvailableSuggestions] = useState<
+    AvailableSuggestion[]
   >([]);
   const [composer, setComposer] = useState<"group" | "delivery" | null>(null);
   const [showPendingModal, setShowPendingModal] = useState(false);
@@ -530,6 +641,9 @@ export default function DashboardPage() {
       state.teamResources.length ? state.teamResources : defaultTeamResources,
     );
     setTeamWeekAssignments(state.teamWeekAssignments);
+    setAvailableSuggestions(
+      normalizeAvailableSuggestions(state.availableSuggestions),
+    );
     jobUpdatesRef.current = state.jobUpdates;
     setJobs((current) =>
       current.length ? applyJobUpdates(current, state.jobUpdates) : current,
@@ -543,6 +657,9 @@ export default function DashboardPage() {
         deliveryRuns: readLocalJson(DELIVERY_RUNS_STORAGE_KEY, []),
         teamResources: readLocalJson(TEAMS_STORAGE_KEY, defaultTeamResources),
         teamWeekAssignments: readLocalJson(TEAM_WEEKS_STORAGE_KEY, []),
+        availableSuggestions: normalizeAvailableSuggestions(
+          readLocalJson(AVAILABLE_SUGGESTIONS_STORAGE_KEY, []),
+        ),
         jobUpdates: readLocalJson(STORAGE_KEY, {}),
       };
       try {
@@ -576,13 +693,17 @@ export default function DashboardPage() {
     setDarkMode(useDark);
     document.documentElement.dataset.theme = useDark ? "dark" : "light";
 
+    setSidebarCollapsed(
+      window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "collapsed",
+    );
+
     void loadSharedState(true);
   }, [loadSharedState]);
 
   // Pick up colleagues' changes when returning to this tab. Uses
   // visibilitychange (not window "focus") because focus fires far too
-  // readily â€” including from opening a native <select> or date picker
-  // inside the page â€” which was replacing `jobs` mid-interaction and
+  // readily — including from opening a native <select> or date picker
+  // inside the page — which was replacing `jobs` mid-interaction and
   // interrupting clicks in open modals (e.g. the Team Planning preview).
   useEffect(() => {
     const refresh = () => {
@@ -705,9 +826,31 @@ export default function DashboardPage() {
     [jobs],
   );
 
+  const groupByJobId = useMemo(() => {
+    const result = new Map<string, InstallationGroup>();
+    groups.forEach((group) =>
+      group.jobIds.forEach((jobId) => result.set(jobId, group)),
+    );
+    return result;
+  }, [groups]);
+
+  // Jobs without an installation date yet (own date or their group's) always
+  // pass the month filter — there's no month to compare against. Only jobs
+  // scheduled for a different month get excluded. Team planning candidates
+  // are almost always in this "always passes" bucket since they have no date
+  // yet.
+  const monthFilteredJobs = useMemo(() => {
+    if (!monthFilter) return jobs;
+    return jobs.filter((job) => {
+      const effectiveDate =
+        job.installationDate || groupByJobId.get(job.id)?.installationDate;
+      return !effectiveDate || effectiveDate.slice(0, 7) === monthFilter;
+    });
+  }, [jobs, monthFilter, groupByJobId]);
+
   const filteredJobs = useMemo(() => {
     const needle = query.toLowerCase().trim();
-    return jobs.filter((job) => {
+    return monthFilteredJobs.filter((job) => {
       const matchesQuery =
         !needle ||
         [
@@ -755,34 +898,44 @@ export default function DashboardPage() {
         new Date(b.secondPaymentDate).getTime();
       return dateOrder || a.customerName.localeCompare(b.customerName);
     });
-  }, [jobs, query, stateFilter, status, installationDateFilter]);
+  }, [monthFilteredJobs, query, stateFilter, status, installationDateFilter]);
 
   const selected = jobs.find((job) => job.id === selectedId) ?? null;
 
   const metrics = useMemo(() => {
-    const pendingData = getPendingInstallationMetrics(jobs);
+    const pendingData = getPendingInstallationMetrics(monthFilteredJobs);
     return {
-      newJobs: jobs.filter((job) => job.scheduleStatus === "ready_to_schedule")
-        .length,
-      ready: jobs.filter(isReady).length,
-      attention: jobs.filter(
+      newJobs: monthFilteredJobs.filter(
+        (job) => job.scheduleStatus === "ready_to_schedule",
+      ).length,
+      ready: monthFilteredJobs.filter(isReady).length,
+      attention: monthFilteredJobs.filter(
         (job) =>
           job.scheduleStatus === "pending_approval" ||
           job.deliveryStatus === "pending_stock" ||
           job.paymentPercent < 59,
       ).length,
-      scheduled: jobs.filter((job) => Boolean(job.installationDate)).length,
+      scheduled: monthFilteredJobs.filter((job) => Boolean(job.installationDate))
+        .length,
+      cancelled: monthFilteredJobs.filter(
+        (job) => job.customerAvailabilityStatus === "cancelled",
+      ).length,
+      sedaPending: monthFilteredJobs.filter(
+        (job) => normalizeSeda(job.sedaStatus) === "Pending",
+      ).length,
+      // The two payment cards partition the book: >= 60 and < 60. Using "< 60"
+      // rather than "<= 60" keeps the job sitting exactly on 60 out of both
+      // cards at once.
+      paymentAtLeast60: monthFilteredJobs.filter((job) => job.paymentPercent >= 60)
+        .length,
+      paymentBelow60: monthFilteredJobs.filter((job) => job.paymentPercent < 60)
+        .length,
+      pendingStock: monthFilteredJobs.filter(
+        (job) => job.deliveryStatus === "pending_stock",
+      ).length,
       pendingInstallation: pendingData,
     };
-  }, [jobs]);
-
-  const groupByJobId = useMemo(() => {
-    const result = new Map<string, InstallationGroup>();
-    groups.forEach((group) =>
-      group.jobIds.forEach((jobId) => result.set(jobId, group)),
-    );
-    return result;
-  }, [groups]);
+  }, [monthFilteredJobs]);
 
   const deliveryRunByJobId = useMemo(() => {
     const result = new Map<string, DeliveryRun>();
@@ -791,6 +944,51 @@ export default function DashboardPage() {
     );
     return result;
   }, [deliveryRuns]);
+
+  // How many of the three arrangement columns a job has filled in: assigned
+  // teams, delivery run, installation date. Drives both the pin order and the
+  // row shade in the pipeline table.
+  const arrangedCountFor = useCallback(
+    (job: InstallationJob) => {
+      const group = groupByJobId.get(job.id);
+      const hasTeams = Boolean(group?.installationTeam || group?.wiringTeam);
+      const hasDeliveryRun = Boolean(deliveryRunByJobId.get(job.id));
+      const hasDate = Boolean(job.installationDate || group?.installationDate);
+      return Number(hasTeams) + Number(hasDeliveryRun) + Number(hasDate);
+    },
+    [groupByJobId, deliveryRunByJobId],
+  );
+
+  // Arranged customers pin to the top, most complete first. Everything else
+  // keeps the existing payment-date order below them.
+  const pipelineJobs = useMemo(() => {
+    return filteredJobs
+      .map((job, index) => ({ job, index, arranged: arrangedCountFor(job) }))
+      .sort(
+        (a, b) => b.arranged - a.arranged || a.index - b.index,
+      )
+      .map((entry) => entry.job);
+  }, [filteredJobs, arrangedCountFor]);
+
+  const availableSuggestionByJobId = useMemo(() => {
+    const result = new Map<string, AvailableSuggestion>();
+    availableSuggestions.forEach((entry) =>
+      entry.jobIds.forEach((jobId) => result.set(jobId, entry)),
+    );
+    return result;
+  }, [availableSuggestions]);
+
+  // A real installation group wins; otherwise fall back to the town the
+  // customer sits in on Team planning once it is marked available.
+  function locationGroupLabelFor(jobId: string) {
+    const group = groupByJobId.get(jobId);
+    if (group) {
+      return [group.name, group.area].filter(Boolean).join(" · ");
+    }
+    const available = availableSuggestionByJobId.get(jobId);
+    if (available) return `${available.label} · Available group`;
+    return "Not grouped";
+  }
 
   const selectedPlanningGroup = selected
     ? groupByJobId.get(selected.id)
@@ -875,11 +1073,29 @@ export default function DashboardPage() {
     persistOps({ teamWeekAssignments: next });
   }
 
+  function saveAvailableSuggestions(next: AvailableSuggestion[]) {
+    setAvailableSuggestions(next);
+    window.localStorage.setItem(
+      AVAILABLE_SUGGESTIONS_STORAGE_KEY,
+      JSON.stringify(next),
+    );
+    persistOps({ availableSuggestions: next });
+  }
+
   function toggleTheme() {
     const next = !darkMode;
     setDarkMode(next);
     document.documentElement.dataset.theme = next ? "dark" : "light";
     window.localStorage.setItem(THEME_STORAGE_KEY, next ? "dark" : "light");
+  }
+
+  function toggleSidebar() {
+    const next = !sidebarCollapsed;
+    setSidebarCollapsed(next);
+    window.localStorage.setItem(
+      SIDEBAR_STORAGE_KEY,
+      next ? "collapsed" : "expanded",
+    );
   }
 
   function createInstallationGroup() {
@@ -904,8 +1120,7 @@ export default function DashboardPage() {
       installationEndDate: "",
     });
     setComposer(null);
-    setView("groups");
-    setGroupsWorkspace("schedule");
+    setShowScheduleModal(true);
   }
 
   function createDeliveryRun() {
@@ -1001,7 +1216,7 @@ export default function DashboardPage() {
   }
 
   async function saveAvailability(updated: InstallationJob) {
-    if (updated.customerAvailabilityStatus === "unavailable") {
+    if (isOutOfPlanning(updated)) {
       saveGroups(
         groups.map((group) => ({
           ...group,
@@ -1013,8 +1228,8 @@ export default function DashboardPage() {
   }
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
+    <div className={`app-layout${sidebarCollapsed ? " sidebar-is-collapsed" : ""}`}>
+      <aside className="sidebar" aria-label="Installation navigation">
         <div className="brand">
           <div className="brand-logo">
             <img
@@ -1024,11 +1239,53 @@ export default function DashboardPage() {
               height="628"
             />
           </div>
-          <div>
+          <div className="brand-text">
             <strong>Installation Operations</strong>
             <span>Solar scheduling and delivery</span>
           </div>
         </div>
+
+        <button
+          className="icon-button sidebar-toggle"
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!sidebarCollapsed}
+          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          onClick={toggleSidebar}
+        >
+          {sidebarCollapsed ? (
+            <ChevronRight size={16} />
+          ) : (
+            <ChevronLeft size={16} />
+          )}
+        </button>
+
+        <nav className="dashboard-tabs" aria-label="Installation workspaces">
+          {(
+            [
+              ["pipeline", "Customer details"],
+              ["teams", "Team planning"],
+              ["groups", "Installation groups"],
+              ["delivery", "Stock delivery"],
+            ] as [DashboardView, string][]
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              className={view === value ? "active" : ""}
+              onClick={() => setView(value)}
+              title={sidebarCollapsed ? label : undefined}
+            >
+              {value === "pipeline" && <Search size={16} />}
+              {value === "groups" && <CalendarDays size={16} />}
+              {value === "teams" && <Users size={16} />}
+              {value === "delivery" && <Truck size={16} />}
+              <span className="tab-label">{label}</span>
+            </button>
+          ))}
+        </nav>
+      </aside>
+
+      <main className="app-shell">
+      <header className="topbar">
         <div className="topbar-actions">
           <button
             className="icon-button theme-toggle"
@@ -1067,41 +1324,18 @@ export default function DashboardPage() {
             disabled={syncing}
           >
             <RefreshCw size={16} className={syncing ? "spin" : ""} />
-            {syncing ? "Checkingâ€¦" : "Check for new jobs"}
+            {syncing ? "Checking…" : "Check for new jobs"}
           </button>
         </div>
       </header>
 
       <section className="page-heading">
         <div>
-          <p className="eyebrow">Wednesday, 29 July 2026 Â· Malaysia time</p>
+          <p className="eyebrow">Wednesday, 29 July 2026 · Malaysia time</p>
           <h1>Installation dashboard</h1>
           <p>Plan customer dates, stock delivery, SEDA approval, and installation teams.</p>
         </div>
       </section>
-
-      <nav className="dashboard-tabs" aria-label="Installation workspaces">
-        {(
-          [
-            ["pipeline", "Active pipeline"],
-            ["teams", "Team planning"],
-            ["groups", "Installation groups"],
-            ["delivery", "Stock delivery"],
-          ] as [DashboardView, string][]
-        ).map(([value, label]) => (
-          <button
-            key={value}
-            className={view === value ? "active" : ""}
-            onClick={() => setView(value)}
-          >
-            {value === "pipeline" && <Search size={16} />}
-            {value === "groups" && <CalendarDays size={16} />}
-            {value === "teams" && <Users size={16} />}
-            {value === "delivery" && <Truck size={16} />}
-            {label}
-          </button>
-        ))}
-      </nav>
 
       {(notice || meta?.warning) && (
         <div className="notice" role="status">
@@ -1115,70 +1349,69 @@ export default function DashboardPage() {
 
       <section className="metrics" aria-label="Installation summary">
         <Metric
-          label="New from API"
-          value={metrics.newJobs}
-          note="Ready for scheduling"
-          icon={<RefreshCw size={18} />}
-        />
-        <Metric
           label="Ready to install"
           value={metrics.ready}
           note="All requirements met"
+          hint="Every requirement is met: paid 59% or more, SEDA approved, stock delivered, customer available, an installation date set, and a team assigned. Only jobs clearing all six are counted."
           icon={<Check size={18} />}
-        />
-        <Metric
-          label="Needs attention"
-          value={metrics.attention}
-          note="SEDA, stock, or payment"
-          icon={<AlertTriangle size={18} />}
-          tone="warning"
         />
         <Metric
           label="Dates arranged"
           value={metrics.scheduled}
-          note="Upcoming installations"
+          note="Open schedule & assign"
+          hint="Jobs that have an installation date set, whatever else is still outstanding. Click to open Schedule & assign."
           icon={<CalendarDays size={18} />}
+          onClick={() => setShowScheduleModal(true)}
+        />
+        <Metric
+          label="Cancellation"
+          value={metrics.cancelled}
+          note="Customer cancelled"
+          hint="Customers whose availability was set to Cancellation on the Team planning page. They drop out of planning and are removed from any installation group."
+          icon={<Ban size={18} />}
+          accent="red"
+        />
+        <Metric
+          label="Pending installation"
+          value={metrics.pendingInstallation.total}
+          note="2nd payment > 30 days ago"
+          hint="Customers whose second payment landed 30 or more days ago and who still have no installation. Click to see the full list with days elapsed."
+          icon={<Clock3 size={18} />}
+          tone="warning"
+          accent="amber"
+          onClick={() => setShowPendingModal(true)}
+        />
+        <Metric
+          label="SEDA pending"
+          value={metrics.sedaPending}
+          note="Not yet approved"
+          hint="SEDA registration still sitting at Pending — not yet submitted. Does not include registrations already Submitted and awaiting SEDA, or ones Approved. Read from the source system; the dashboard cannot change it."
+          icon={<FileSearch size={18} />}
+          tone="warning"
+        />
+        <Metric
+          label="Payment 60% or more"
+          value={metrics.paymentAtLeast60}
+          note="Deposit threshold met"
+          hint="Invoices paid 60% or more of the total. Note the rest of the app treats 59% as the ready-to-schedule threshold, so this card is one point stricter."
+          icon={<Wallet size={18} />}
+        />
+        <Metric
+          label="Payment under 60%"
+          value={metrics.paymentBelow60}
+          note="Below deposit threshold"
+          hint="Invoices paid less than 60% of the total. Together with the card to the left this covers every job, so the two always add up to the whole set."
+          icon={<TrendingDown size={18} />}
+          tone="warning"
+        />
+        <Metric
+          label="Pending stock"
+          value={metrics.pendingStock}
+          note="Awaiting stock"
+          hint="Jobs whose delivery status is set to pending stock. Nothing in the dashboard sets this yet — every job defaults to not planned — so this reads 0 until stock status is recorded."
+          icon={<Package size={18} />}
         />
       </section>
-
-      <section className="metrics pending-installation-monitoring" aria-label="Installation monitoring" style={{ display: 'grid' }}>
-          <div
-            className="metric-card pending-installation-card"
-            onClick={() => setShowPendingModal(true)}
-            style={{ cursor: "pointer" }}
-          >
-            <div className="metric-content">
-              <div className="metric-icon pending">
-                <Clock3 size={18} />
-              </div>
-              <div className="metric-text">
-                <div className="metric-label">Pending installation</div>
-                <div className="metric-value">{metrics.pendingInstallation.total}</div>
-                <div className="metric-note">2nd payment &gt; 30 days ago</div>
-              </div>
-            </div>
-          </div>
-
-          <div className="metric-card overdue-breakdown-card">
-            <div className="metric-content">
-              <div className="metric-label breakdown-title">Overdue breakdown</div>
-              <div className="breakdown-rows">
-                <div className="breakdown-row">
-                  <span className="breakdown-label">30–60 days</span>
-                  <span className="breakdown-value">{metrics.pendingInstallation.breakdown.days30to60}</span>
-                </div>
-                <div className="breakdown-row">
-                  <span className="breakdown-label">60–90 days</span>
-                  <span className="breakdown-value">{metrics.pendingInstallation.breakdown.days60to90}</span>
-                </div>
-                <div className="breakdown-row critical">
-                  <span className="breakdown-label">90+ days</span>
-                  <span className="breakdown-value">{metrics.pendingInstallation.breakdown.days90plus}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
 
       <section className="workspace">
         {view === "pipeline" && (
@@ -1188,7 +1421,7 @@ export default function DashboardPage() {
               <Search size={17} />
               <input
                 aria-label="Search installations"
-                placeholder="Search customer, invoice, addressâ€¦"
+                placeholder="Search customer, invoice, address…"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
               />
@@ -1227,13 +1460,28 @@ export default function DashboardPage() {
                   setInstallationDateFilter(event.target.value)
                 }
               />
+              <input
+                aria-label="Filter by month"
+                type="month"
+                value={monthFilter}
+                onChange={(event) => setMonthFilter(event.target.value)}
+              />
+              {monthFilter && (
+                <button
+                  className="icon-button"
+                  aria-label="Clear month filter"
+                  onClick={() => setMonthFilter("")}
+                >
+                  <X size={14} />
+                </button>
+              )}
             </div>
           </div>
 
           <div className="pipeline-heading">
             <div>
               <h2>Active installation pipeline</h2>
-              <p>{filteredJobs.length} jobs shown</p>
+              <p>{pipelineJobs.length} jobs shown</p>
             </div>
             {meta?.syncedAt && (
               <span>
@@ -1250,7 +1498,7 @@ export default function DashboardPage() {
           {loading ? (
             <div className="empty-state">
               <LoaderCircle className="spin" />
-              <p>Loading eligible installationsâ€¦</p>
+              <p>Loading eligible installations…</p>
             </div>
           ) : filteredJobs.length === 0 ? (
             <div className="empty-state">
@@ -1259,7 +1507,7 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div className="table-wrap">
-              <table>
+              <table className="pipeline-table">
                 <thead>
                   <tr>
                     <th>Customer / site</th>
@@ -1270,15 +1518,26 @@ export default function DashboardPage() {
                     <th>Assigned teams</th>
                     <th>Location / group</th>
                     <th>Delivery run</th>
+                    <th>Stock details</th>
                     <th>Installation date</th>
                     <th aria-label="Open" />
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredJobs.map((job) => (
+                  {pipelineJobs.map((job) => (
                     <tr
                       key={job.id}
-                      className={selected?.id === job.id ? "selected" : ""}
+                      className={[
+                        selected?.id === job.id ? "selected" : "",
+                        arrangedCountFor(job)
+                          ? `arranged arranged-${arrangedCountFor(job)}`
+                          : "",
+                        job.customerAvailabilityStatus === "cancelled"
+                          ? "availability-cancelled"
+                          : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
                       onClick={() => {
                         setSelectedId(job.id);
                         setEditMode(false);
@@ -1382,6 +1641,9 @@ export default function DashboardPage() {
                         </select>
                       </td>
                       <td>
+                        <strong>{job.stockDetails || "Not entered"}</strong>
+                      </td>
+                      <td>
                         <strong>
                           {job.installationDate ||
                           groupByJobId.get(job.id)?.installationDate
@@ -1415,7 +1677,7 @@ export default function DashboardPage() {
         {view === "groups" && (
           <InstallationGroupsView
             groups={groups}
-            jobs={jobs}
+            jobs={monthFilteredJobs}
             teams={teamResources}
             weekAssignments={teamWeekAssignments}
             deliveryRuns={deliveryRuns}
@@ -1428,45 +1690,17 @@ export default function DashboardPage() {
               setInstallationDateFilter(date);
               setView("pipeline");
             }}
-            groupsWorkspace={groupsWorkspace}
-            onGroupsWorkspaceChange={setGroupsWorkspace}
+            groupsWorkspace="teams"
+            onReassignTeam={() => setShowScheduleModal(false)}
           />
         )}
 
         {view === "teams" && (
           <TeamPlanningView
             groups={groups}
-            jobs={jobs}
-            onCreateSuggestedGroup={(
-              name,
-              area,
-              jobIds,
-              installationDate,
-              installationEndDate,
-            ) => {
-              const movingJobIds = new Set(jobIds);
-              saveGroups([
-                ...groups.map((group) => ({
-                  ...group,
-                  jobIds: group.jobIds.filter(
-                    (jobId) => !movingJobIds.has(jobId),
-                  ),
-                })),
-                {
-                  id: crypto.randomUUID(),
-                  name,
-                  area,
-                  installationDate,
-                  installationEndDate,
-                  jobIds,
-                  installationTeam: "",
-                  wiringTeam: "",
-                  supervisor: "",
-                },
-              ]);
-              setView("groups");
-              setGroupsWorkspace("schedule");
-            }}
+            jobs={monthFilteredJobs}
+            availableSuggestions={availableSuggestions}
+            onAvailableSuggestionsChange={saveAvailableSuggestions}
             onUpdateJob={(job) => void saveAvailability(job)}
             onAssignCustomerToGroup={assignJobToGroup}
           />
@@ -1475,10 +1709,11 @@ export default function DashboardPage() {
         {view === "delivery" && (
           <DeliveryPlanningView
             runs={deliveryRuns}
-            jobs={jobs}
+            jobs={monthFilteredJobs}
             groups={groups}
             onOpenJob={setSelectedId}
             onChange={saveDeliveryRuns}
+            onUpdateJob={(job) => void saveJob(job)}
             onCreate={() => setComposer("delivery")}
           />
         )}
@@ -1524,7 +1759,7 @@ export default function DashboardPage() {
                     onChange={(event) =>
                       setGroupDraft({ ...groupDraft, name: event.target.value })
                     }
-                    placeholder="Example: JB North Â· 12 Aug"
+                    placeholder="Example: JB North · 12 Aug"
                   />
                 </label>
                 <label>
@@ -1635,7 +1870,7 @@ export default function DashboardPage() {
                     <option value="">Select customer group</option>
                     {groups.map((group) => (
                       <option value={group.id} key={group.id}>
-                        {group.name} Â· {group.area}
+                        {group.name} · {group.area}
                       </option>
                     ))}
                   </select>
@@ -1706,11 +1941,19 @@ export default function DashboardPage() {
           >
             <JobDetail
               job={selectedJobForDisplay}
-              editing={editMode}
+              locationGroupLabel={locationGroupLabelFor(
+                selectedJobForDisplay.id,
+              )}
+              group={groupByJobId.get(selectedJobForDisplay.id) ?? null}
+              deliveryRun={
+                deliveryRunByJobId.get(selectedJobForDisplay.id) ?? null
+              }
+              availableSuggestion={
+                availableSuggestionByJobId.get(selectedJobForDisplay.id) ?? null
+              }
+              availableTeams={teamResources}
               saving={saving}
               sldOpen={sldOpen}
-              onEdit={() => setEditMode(true)}
-              onCancel={() => setEditMode(false)}
               onSave={(job) => void saveAvailability(job)}
               onOpenSld={() => setSldOpen(true)}
               onCloseSld={() => setSldOpen(false)}
@@ -1719,7 +1962,6 @@ export default function DashboardPage() {
                 setEditMode(false);
                 setSldOpen(false);
               }}
-              availableTeams={teamResources}
             />
           </div>
         </div>
@@ -1807,6 +2049,62 @@ export default function DashboardPage() {
                   Cancel
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showScheduleModal && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={() => setShowScheduleModal(false)}
+        >
+          <div
+            className="schedule-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Schedule and assign"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="detail-header">
+              <div>
+                <p className="eyebrow">Installation groups</p>
+                <h2>Schedule &amp; assign</h2>
+                <p>Plan group dates, teams, and delivery across the month.</p>
+              </div>
+              <button
+                className="icon-button"
+                aria-label="Close"
+                onClick={() => setShowScheduleModal(false)}
+              >
+                <X size={19} />
+              </button>
+            </div>
+
+            <div className="schedule-modal-content">
+              <InstallationGroupsView
+                groups={groups}
+                jobs={jobs}
+                teams={teamResources}
+                weekAssignments={teamWeekAssignments}
+                deliveryRuns={deliveryRuns}
+                onOpenJob={setSelectedId}
+                onGroupsChange={saveGroups}
+                onTeamsChange={saveTeamResources}
+                onWeekAssignmentsChange={saveTeamWeekAssignments}
+                onCreate={() => setComposer("group")}
+                onJumpToDate={(date) => {
+                  setInstallationDateFilter(date);
+                  setShowScheduleModal(false);
+                  setView("pipeline");
+                }}
+                groupsWorkspace="schedule"
+                onReassignTeam={() => {
+                  setShowScheduleModal(false);
+                  setView("groups");
+                }}
+              />
             </div>
           </div>
         </div>
@@ -1906,7 +2204,8 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
-    </main>
+      </main>
+    </div>
   );
 }
 
@@ -1923,7 +2222,7 @@ function InstallationGroupsView({
   onCreate,
   onJumpToDate,
   groupsWorkspace,
-  onGroupsWorkspaceChange,
+  onReassignTeam,
 }: {
   groups: InstallationGroup[];
   jobs: InstallationJob[];
@@ -1937,9 +2236,8 @@ function InstallationGroupsView({
   onCreate: () => void;
   onJumpToDate: (date: string) => void;
   groupsWorkspace: "schedule" | "teams";
-  onGroupsWorkspaceChange: (workspace: "schedule" | "teams") => void;
+  onReassignTeam: () => void;
 }) {
-  const setGroupsWorkspace = onGroupsWorkspaceChange;
   const [openGroupId, setOpenGroupId] = useState<string | null>(null);
   const [showFullCalendar, setShowFullCalendar] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => {
@@ -1962,7 +2260,75 @@ function InstallationGroupsView({
   const [calendarWeather, setCalendarWeather] = useState<
     Record<string, { rainProbability: number; weatherCode: number }>
   >({});
-  const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
+  const [rowAssignmentDraft, setRowAssignmentDraft] = useState<
+    Record<string, { startDate: string; endDate: string; installationGroupId: string }>
+  >({});
+  const [memberDraft, setMemberDraft] = useState<Record<string, string>>({});
+
+  function addMemberTag(teamId: string) {
+    const name = (memberDraft[teamId] ?? "").trim();
+    if (!name) return;
+    const team = teams.find((item) => item.id === teamId);
+    if (!team || (team.members ?? []).includes(name)) {
+      setMemberDraft((prev) => ({ ...prev, [teamId]: "" }));
+      return;
+    }
+    updateTeam(teamId, { members: [...(team.members ?? []), name] });
+    setMemberDraft((prev) => ({ ...prev, [teamId]: "" }));
+  }
+
+  function removeMemberTag(teamId: string, name: string) {
+    const team = teams.find((item) => item.id === teamId);
+    if (!team) return;
+    updateTeam(teamId, {
+      members: (team.members ?? []).filter((member) => member !== name),
+    });
+  }
+
+  function getRowAssignmentDraft(teamId: string) {
+    return (
+      rowAssignmentDraft[teamId] ?? {
+        startDate: "",
+        endDate: "",
+        installationGroupId: "",
+      }
+    );
+  }
+
+  function updateRowAssignmentDraft(
+    teamId: string,
+    update: Partial<{ startDate: string; endDate: string; installationGroupId: string }>,
+  ) {
+    setRowAssignmentDraft((prev) => ({
+      ...prev,
+      [teamId]: { ...getRowAssignmentDraft(teamId), ...update },
+    }));
+  }
+
+  function addRowWeekAssignment(teamId: string) {
+    const draft = getRowAssignmentDraft(teamId);
+    if (!draft.startDate || !draft.endDate || !draft.installationGroupId) return;
+    onWeekAssignmentsChange([
+      ...weekAssignments,
+      {
+        id: crypto.randomUUID(),
+        teamId,
+        startDate: draft.startDate,
+        endDate: draft.endDate,
+        installationGroupId: draft.installationGroupId,
+      },
+    ]);
+    const team = teams.find((item) => item.id === teamId);
+    if (team) {
+      updateGroup(draft.installationGroupId, {
+        [team.role === "wiring" ? "wiringTeam" : "installationTeam"]: team.name,
+      });
+    }
+    setRowAssignmentDraft((prev) => ({
+      ...prev,
+      [teamId]: { startDate: "", endDate: "", installationGroupId: "" },
+    }));
+  }
 
   function updateGroup(id: string, update: Partial<InstallationGroup>) {
     onGroupsChange(
@@ -2015,6 +2381,20 @@ function InstallationGroupsView({
     });
   }
 
+  function addBlankTeamResource() {
+    onTeamsChange([
+      ...teams,
+      {
+        id: crypto.randomUUID(),
+        name: "",
+        role: "installation",
+        baseLocation: "",
+        contact: "",
+        members: [],
+      },
+    ]);
+  }
+
   function addWeekAssignment() {
     if (
       !weekDraft.teamId ||
@@ -2053,10 +2433,8 @@ function InstallationGroupsView({
     groups.forEach((group) => {
       const firstJob = jobs.find((job) => group.jobIds.includes(job.id));
       if (!firstJob) return;
-      const postcode = postcodeForJob(firstJob);
-      const coordinates =
-        WEATHER_COORDINATES_BY_POSTCODE_PREFIX[postcode.slice(0, 3)];
-      if (coordinates) locations.set(postcode.slice(0, 3), coordinates);
+      const match = weatherCoordinatesForPostcode(postcodeForJob(firstJob));
+      if (match) locations.set(match.prefix, match.coordinates);
     });
     if (!locations.size) {
       setCalendarWeather({});
@@ -2171,35 +2549,18 @@ function InstallationGroupsView({
 
   return (
     <div className="planning-panel">
-      <div className="planning-heading">
-        <div>
-          <h2>Installation groups</h2>
-          <p>Customers grouped by location and installation date.</p>
+      {groupsWorkspace === "teams" && (
+        <div className="planning-heading">
+          <div>
+            <h2>Installation groups</h2>
+            <p>Customers grouped by location and installation date.</p>
+          </div>
+          <button className="button primary" onClick={onCreate}>
+            <CalendarDays size={16} />
+            Create group
+          </button>
         </div>
-        <button className="button primary" onClick={onCreate}>
-          <CalendarDays size={16} />
-          Create group
-        </button>
-      </div>
-
-      <div className="groups-workspace-tabs" role="tablist" aria-label="Installation group workspaces">
-        <button
-          className={groupsWorkspace === "schedule" ? "active" : ""}
-          onClick={() => setGroupsWorkspace("schedule")}
-          role="tab"
-          aria-selected={groupsWorkspace === "schedule"}
-        >
-          Schedule &amp; assign
-        </button>
-        <button
-          className={groupsWorkspace === "teams" ? "active" : ""}
-          onClick={() => setGroupsWorkspace("teams")}
-          role="tab"
-          aria-selected={groupsWorkspace === "teams"}
-        >
-          Team management
-        </button>
-      </div>
+      )}
 
       {groupsWorkspace === "teams" && (
         <section className="unified-team-management">
@@ -2210,55 +2571,9 @@ function InstallationGroupsView({
             </div>
           </div>
           <div className="team-create-row">
-            <input
-              value={teamDraft.name}
-              onChange={(event) =>
-                setTeamDraft({ ...teamDraft, name: event.target.value })
-              }
-              placeholder="New team name"
-              aria-label="New team name"
-            />
-            <select
-              value={teamDraft.role}
-              onChange={(event) =>
-                setTeamDraft({
-                  ...teamDraft,
-                  role: event.target.value as TeamResource["role"],
-                })
-              }
-              aria-label="New team role"
-            >
-              <option value="installation">Installation team</option>
-              <option value="wiring">Wiring team</option>
-            </select>
-            <input
-              value={teamDraft.baseLocation}
-              onChange={(event) =>
-                setTeamDraft({ ...teamDraft, baseLocation: event.target.value })
-              }
-              placeholder="Base location"
-              aria-label="New team base location"
-            />
-            <input
-              value={teamDraft.contact}
-              onChange={(event) =>
-                setTeamDraft({ ...teamDraft, contact: event.target.value })
-              }
-              placeholder="Contact number"
-              aria-label="New team contact"
-            />
-            <input
-              value={teamDraft.members}
-              onChange={(event) =>
-                setTeamDraft({ ...teamDraft, members: event.target.value })
-              }
-              placeholder="Members, separated by commas"
-              aria-label="New team members"
-            />
             <button
               className="button primary"
-              disabled={!teamDraft.name.trim()}
-              onClick={addTeamResource}
+              onClick={addBlankTeamResource}
             >
               Add team
             </button>
@@ -2272,247 +2587,176 @@ function InstallationGroupsView({
                   <th>Members</th>
                   <th>Contact</th>
                   <th>Base location</th>
-                  <th>Current / next weekly location</th>
+                  <th>From</th>
+                  <th>Until</th>
+                  <th>Customer Group</th>
                   <th aria-label="Actions" />
                 </tr>
               </thead>
               <tbody>
                 {teams.map((team) => {
-                  const assignments = weekAssignments
-                    .filter((assignment) => assignment.teamId === team.id)
-                    .sort((a, b) => a.startDate.localeCompare(b.startDate));
-                  const today = new Date().toISOString().slice(0, 10);
-                  const currentAssignment =
-                    assignments.find(
-                      (assignment) =>
-                        assignment.startDate <= today &&
-                        assignment.endDate >= today,
-                    ) ?? assignments.find((assignment) => assignment.startDate > today);
-                  const currentGroup = groups.find(
-                    (group) =>
-                      group.id === currentAssignment?.installationGroupId,
-                  );
-                  const expanded = expandedTeamId === team.id;
+                  const rowDraft = getRowAssignmentDraft(team.id);
                   return (
-                    <Fragment key={team.id}>
-                      <tr>
-                        <td>
-                          <input
-                            value={team.name}
-                            onChange={(event) =>
-                              updateTeam(team.id, { name: event.target.value })
-                            }
-                            aria-label={`Edit ${team.name} name`}
-                          />
-                        </td>
-                        <td>
-                          <select
-                            value={team.role}
-                            onChange={(event) =>
-                              updateTeam(team.id, {
-                                role: event.target.value as TeamResource["role"],
-                              })
-                            }
-                          >
-                            <option value="installation">Installation</option>
-                            <option value="wiring">Wiring</option>
-                          </select>
-                        </td>
-                        <td>
-                          <input
-                            value={(team.members ?? []).join(", ")}
-                            onChange={(event) =>
-                              updateTeam(team.id, {
-                                members: event.target.value
-                                  .split(",")
-                                  .map((member) => member.trim())
-                                  .filter(Boolean),
-                              })
-                            }
-                            placeholder="Member names"
-                          />
-                        </td>
-                        <td>
-                          <input
-                            value={team.contact}
-                            onChange={(event) =>
-                              updateTeam(team.id, { contact: event.target.value })
-                            }
-                            placeholder="Contact number"
-                          />
-                        </td>
-                        <td>
-                          <input
-                            value={team.baseLocation}
-                            onChange={(event) =>
-                              updateTeam(team.id, {
-                                baseLocation: event.target.value,
-                              })
-                            }
-                            placeholder="Base location"
-                          />
-                        </td>
-                        <td>
-                          {currentAssignment ? (
-                            <button
-                              className="team-assignment-summary"
-                              onClick={() => {
-                                setExpandedTeamId(team.id);
-                                setWeekDraft({
-                                  teamId: team.id,
-                                  startDate: "",
-                                  endDate: "",
-                                  installationGroupId: "",
-                                });
-                              }}
-                            >
-                              <strong>{currentGroup?.name || "Group unavailable"}</strong>
-                              <span>
-                                {currentGroup?.area || "Location unavailable"} Â·{" "}
-                                {currentAssignment.startDate} to {currentAssignment.endDate}
+                    <tr key={team.id}>
+                      <td>
+                        <input
+                          value={team.name}
+                          onChange={(event) =>
+                            updateTeam(team.id, { name: event.target.value })
+                          }
+                          aria-label={`Edit ${team.name} name`}
+                        />
+                      </td>
+                      <td>
+                        <select
+                          value={team.role}
+                          onChange={(event) =>
+                            updateTeam(team.id, {
+                              role: event.target.value as TeamResource["role"],
+                            })
+                          }
+                        >
+                          <option value="installation">Installation</option>
+                          <option value="wiring">Wiring</option>
+                        </select>
+                      </td>
+                      <td>
+                        <div className="member-tag-input">
+                          <div className="member-tag-list">
+                            {(team.members ?? []).map((member) => (
+                              <span className="member-tag" key={member}>
+                                {member}
+                                <button
+                                  type="button"
+                                  aria-label={`Remove ${member}`}
+                                  onClick={() => removeMemberTag(team.id, member)}
+                                >
+                                  <X size={12} />
+                                </button>
                               </span>
-                            </button>
-                          ) : (
-                            <span className="muted-cell">No weekly assignment</span>
-                          )}
-                        </td>
-                        <td>
-                          <div className="row-actions">
-                            <button
-                              className="text-button"
-                              onClick={() => {
-                                setExpandedTeamId(expanded ? null : team.id);
-                                setWeekDraft({
-                                  teamId: team.id,
-                                  startDate: "",
-                                  endDate: "",
-                                  installationGroupId: "",
-                                });
-                              }}
-                            >
-                              {expanded ? "Close" : "Assignments"}
-                            </button>
-                            <button
-                              className="icon-button"
-                              aria-label={`Remove ${team.name}`}
-                              onClick={() =>
-                                onTeamsChange(
-                                  teams.filter((item) => item.id !== team.id),
-                                )
+                            ))}
+                          </div>
+                          <div className="member-tag-add">
+                            <input
+                              value={memberDraft[team.id] ?? ""}
+                              onChange={(event) =>
+                                setMemberDraft((prev) => ({
+                                  ...prev,
+                                  [team.id]: event.target.value,
+                                }))
                               }
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  addMemberTag(team.id);
+                                }
+                              }}
+                              placeholder="Add member name"
+                              aria-label={`Add member to ${team.name}`}
+                            />
+                            <button
+                              type="button"
+                              className="icon-button"
+                              aria-label={`Add member to ${team.name}`}
+                              onClick={() => addMemberTag(team.id)}
                             >
-                              <X size={16} />
+                              <Plus size={14} />
                             </button>
                           </div>
-                        </td>
-                      </tr>
-                      {expanded && (
-                        <tr className="expanded-team-assignment-row">
-                          <td colSpan={7}>
-                            <div className="expanded-team-assignment">
-                              <div className="expanded-assignment-heading">
-                                <div>
-                                  <strong>{team.name} weekly locations</strong>
-                                  <span>{assignments.length} assignment{assignments.length === 1 ? "" : "s"}</span>
-                                </div>
-                              </div>
-                              <div className="inline-weekly-assignment">
-                                <input
-                                  type="date"
-                                  value={weekDraft.startDate}
-                                  onChange={(event) =>
-                                    setWeekDraft({
-                                      ...weekDraft,
-                                      teamId: team.id,
-                                      startDate: event.target.value,
-                                    })
-                                  }
-                                  aria-label="Assignment from date"
-                                />
-                                <input
-                                  type="date"
-                                  min={weekDraft.startDate || undefined}
-                                  value={weekDraft.endDate}
-                                  onChange={(event) =>
-                                    setWeekDraft({
-                                      ...weekDraft,
-                                      teamId: team.id,
-                                      endDate: event.target.value,
-                                    })
-                                  }
-                                  aria-label="Assignment until date"
-                                />
-                                <select
-                                  value={weekDraft.installationGroupId}
-                                  onChange={(event) =>
-                                    setWeekDraft({
-                                      ...weekDraft,
-                                      teamId: team.id,
-                                      installationGroupId: event.target.value,
-                                    })
-                                  }
-                                  aria-label="Assigned installation group"
-                                >
-                                  <option value="">Select installation group</option>
-                                  {groups.map((group) => (
-                                    <option value={group.id} key={group.id}>
-                                      {group.name} Â· {group.area}
-                                    </option>
-                                  ))}
-                                </select>
-                                <button
-                                  className="button primary"
-                                  onClick={addWeekAssignment}
-                                  disabled={
-                                    !weekDraft.startDate ||
-                                    !weekDraft.endDate ||
-                                    !weekDraft.installationGroupId
-                                  }
-                                >
-                                  Add assignment
-                                </button>
-                              </div>
-                              <div className="assignment-chip-list">
-                                {assignments.length === 0 ? (
-                                  <span className="muted-cell">No weekly locations assigned.</span>
-                                ) : (
-                                  assignments.map((assignment) => {
-                                    const assignmentGroup = groups.find(
-                                      (group) =>
-                                        group.id === assignment.installationGroupId,
-                                    );
-                                    return (
-                                      <div className="assignment-chip" key={assignment.id}>
-                                        <div>
-                                          <strong>{assignmentGroup?.name || "Group unavailable"}</strong>
-                                          <span>
-                                            {assignmentGroup?.area || "Location unavailable"} Â·{" "}
-                                            {assignment.startDate} to {assignment.endDate}
-                                          </span>
-                                        </div>
-                                        <button
-                                          className="icon-button"
-                                          aria-label="Remove weekly assignment"
-                                          onClick={() =>
-                                            onWeekAssignmentsChange(
-                                              weekAssignments.filter(
-                                                (item) => item.id !== assignment.id,
-                                              ),
-                                            )
-                                          }
-                                        >
-                                          <X size={15} />
-                                        </button>
-                                      </div>
-                                    );
-                                  })
-                                )}
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
+                        </div>
+                      </td>
+                      <td>
+                        <input
+                          value={team.contact}
+                          onChange={(event) =>
+                            updateTeam(team.id, { contact: event.target.value })
+                          }
+                          placeholder="Contact number"
+                        />
+                      </td>
+                      <td>
+                        <input
+                          value={team.baseLocation}
+                          onChange={(event) =>
+                            updateTeam(team.id, {
+                              baseLocation: event.target.value,
+                            })
+                          }
+                          placeholder="Base location"
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="date"
+                          value={rowDraft.startDate}
+                          onChange={(event) =>
+                            updateRowAssignmentDraft(team.id, {
+                              startDate: event.target.value,
+                            })
+                          }
+                          aria-label={`${team.name} assignment from date`}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="date"
+                          min={rowDraft.startDate || undefined}
+                          value={rowDraft.endDate}
+                          onChange={(event) =>
+                            updateRowAssignmentDraft(team.id, {
+                              endDate: event.target.value,
+                            })
+                          }
+                          aria-label={`${team.name} assignment until date`}
+                        />
+                      </td>
+                      <td>
+                        <div className="row-actions">
+                          <select
+                            value={rowDraft.installationGroupId}
+                            onChange={(event) =>
+                              updateRowAssignmentDraft(team.id, {
+                                installationGroupId: event.target.value,
+                              })
+                            }
+                            aria-label={`${team.name} assigned installation group`}
+                          >
+                            <option value="">Select installation group</option>
+                            {groups.map((group) => (
+                              <option value={group.id} key={group.id}>
+                                {group.name} · {group.area}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            className="button primary"
+                            onClick={() => addRowWeekAssignment(team.id)}
+                            disabled={
+                              !rowDraft.startDate ||
+                              !rowDraft.endDate ||
+                              !rowDraft.installationGroupId
+                            }
+                          >
+                            Add
+                          </button>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="row-actions">
+                          <button
+                            className="icon-button"
+                            aria-label={`Remove ${team.name}`}
+                            onClick={() =>
+                              onTeamsChange(
+                                teams.filter((item) => item.id !== team.id),
+                              )
+                            }
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
                   );
                 })}
               </tbody>
@@ -2725,7 +2969,7 @@ function InstallationGroupsView({
             <option value="">Select available group</option>
             {groups.map((group) => (
               <option value={group.id} key={group.id}>
-                {group.name} Â· {group.area}
+                {group.name} · {group.area}
               </option>
             ))}
           </select>
@@ -2822,7 +3066,7 @@ function InstallationGroupsView({
                 )
               }
             >
-              â€¹
+              ‹
             </button>
             <strong>{calendarTitle}</strong>
             <button
@@ -2834,13 +3078,9 @@ function InstallationGroupsView({
                 )
               }
             >
-              â€º
+              ›
             </button>
             <span className="standard-calendar-spacer" />
-            <button className="button primary" onClick={onCreate}>
-              <CalendarDays size={16} />
-              Create group
-            </button>
           </div>
 
           <div className="week-cards-row">
@@ -2875,7 +3115,7 @@ function InstallationGroupsView({
                   deliveryRunsForGroup={deliveryRunsForGroup}
                   onOpenDrawer={() => setOpenGroupId(group.id)}
                   onOpenCalendar={() => setShowFullCalendar(true)}
-                  onReassignTeam={() => setGroupsWorkspace("teams")}
+                  onReassignTeam={onReassignTeam}
                 />
               ));
             })}
@@ -2894,7 +3134,7 @@ function InstallationGroupsView({
                   onClick={() => setOpenGroupId(group.id)}
                 >
                   {group.name || "Untitled group"}
-                  {group.area ? ` Â· ${group.area}` : ""}
+                  {group.area ? ` · ${group.area}` : ""}
                 </button>
               ))}
             </div>
@@ -2925,7 +3165,7 @@ function InstallationGroupsView({
                   )
                 }
               >
-                â€¹
+                ‹
               </button>
               <strong>{calendarTitle}</strong>
               <button
@@ -2937,7 +3177,7 @@ function InstallationGroupsView({
                   )
                 }
               >
-                â€º
+                ›
               </button>
               <span className="standard-calendar-spacer" />
               <button
@@ -2967,15 +3207,6 @@ function InstallationGroupsView({
                   (run) => run.deliveryDate === key,
                 ).length;
                 const weather = calendarWeather[key];
-                const weatherIcon = weather
-                  ? weather.weatherCode >= 95
-                    ? "â›ˆ"
-                    : weather.weatherCode >= 51
-                      ? "ðŸŒ§"
-                      : weather.weatherCode >= 1
-                        ? "â›…"
-                        : "â˜€"
-                  : "";
                 const showWeather = weather && weather.rainProbability >= 40;
                 const holiday = holidayForDate(key);
                 return (
@@ -3000,7 +3231,8 @@ function InstallationGroupsView({
                               : "medium-risk"
                           }`}
                         >
-                          {weatherIcon} {weather.rainProbability}%
+                          <WeatherGlyph code={weather.weatherCode} size={13} />
+                          {weather.rainProbability}%
                         </span>
                       )}
                     </div>
@@ -3102,7 +3334,7 @@ function WeekGroupCard({
       </span>
       {weekHolidays.length > 0 && (
         <span className="week-group-card-holiday">
-          {weekHolidays.join(" Â· ")}
+          {weekHolidays.join(" · ")}
         </span>
       )}
 
@@ -3142,7 +3374,7 @@ function WeekGroupCard({
               <div>
                 <strong>{run.name}</strong>
                 <span>
-                  {run.deliveryDate || "No date"} Â·{" "}
+                  {run.deliveryDate || "No date"} ·{" "}
                   {run.warehouse || "No warehouse"}
                 </span>
               </div>
@@ -3160,22 +3392,19 @@ function WeekGroupCard({
           {weekDates.map((date) => {
             const key = dateKey(date);
             const weather = calendarWeather[key];
-            const weatherIcon = weather
-              ? weather.weatherCode >= 95
-                ? "â›ˆ"
-                : weather.weatherCode >= 51
-                  ? "ðŸŒ§"
-                  : weather.weatherCode >= 1
-                    ? "â›…"
-                    : "â˜€"
-              : "";
             return (
-              <div key={key}>
+              <div key={key} title={weather ? undefined : NO_FORECAST_HINT}>
                 <span>
                   {date.toLocaleDateString("en-MY", { weekday: "short" })}
                 </span>
-                <strong>{weatherIcon || "â€“"}</strong>
-                <small>{weather ? `${weather.rainProbability}%` : "â€”"}</small>
+                <strong>
+                  {weather ? (
+                    <WeatherGlyph code={weather.weatherCode} />
+                  ) : (
+                    <CalendarOff size={14} className="weather-glyph none" />
+                  )}
+                </strong>
+                <small>{weather ? `${weather.rainProbability}%` : "—"}</small>
               </div>
             );
           })}
@@ -3392,7 +3621,7 @@ function GroupDrawer({
               <div className="group-drawer-row" key={run.id}>
                 <span>{run.name}</span>
                 <span>
-                  {run.deliveryDate || "No date"} Â·{" "}
+                  {run.deliveryDate || "No date"} ·{" "}
                   {run.warehouse || "No warehouse"}
                 </span>
               </div>
@@ -3413,7 +3642,7 @@ function GroupDrawer({
                       {date.toLocaleDateString("en-MY", { weekday: "short" })}
                     </span>
                     <strong>
-                      {weather ? `${weather.rainProbability}%` : "â€”"}
+                      {weather ? `${weather.rainProbability}%` : "—"}
                     </strong>
                   </div>
                 );
@@ -3441,19 +3670,15 @@ function GroupDrawer({
 function TeamPlanningView({
   groups,
   jobs,
-  onCreateSuggestedGroup,
+  availableSuggestions,
+  onAvailableSuggestionsChange,
   onUpdateJob,
   onAssignCustomerToGroup,
 }: {
   groups: InstallationGroup[];
   jobs: InstallationJob[];
-  onCreateSuggestedGroup: (
-    name: string,
-    area: string,
-    jobIds: string[],
-    installationDate: string,
-    installationEndDate: string,
-  ) => void;
+  availableSuggestions: AvailableSuggestion[];
+  onAvailableSuggestionsChange: (next: AvailableSuggestion[]) => void;
   onUpdateJob: (job: InstallationJob) => void;
   onAssignCustomerToGroup: (jobId: string, groupId: string) => void;
 }) {
@@ -3469,17 +3694,6 @@ function TeamPlanningView({
     state: string;
     customers: InstallationJob[];
   } | null>(null);
-  const [pendingGroupSuggestion, setPendingGroupSuggestion] = useState<{
-    id: string;
-    area: string;
-    postcode: string;
-    state: string;
-    customers: InstallationJob[];
-  } | null>(null);
-  const [pendingGroupDate, setPendingGroupDate] = useState({
-    installationDate: "",
-    installationEndDate: "",
-  });
   const [addCustomerId, setAddCustomerId] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
   const [showCustomerPicker, setShowCustomerPicker] = useState(false);
@@ -3532,7 +3746,7 @@ function TeamPlanningView({
       !assignedJobIds.has(job.id) &&
       hasPlanningEligibility(job) &&
       job.scheduleStatus !== "installed" &&
-      job.customerAvailabilityStatus !== "unavailable" &&
+      !isOutOfPlanning(job) &&
       (planningFilter === "special" || matchesPlanningStatus(job)),
   );
   const filteredPlanningJobIds = new Set(
@@ -3542,7 +3756,7 @@ function TeamPlanningView({
           hasPlanningEligibility(job) &&
           matchesPlanningStatus(job) &&
           job.scheduleStatus !== "installed" &&
-          job.customerAvailabilityStatus !== "unavailable",
+          !isOutOfPlanning(job),
       )
       .map((job) => job.id),
   );
@@ -3550,7 +3764,7 @@ function TeamPlanningView({
     planningFilter === "special" ? approvedSpecialCases : jobs
   ).filter(
     (job) =>
-      job.customerAvailabilityStatus === "unavailable" &&
+      isOutOfPlanning(job) &&
       hasPlanningEligibility(job) &&
       (planningFilter === "special" || matchesPlanningStatus(job)),
   );
@@ -3703,13 +3917,54 @@ function TeamPlanningView({
     [planningFilter, suggestions],
   );
 
+  const availableSet = useMemo(
+    () => new Set(availableSuggestions.map((entry) => entry.id)),
+    [availableSuggestions],
+  );
+
   const filteredSuggestions = useMemo(() => {
     const postcodeSearch = postcodeFilter.trim().toLowerCase();
-    if (!postcodeSearch) return displayedSuggestions;
-    return displayedSuggestions.filter((suggestion) =>
-      suggestion.postcode.toLowerCase().includes(postcodeSearch),
+    const matching = postcodeSearch
+      ? displayedSuggestions.filter((suggestion) =>
+          suggestion.postcode.toLowerCase().includes(postcodeSearch),
+        )
+      : displayedSuggestions;
+
+    // Marked-available towns pin to the top. Everything else keeps the order
+    // it already had, so the list does not reshuffle underneath the user.
+    const pinned = matching.filter((suggestion) =>
+      availableSet.has(suggestion.id),
     );
-  }, [displayedSuggestions, postcodeFilter]);
+    const rest = matching.filter(
+      (suggestion) => !availableSet.has(suggestion.id),
+    );
+    return [...pinned, ...rest];
+  }, [displayedSuggestions, postcodeFilter, availableSet]);
+
+  function toggleAvailable(suggestion: {
+    id: string;
+    area: string;
+    postcode: string;
+    state: string;
+    customers: InstallationJob[];
+  }) {
+    if (availableSet.has(suggestion.id)) {
+      onAvailableSuggestionsChange(
+        availableSuggestions.filter((entry) => entry.id !== suggestion.id),
+      );
+      return;
+    }
+    onAvailableSuggestionsChange([
+      ...availableSuggestions,
+      {
+        id: suggestion.id,
+        label: [suggestion.area, suggestion.postcode, suggestion.state]
+          .filter(Boolean)
+          .join(" · "),
+        jobIds: suggestion.customers.map((job) => job.id),
+      },
+    ]);
+  }
 
   const planningMapGroups = useMemo(
     () =>
@@ -3759,7 +4014,7 @@ function TeamPlanningView({
         !previewSuggestion.customers.some(
           (customer) => customer.id === job.id,
         ) &&
-        job.customerAvailabilityStatus !== "unavailable" &&
+        !isOutOfPlanning(job) &&
         job.scheduleStatus !== "installed" &&
         hasPlanningEligibility(job) &&
         matchesPlanningStatus(job) &&
@@ -3918,13 +4173,16 @@ function TeamPlanningView({
                 <th>SEDA pending</th>
                 <th>Customer availability</th>
                 <th>Planning range</th>
-                <th aria-label="Create group" />
+                <th aria-label="Mark available" />
               </tr>
             </thead>
             <tbody>
               {filteredSuggestions.map((suggestion) => (
                 <tr
                   key={suggestion.id}
+                  className={
+                    availableSet.has(suggestion.id) ? "suggestion-available" : ""
+                  }
                   onMouseEnter={() => setHighlightedMapGroupId(suggestion.id)}
                   onMouseLeave={() => setHighlightedMapGroupId(null)}
                   onClick={() => {
@@ -3937,7 +4195,7 @@ function TeamPlanningView({
                     <strong>{formatPersonName(suggestion.area)}</strong>
                     <span>
                       {suggestion.postcode || "Postcode unavailable"}
-                      {suggestion.state ? ` Â· ${suggestion.state}` : ""}
+                      {suggestion.state ? ` · ${suggestion.state}` : ""}
                     </span>
                     <span>
                       {suggestionOverrides[suggestion.id]
@@ -3976,17 +4234,17 @@ function TeamPlanningView({
                   <td>Up to {rangeKm} km</td>
                   <td>
                     <button
-                      className="button primary"
+                      className={`button ${
+                        availableSet.has(suggestion.id) ? "" : "primary"
+                      }`}
+                      aria-pressed={availableSet.has(suggestion.id)}
                       onClick={(event) => {
                         event.stopPropagation();
-                        setPendingGroupSuggestion(suggestion);
-                        setPendingGroupDate({
-                          installationDate: "",
-                          installationEndDate: "",
-                        });
+                        toggleAvailable(suggestion);
                       }}
                     >
-                      Create group
+                      {availableSet.has(suggestion.id) && <Check size={15} />}
+                      Available group
                     </button>
                   </td>
                 </tr>
@@ -4071,7 +4329,7 @@ function TeamPlanningView({
                               disabled={group.jobIds.length >= 5}
                             >
                               {group.name} ({group.jobIds.length}/5)
-                              {group.jobIds.length >= 5 ? " Â· Full" : ""}
+                              {group.jobIds.length >= 5 ? " · Full" : ""}
                             </option>
                           ))}
                         </select>
@@ -4199,13 +4457,13 @@ function TeamPlanningView({
                       );
                       return (
                         <option value={customer.id} key={customer.id}>
-                          {formatPersonName(customer.customerName)} Â·{" "}
+                          {formatPersonName(customer.customerName)} ·{" "}
                           {customer.paymentPercent.toFixed(0)}%
                           {customer.paymentPercent < 59
-                            ? " Â· Special case"
+                            ? " · Special case"
                             : ""}
                           {currentGroup
-                            ? ` Â· From ${currentGroup.name}`
+                            ? ` · From ${currentGroup.name}`
                             : ""}
                         </option>
                       );
@@ -4274,7 +4532,7 @@ function TeamPlanningView({
                           </span>
                           {job.paymentPercent < 59 && (
                             <span className="special-case-label">
-                              Special case Â· Management approval required
+                              Special case · Management approval required
                             </span>
                           )}
                         </td>
@@ -4305,7 +4563,7 @@ function TeamPlanningView({
                                 ...job,
                                 customerAvailabilityStatus: status,
                               });
-                              if (status === "unavailable") {
+                              if (status === "unavailable" || status === "cancelled") {
                                 setPreviewSuggestion((current) =>
                                   current
                                     ? {
@@ -4322,6 +4580,7 @@ function TeamPlanningView({
                             <option value="pending">Pending confirmation</option>
                             <option value="available">Available</option>
                             <option value="unavailable">Not available</option>
+                            <option value="cancelled">Cancellation</option>
                           </select>
                         </td>
                         <td>
@@ -4358,7 +4617,7 @@ function TeamPlanningView({
             </div>
             <div className="suggestion-actions">
               <span>
-                Maximum 5 customers Â· Approximate range {rangeKm} km
+                Maximum 5 customers · Approximate range {rangeKm} km
               </span>
               <button
                 className="button primary"
@@ -4377,96 +4636,6 @@ function TeamPlanningView({
           </div>
         </div>
       )}
-
-      {pendingGroupSuggestion && (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={() => setPendingGroupSuggestion(null)}
-        >
-          <div
-            className="composer-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Set installation date"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="detail-header">
-              <div>
-                <p className="eyebrow">Create installation group</p>
-                <h2>{formatPersonName(pendingGroupSuggestion.area)}</h2>
-              </div>
-              <button
-                className="icon-button"
-                aria-label="Close"
-                onClick={() => setPendingGroupSuggestion(null)}
-              >
-                <X size={19} />
-              </button>
-            </div>
-            <div className="edit-form">
-              <label>
-                Installation from
-                <input
-                  type="date"
-                  value={pendingGroupDate.installationDate}
-                  onChange={(event) =>
-                    setPendingGroupDate((current) => ({
-                      ...current,
-                      installationDate: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Installation until
-                <input
-                  type="date"
-                  min={pendingGroupDate.installationDate || undefined}
-                  value={pendingGroupDate.installationEndDate}
-                  onChange={(event) =>
-                    setPendingGroupDate((current) => ({
-                      ...current,
-                      installationEndDate: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-              <div className="form-actions">
-                <button
-                  className="button secondary"
-                  onClick={() => setPendingGroupSuggestion(null)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="button primary"
-                  disabled={!pendingGroupDate.installationDate}
-                  onClick={() => {
-                    clearSuggestionDraft(pendingGroupSuggestion.id);
-                    onCreateSuggestedGroup(
-                      `${pendingGroupSuggestion.area} Â· Suggested`,
-                      [
-                        pendingGroupSuggestion.area,
-                        pendingGroupSuggestion.postcode,
-                        pendingGroupSuggestion.state,
-                      ]
-                        .filter(Boolean)
-                        .join(" Â· "),
-                      pendingGroupSuggestion.customers.map((job) => job.id),
-                      pendingGroupDate.installationDate,
-                      pendingGroupDate.installationEndDate,
-                    );
-                    setPendingGroupSuggestion(null);
-                  }}
-                >
-                  Create group
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -4477,6 +4646,7 @@ function DeliveryPlanningView({
   groups,
   onOpenJob,
   onChange,
+  onUpdateJob,
   onCreate,
 }: {
   runs: DeliveryRun[];
@@ -4484,17 +4654,47 @@ function DeliveryPlanningView({
   groups: InstallationGroup[];
   onOpenJob: (id: string) => void;
   onChange: (runs: DeliveryRun[]) => void;
+  onUpdateJob: (job: InstallationJob) => void;
   onCreate: () => void;
 }) {
+  const [openRunId, setOpenRunId] = useState<string | null>(null);
+  const [stockDraft, setStockDraft] = useState<Record<string, string>>({});
+
   function updateRun(id: string, update: Partial<DeliveryRun>) {
     onChange(runs.map((run) => (run.id === id ? { ...run, ...update } : run)));
+  }
+
+  const openRun = runs.find((run) => run.id === openRunId) ?? null;
+
+  function stockTags(job: InstallationJob) {
+    return (job.stockDetails || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function addStockTag(job: InstallationJob) {
+    const item = (stockDraft[job.id] ?? "").trim();
+    if (!item) return;
+    const tags = stockTags(job);
+    if (!tags.includes(item)) {
+      onUpdateJob({ ...job, stockDetails: [...tags, item].join(", ") });
+    }
+    setStockDraft((prev) => ({ ...prev, [job.id]: "" }));
+  }
+
+  function removeStockTag(job: InstallationJob, item: string) {
+    onUpdateJob({
+      ...job,
+      stockDetails: stockTags(job).filter((tag) => tag !== item).join(", "),
+    });
   }
 
   if (runs.length === 0) {
     return (
       <div className="planning-panel empty-state">
         <Truck />
-        <p>Create an empty delivery run, then link customers from Active Pipeline.</p>
+        <p>Create an empty delivery run, then link customers from Customer details.</p>
         <button className="button primary" onClick={onCreate}>
           Create delivery run
         </button>
@@ -4515,25 +4715,27 @@ function DeliveryPlanningView({
         </button>
       </div>
       {runs.map((run) => {
-        const runJobs = jobs.filter((job) => run.jobIds.includes(job.id));
         const linkedGroup = groups.find(
           (group) => group.id === run.installationGroupId,
         );
         return (
           <section className="planning-group" key={run.id}>
             <div className="group-header">
-              <div>
+              <button
+                className="delivery-run-summary"
+                onClick={() => setOpenRunId(run.id)}
+              >
                 <h3>{run.name}</h3>
                 <p>
-                  {run.deliveryDate || "Date not arranged"} Â·{" "}
-                  {run.warehouse || "Warehouse not selected"} Â·{" "}
+                  {run.deliveryDate || "Date not arranged"} ·{" "}
+                  {run.warehouse || "Warehouse not selected"} ·{" "}
                   {linkedGroup
                     ? `${linkedGroup.name} / ${linkedGroup.area}`
                     : "No group location"}{" "}
-                  Â· PIC: {run.deliveryPic || "Not assigned"} Â·{" "}
+                  · PIC: {run.deliveryPic || "Not assigned"} ·{" "}
                   {formatPhoneNumber(run.contactNumber || "")}
                 </p>
-              </div>
+              </button>
               <div className="run-controls">
                 <select
                   value={run.deliveryTeam}
@@ -4567,13 +4769,43 @@ function DeliveryPlanningView({
                 </button>
               </div>
             </div>
+          </section>
+        );
+      })}
+
+      {openRun && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={() => setOpenRunId(null)}
+        >
+          <div
+            className="delivery-run-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${openRun.name} delivery run`}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="detail-header">
+              <div>
+                <p className="eyebrow">Stock delivery</p>
+                <h2>{openRun.name}</h2>
+              </div>
+              <button
+                className="icon-button"
+                aria-label="Close"
+                onClick={() => setOpenRunId(null)}
+              >
+                <X size={19} />
+              </button>
+            </div>
             <div className="delivery-run-edit-grid">
               <label>
                 Delivery run name
                 <input
-                  value={run.name}
+                  value={openRun.name}
                   onChange={(event) =>
-                    updateRun(run.id, { name: event.target.value })
+                    updateRun(openRun.id, { name: event.target.value })
                   }
                 />
               </label>
@@ -4581,29 +4813,29 @@ function DeliveryPlanningView({
                 Delivery date
                 <input
                   type="date"
-                  value={run.deliveryDate}
+                  value={openRun.deliveryDate}
                   onChange={(event) =>
-                    updateRun(run.id, { deliveryDate: event.target.value })
+                    updateRun(openRun.id, { deliveryDate: event.target.value })
                   }
                 />
               </label>
               <label>
                 Warehouse
                 <input
-                  value={run.warehouse}
+                  value={openRun.warehouse}
                   onChange={(event) =>
-                    updateRun(run.id, { warehouse: event.target.value })
+                    updateRun(openRun.id, { warehouse: event.target.value })
                   }
                 />
               </label>
               <label>
                 Linked customer group
                 <select
-                  value={run.installationGroupId || ""}
+                  value={openRun.installationGroupId || ""}
                   onChange={(event) => {
                     const groupId = event.target.value;
                     const group = groups.find((item) => item.id === groupId);
-                    updateRun(run.id, {
+                    updateRun(openRun.id, {
                       installationGroupId: groupId,
                       jobIds: group?.jobIds ?? [],
                     });
@@ -4612,7 +4844,7 @@ function DeliveryPlanningView({
                   <option value="">No linked group</option>
                   {groups.map((group) => (
                     <option value={group.id} key={group.id}>
-                      {group.name} Â· {group.area}
+                      {group.name} · {group.area}
                     </option>
                   ))}
                 </select>
@@ -4620,9 +4852,9 @@ function DeliveryPlanningView({
               <label>
                 Delivery PIC
                 <input
-                  value={run.deliveryPic || ""}
+                  value={openRun.deliveryPic || ""}
                   onChange={(event) =>
-                    updateRun(run.id, { deliveryPic: event.target.value })
+                    updateRun(openRun.id, { deliveryPic: event.target.value })
                   }
                 />
               </label>
@@ -4630,9 +4862,9 @@ function DeliveryPlanningView({
                 Contact number
                 <input
                   type="tel"
-                  value={run.contactNumber || ""}
+                  value={openRun.contactNumber || ""}
                   onChange={(event) =>
-                    updateRun(run.id, { contactNumber: event.target.value })
+                    updateRun(openRun.id, { contactNumber: event.target.value })
                   }
                 />
               </label>
@@ -4641,21 +4873,67 @@ function DeliveryPlanningView({
               <table>
                 <thead><tr><th>Customer</th><th>Location</th><th>Stock details</th><th>Contact</th><th>Installation</th></tr></thead>
                 <tbody>
-                  {runJobs.map((job) => (
-                    <tr key={job.id} onClick={() => onOpenJob(job.id)}>
-                      <td><strong>{job.customerName}</strong><span>{job.invoiceNumber}</span></td>
-                      <td>{job.city || job.state || "Not available"}</td>
-                      <td>{job.stockDetails || "Not entered"}</td>
-                      <td>{job.deliveryContactNumber || job.customerPhone}</td>
-                      <td>{job.installationDate || "Not scheduled"}</td>
-                    </tr>
-                  ))}
+                  {jobs
+                    .filter((job) => openRun.jobIds.includes(job.id))
+                    .map((job) => (
+                      <tr key={job.id} onClick={() => onOpenJob(job.id)}>
+                        <td><strong>{job.customerName}</strong><span>{job.invoiceNumber}</span></td>
+                        <td>{job.city || job.state || "Not available"}</td>
+                        <td onClick={(event) => event.stopPropagation()}>
+                          <div className="member-tag-input">
+                            <div className="member-tag-list">
+                              {stockTags(job).map((item) => (
+                                <span className="member-tag" key={item}>
+                                  {item}
+                                  <button
+                                    type="button"
+                                    aria-label={`Remove ${item}`}
+                                    onClick={() => removeStockTag(job, item)}
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                            <div className="member-tag-add">
+                              <input
+                                value={stockDraft[job.id] ?? ""}
+                                onChange={(event) =>
+                                  setStockDraft((prev) => ({
+                                    ...prev,
+                                    [job.id]: event.target.value,
+                                  }))
+                                }
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") {
+                                    event.preventDefault();
+                                    addStockTag(job);
+                                  }
+                                }}
+                                placeholder="Add stock item"
+                                aria-label={`Add stock item for ${job.customerName}`}
+                              />
+                              <button
+                                type="button"
+                                className="icon-button"
+                                aria-label={`Add stock item for ${job.customerName}`}
+                                onClick={() => addStockTag(job)}
+                              >
+                                <Plus size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                        <td>{job.deliveryContactNumber || job.customerPhone}</td>
+                        <td>{job.installationDate || "Not scheduled"}</td>
+                      </tr>
+                    ))}
                 </tbody>
               </table>
             </div>
-          </section>
-        );
-      })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -4666,23 +4944,68 @@ function Metric({
   note,
   icon,
   tone,
+  accent,
+  hint,
+  onClick,
 }: {
   label: string;
   value: number;
   note: string;
   icon: React.ReactNode;
   tone?: "warning";
+  accent?: "amber" | "red";
+  hint?: string;
+  onClick?: () => void;
 }) {
-  return (
-    <article className={`metric ${tone ?? ""}`}>
+  const className = [
+    "metric",
+    tone ?? "",
+    accent ? `metric-accent-${accent}` : "",
+    onClick ? "metric-clickable" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const body = (
+    <>
       <div>
         <span>{label}</span>
         <strong>{value}</strong>
         <small>{note}</small>
       </div>
       <div className="metric-icon">{icon}</div>
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <button type="button" className={className} onClick={onClick} title={hint}>
+        {body}
+      </button>
+    );
+  }
+
+  return (
+    <article className={className} title={hint}>
+      {body}
     </article>
   );
+}
+
+// WMO weather codes. Drawn with lucide icons rather than emoji: the sun and
+// cloud characters have no emoji presentation by default, so they rendered as
+// near-invisible monochrome glyphs.
+function WeatherGlyph({ code, size = 15 }: { code: number; size?: number }) {
+  if (code >= 95) {
+    return <CloudLightning size={size} className="weather-glyph storm" aria-label="Thunderstorm" />;
+  }
+  if (code >= 51) {
+    return <CloudRain size={size} className="weather-glyph rain" aria-label="Rain" />;
+  }
+  if (code >= 1) {
+    return <CloudSun size={size} className="weather-glyph cloudy" aria-label="Partly cloudy" />;
+  }
+  return <Sun size={size} className="weather-glyph sunny" aria-label="Clear" />;
 }
 
 function StatusDot({ status }: { status: "good" | "warning" | "danger" | "neutral" }) {
@@ -4691,37 +5014,83 @@ function StatusDot({ status }: { status: "good" | "warning" | "danger" | "neutra
 
 function JobDetail({
   job,
-  editing,
+  locationGroupLabel,
+  group,
+  deliveryRun,
+  availableSuggestion,
+  availableTeams,
   saving,
   sldOpen,
-  onEdit,
-  onCancel,
   onSave,
   onOpenSld,
   onCloseSld,
   onDismiss,
-  availableTeams,
 }: {
   job: InstallationJob;
-  editing: boolean;
+  locationGroupLabel: string;
+  group: InstallationGroup | null;
+  deliveryRun: DeliveryRun | null;
+  availableSuggestion: AvailableSuggestion | null;
+  availableTeams: TeamResource[];
   saving: boolean;
   sldOpen: boolean;
-  onEdit: () => void;
-  onCancel: () => void;
   onSave: (job: InstallationJob) => void;
   onOpenSld: () => void;
   onCloseSld: () => void;
   onDismiss: () => void;
-  availableTeams: TeamResource[];
 }) {
-  const [draft, setDraft] = useState(job);
+  // Remarks are the only field this record edits; everything else is owned by
+  // Team planning, Installation groups, Stock delivery, or the source system.
+  const [remarksDraft, setRemarksDraft] = useState(job.remarks);
+  const [editingRemarks, setEditingRemarks] = useState(false);
 
-  useEffect(() => setDraft(job), [job]);
+  const [workDraft, setWorkDraft] = useState({
+    activity: "pv_panels" as TeamAssignment["activity"],
+    customActivity: "",
+    teamName: "",
+  });
+
+  useEffect(() => {
+    setRemarksDraft(job.remarks);
+    setEditingRemarks(false);
+  }, [job]);
+
+  function addWorkItem() {
+    if (!workDraft.teamName.trim()) return;
+    if (workDraft.activity === "other" && !workDraft.customActivity.trim()) {
+      return;
+    }
+    const team = availableTeams.find(
+      (candidate) => candidate.name === workDraft.teamName,
+    );
+    onSave({
+      ...job,
+      teams: [
+        ...job.teams,
+        {
+          id: crypto.randomUUID(),
+          role: team?.role === "wiring" ? "wiring" : "roof",
+          teamName: workDraft.teamName,
+          contact: team?.contact || undefined,
+          activity: workDraft.activity,
+          customActivity:
+            workDraft.activity === "other"
+              ? workDraft.customActivity.trim()
+              : undefined,
+        },
+      ],
+    });
+    setWorkDraft({ activity: "pv_panels", customActivity: "", teamName: "" });
+  }
+
+  function removeWorkItem(id: string) {
+    onSave({ ...job, teams: job.teams.filter((team) => team.id !== id) });
+  }
 
   const checkpoints = [
     {
       label: "Payment",
-      value: `${job.paymentPercent.toFixed(0)}% Â· ${
+      value: `${job.paymentPercent.toFixed(0)}% · ${
         job.paymentPercent >= 59 ? "Eligible" : "Review"
       }`,
       state: job.paymentPercent >= 59 ? "complete" : "blocked",
@@ -4742,11 +5111,6 @@ function JobDetail({
       value: job.installationDate || "Not arranged",
       state: job.installationDate ? "complete" : "pending",
     },
-    {
-      label: "Teams",
-      value: job.teams.length ? `${job.teams.length} assigned` : "Not assigned",
-      state: job.teams.length ? "complete" : "pending",
-    },
   ];
 
   if (sldOpen) {
@@ -4755,7 +5119,7 @@ function JobDetail({
         <div className="detail-header">
           <div>
             <p className="eyebrow">Source drawing</p>
-            <h2>SLD Â· {job.customerName}</h2>
+            <h2>SLD · {job.customerName}</h2>
           </div>
           <button className="icon-button" aria-label="Close SLD" onClick={onCloseSld}>
             <X size={19} />
@@ -4790,14 +5154,47 @@ function JobDetail({
     );
   }
 
+  const teamRows = job.teams.map((team) => ({
+    key: team.id,
+    label:
+      team.activity === "other"
+        ? team.customActivity || "Other activity"
+        : installationActivities.find(
+            (activity) => activity.value === team.activity,
+          )?.label || "Installation activity",
+    value: team.teamName + (team.contact ? " · " + team.contact : ""),
+  }));
+
   return (
-    <aside className="detail-panel">
-      <div className="detail-header">
-        <div>
+    <aside className="record">
+      <header className="record-header">
+        <div className="record-identity">
           <p className="eyebrow">Installation record</p>
-          <h2>Customer and operations</h2>
+          <h2>{formatPersonName(job.customerName)}</h2>
+          <div className="record-idstrip">
+            <span>
+              <small>Invoice</small>
+              {job.invoiceNumber || "—"}
+            </span>
+            <span>
+              <small>Agent</small>
+              {job.agentName || "—"}
+            </span>
+            <span>
+              <small>Location</small>
+              {job.city || job.state || "—"}
+            </span>
+            <span>
+              <small>Contract value</small>
+              {currency(job.totalAmount)}
+            </span>
+          </div>
         </div>
-        <div className="detail-actions">
+        <div className="record-header-actions">
+          <button className="button secondary" onClick={onOpenSld}>
+            <FileSearch size={16} />
+            {job.sldUrl ? "View SLD" : "Check SLD"}
+          </button>
           <button
             className="icon-button"
             aria-label="Close customer details"
@@ -4806,7 +5203,7 @@ function JobDetail({
             <X size={19} />
           </button>
         </div>
-      </div>
+      </header>
 
       <div className="checkpoints">
         {checkpoints.map((item) => (
@@ -4817,746 +5214,355 @@ function JobDetail({
         ))}
       </div>
 
-      {editing ? (
-        <EditJobForm
-          draft={draft}
-          saving={saving}
-          onChange={setDraft}
-          onCancel={() => {
-            setDraft(job);
-            onCancel();
-          }}
-          onSave={() => onSave(draft)}
-          availableTeams={availableTeams}
-        />
-      ) : (
-        <>
-          <div className="detail-sections">
-          <DetailSection title="Customer details" order={1}>
-            <div className="source-detail-grid">
-              <SourceField
-                label="Invoice number"
-                value={job.invoiceNumber}
-                emphasis
-              />
-              <SourceField label="Customer name" value={job.customerName} />
-              <SourceField
-                label="Installation address"
-                value={
-                  job.address
-                    ? formatCustomerAddress(job.address)
-                    : "Address not available"
-                }
-              />
-              <SourceField
-                label="Customer contact"
-                value={formatPhoneNumber(job.customerPhone)}
-              />
-              <SourceField
-                label="Sales price"
-                value={currency(job.totalAmount)}
-              />
-              <SourceField label="Sales agent" value={job.agentName} />
-              <SourceField
-                label="Solar panels"
-                value={
-                  job.panelQuantity && job.panelRating
-                    ? `${job.panelQuantity} panels Â· ${job.panelRating}W each`
-                    : job.panelQuantity
-                      ? `${job.panelQuantity} panels Â· Rating not provided`
-                      : job.panelRating
-                        ? `Quantity not provided Â· ${job.panelRating}W each`
-                        : "Panel specification not provided"
-                }
-              />
-              <SourceField label="Inverter" value={job.inverter} />
-              <SourceField
-                label="Electrical phase"
-                value={
-                  job.phase === "Unknown"
-                    ? "Phase information not provided"
-                    : job.phase
-                }
-              />
-              <SourceField
-                label="Battery"
-                value={
-                  job.battery === "Not available"
-                    ? "Battery information not provided"
-                    : job.battery
-                }
-              />
-              <SourceField
-                label="Ballast"
-                value={job.ballastDetails || "No ballast details recorded"}
-              />
-              <SourceField
-                label="FOC details"
-                value={job.focDetails || "No FOC details recorded"}
-              />
-            </div>
-            <div className="customer-detail-actions">
-              <button className="button primary" onClick={onEdit}>
-                Update job
-              </button>
-              <button className="button secondary" onClick={onOpenSld}>
-                <FileSearch size={16} />
-                {job.sldUrl ? "View SLD drawing" : "Check SLD drawing"}
-              </button>
-            </div>
-          </DetailSection>
+      <div className="record-body">
+        <SpecBlock title="Customer and site">
+          <SpecRow label="Customer name" value={job.customerName} emphasis />
+          <SpecRow label="Invoice number" value={job.invoiceNumber} />
+          <SpecRow
+            label="Installation address"
+            value={
+              job.address
+                ? formatCustomerAddress(job.address)
+                : "Address not available"
+            }
+          />
+          <SpecRow
+            label="Customer contact"
+            value={formatPhoneNumber(job.customerPhone)}
+          />
+          <SpecRow label="Sales agent" value={job.agentName} />
+          <SpecRow label="Sales price" value={currency(job.totalAmount)} />
+          <SpecRow
+            label="Payment received"
+            value={`${job.paymentPercent.toFixed(0)}%`}
+            emphasis={job.paymentPercent >= 59}
+          />
+          <SpecRow label="Balance due" value={currency(job.paymentBalance)} />
+          <SpecRow
+            label="2nd payment date"
+            value={
+              job.secondPaymentDate
+                ? new Intl.DateTimeFormat("en-MY", {
+                    day: "numeric",
+                    month: "short",
+                    year: "numeric",
+                    timeZone: "Asia/Kuala_Lumpur",
+                  }).format(new Date(job.secondPaymentDate))
+                : "Not recorded"
+            }
+          />
+        </SpecBlock>
 
-          <DetailSection title="Material stock delivery" order={4}>
-            <div className="source-detail-grid">
-              <SourceField
-                label="Delivery run"
-                value={job.deliveryRunName || "Not assigned"}
-                emphasis={Boolean(job.deliveryRunName)}
-              />
-              <SourceField
-                label="Group location"
-                value={job.deliveryGroupLocation || "Not assigned"}
-              />
-              <SourceField
-                label="Delivery status"
-                value={deliveryLabels[job.deliveryStatus]}
-                emphasis={job.deliveryStatus === "delivered"}
-              />
-              <SourceField
-                label="Delivery date"
-                value={job.deliveryDate || "Not scheduled"}
-              />
-              <SourceField
-                label="Arrival date"
-                value={job.arrivalDate || "Not recorded"}
-              />
-              <SourceField
-                label="Delivery contact"
-                value={job.deliveryContactNumber || "Not entered"}
-              />
-              <SourceField
-                label="Stock details"
-                value={job.stockDetails || "Stock details not entered"}
-              />
-              <SourceField
-                label="Warehouse / origin"
-                value={job.warehouseLocation || "Warehouse not selected"}
-              />
-              <SourceField
-                label="Delivery destination"
-                value={
-                  job.address
-                    ? formatCustomerAddress(job.address)
-                    : "Client address unavailable"
-                }
-              />
-            </div>
-          </DetailSection>
+        <SpecBlock title="System specification">
+          <SpecRow label="Package" value={job.packageName || "Not recorded"} />
+          <SpecRow
+            label="Solar panels"
+            value={
+              job.panelQuantity && job.panelRating
+                ? `${job.panelQuantity} panels · ${job.panelRating}W each`
+                : job.panelQuantity
+                  ? `${job.panelQuantity} panels · rating not provided`
+                  : job.panelRating
+                    ? `Quantity not provided · ${job.panelRating}W each`
+                    : "Panel specification not provided"
+            }
+          />
+          <SpecRow label="Inverter" value={job.inverter} />
+          <SpecRow
+            label="Electrical phase"
+            value={job.phase === "Unknown" ? "Not provided" : job.phase}
+          />
+          <SpecRow
+            label="Battery"
+            value={
+              job.battery === "Not available" ? "Not provided" : job.battery
+            }
+          />
+          <SpecRow
+            label="Ballast"
+            value={job.ballastDetails || "None recorded"}
+          />
+          <SpecRow label="FOC items" value={job.focDetails || "None recorded"} />
+          <SpecRow label="SEDA status" value={normalizeSeda(job.sedaStatus)} />
+          <SpecRow
+            label="SLD drawing"
+            value={job.sldUrl ? "Available from source" : "Not available"}
+          />
+        </SpecBlock>
 
-          <DetailSection title="Installation scheduling" order={2}>
-            <div className="source-detail-grid">
-              <SourceField
-                label="Installation date"
-                value={job.installationDate || "Not scheduled"}
-              />
-              <SourceField
-                label="Date approval"
-                value={approvalLabels[job.installationApprovalStatus]}
-              />
-              <SourceField
+        <section className="spec-roof">
+          <h3>Installation</h3>
+          <div className="spec-roof-body">
+            <SpecBlock title="Scheduling" nested>
+              <SpecRow
                 label="Scheduling status"
                 value={statusLabels[job.scheduleStatus]}
                 emphasis={job.scheduleStatus === "ready_to_install"}
               />
-              <SourceField
-                label="Customer availability"
-                value={
-                  job.customerAvailabilityStatus === "available"
-                    ? "Available"
-                    : job.customerAvailabilityStatus === "unavailable"
-                      ? "Not available"
-                      : "Pending confirmation"
-                }
-              />
-              <SourceField
-                label="Preferred installation date"
+              <SpecRow
+                label="Preferred date"
                 value={job.preferredInstallationDate || "Not provided"}
               />
-              <SourceField
-                label="Availability remarks"
-                value={job.availabilityRemarks || "No remarks"}
+              <SpecRow
+                label="Customer availability"
+                value={availabilityLabels[job.customerAvailabilityStatus]}
               />
-              <SourceField
-                label="Payment exception"
-                value={
-                  job.paymentOverrideStatus === "none"
-                    ? "Not required"
-                    : `${job.paymentOverrideStatus}${
-                        job.paymentOverrideReason
-                          ? ` Â· ${job.paymentOverrideReason}`
-                          : ""
-                      }`
-                }
-              />
-            </div>
-          </DetailSection>
-
-          <DetailSection title="Installation details" order={3}>
-            <div className="source-detail-grid">
-              <SourceField
-                label="Panel"
-                value={job.panelDetails || "Panel details not entered"}
-              />
-              <SourceField
-                label="Wiring"
-                value={job.wiringDetails || "Wiring details not entered"}
-              />
-              <SourceField
-                label="Battery"
-                value={job.batteryDetails || "Battery details not entered"}
-              />
-            </div>
-          </DetailSection>
-
-          <DetailSection title="Team assignments" order={5}>
-            <div className="source-detail-grid">
-              {job.teams.length ? (
-                job.teams.map((team) => (
-                  <SourceField
-                    key={team.id}
-                    label={
-                      team.activity === "other"
-                        ? team.customActivity || "Other activity"
-                        : installationActivities.find(
-                            (activity) => activity.value === team.activity,
-                          )?.label || "Installation activity"
-                    }
-                    value={`${team.teamName}${
-                      team.contact ? ` Â· ${team.contact}` : ""
-                    }`}
-                  />
-                ))
-              ) : (
-                <SourceField
-                  label="Assigned teams"
-                  value="No teams assigned"
+              {job.paymentPercent < 60 && (
+                <SpecRow
+                  label="Payment exception"
+                  value={
+                    job.paymentOverrideStatus === "none"
+                      ? "Not required"
+                      : `${job.paymentOverrideStatus}${
+                          job.paymentOverrideReason
+                            ? ` · ${job.paymentOverrideReason}`
+                            : ""
+                        }`
+                  }
                 />
               )}
-            </div>
-          </DetailSection>
+            </SpecBlock>
 
-          <DetailSection title="Remarks" order={6}>
-            <p className="remarks">{job.remarks || "No remarks."}</p>
-          </DetailSection>
-          </div>
-        </>
-      )}
-    </aside>
-  );
-}
+            <SpecBlock title="Group and teams" nested>
+              <SpecRow label="Location / group" value={locationGroupLabel} />
+              <SpecRow
+                label="Installation team"
+                value={group?.installationTeam || "Unassigned"}
+                emphasis={Boolean(group?.installationTeam)}
+              />
+              <SpecRow
+                label="Wiring team"
+                value={group?.wiringTeam || "Unassigned"}
+                emphasis={Boolean(group?.wiringTeam)}
+              />
+              <SpecRow
+                label="Supervisor"
+                value={group?.supervisor || "Unassigned"}
+              />
+            </SpecBlock>
 
-function EditJobForm({
-  draft,
-  saving,
-  onChange,
-  onCancel,
-  onSave,
-  availableTeams,
-}: {
-  draft: InstallationJob;
-  saving: boolean;
-  onChange: (job: InstallationJob) => void;
-  onCancel: () => void;
-  onSave: () => void;
-  availableTeams: TeamResource[];
-}) {
-  function addTeam() {
-    onChange({
-      ...draft,
-      teams: [
-        ...draft.teams,
-        {
-          id: crypto.randomUUID(),
-          role: "roof",
-          teamName: "",
-          activity: "hooks_rails",
-        },
-      ],
-    });
-  }
-
-  return (
-    <div className="edit-form">
-      <section className="edit-job-section" style={{ order: 1 }}>
-        <div className="form-section-heading">
-          <Users size={17} />
-          <strong>Customer details</strong>
-        </div>
-        <div className="source-detail-grid">
-          <SourceField label="Invoice number" value={draft.invoiceNumber} />
-          <SourceField label="Customer" value={draft.customerName} />
-          <SourceField
-            label="Customer contact"
-            value={formatPhoneNumber(draft.customerPhone)}
-          />
-          <SourceField label="Sales agent" value={draft.agentName} />
-          <SourceField label="Sales price" value={currency(draft.totalAmount)} />
-          <SourceField label="Inverter" value={draft.inverter} />
-          <SourceField label="Phase" value={draft.phase} />
-          <SourceField
-            label="Address"
-            value={
-              draft.address
-                ? formatCustomerAddress(draft.address)
-                : "Not available"
-            }
-          />
-        </div>
-      </section>
-
-      <section className="edit-job-section" style={{ order: 4 }}>
-      <div className="form-section-heading">
-        <PackageCheck size={17} />
-        <strong>Material stock delivery</strong>
-      </div>
-      <div className="form-grid">
-        <label>
-          Delivery date
-          <input
-            type="date"
-            value={draft.deliveryDate ?? ""}
-            onChange={(event) =>
-              onChange({ ...draft, deliveryDate: event.target.value || null })
-            }
-          />
-        </label>
-        <label>
-          Delivery status
-          <select
-            value={draft.deliveryStatus}
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                deliveryStatus: event.target
-                  .value as InstallationJob["deliveryStatus"],
-              })
-            }
-          >
-            {Object.entries(deliveryLabels).map(([value, label]) => (
-              <option value={value} key={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Arrival date
-          <input
-            type="date"
-            value={draft.arrivalDate ?? ""}
-            onChange={(event) =>
-              onChange({ ...draft, arrivalDate: event.target.value || null })
-            }
-          />
-        </label>
-        <label>
-          Delivery contact number
-          <input
-            type="tel"
-            value={draft.deliveryContactNumber}
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                deliveryContactNumber: event.target.value,
-              })
-            }
-          />
-        </label>
-      </div>
-      <label>
-        Stock details
-        <textarea
-          rows={3}
-          value={draft.stockDetails}
-          onChange={(event) =>
-            onChange({ ...draft, stockDetails: event.target.value })
-          }
-          placeholder="Panels, inverter, battery, rails, wiring and quantities"
-        />
-      </label>
-      <label>
-        From warehouse / collection location
-        <input
-          value={draft.warehouseLocation}
-          onChange={(event) =>
-            onChange({ ...draft, warehouseLocation: event.target.value })
-          }
-          placeholder="Warehouse name and address"
-        />
-      </label>
-      <div className="destination-preview">
-        <span>Deliver to client address</span>
-        <strong>
-          {draft.address
-            ? formatCustomerAddress(draft.address)
-            : "Client address unavailable"}
-        </strong>
-      </div>
-      </section>
-
-      <section className="edit-job-section" style={{ order: 2 }}>
-      <div className="form-section-heading">
-        <CalendarDays size={17} />
-        <strong>Installation scheduling</strong>
-      </div>
-      <div className="form-grid">
-        <label>
-          Installation date
-          <input
-            type="date"
-            value={draft.installationDate ?? ""}
-            onChange={(event) =>
-              onChange({ ...draft, installationDate: event.target.value || null })
-            }
-          />
-        </label>
-        <label>
-          Date approval
-          <select
-            value={draft.installationApprovalStatus}
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                installationApprovalStatus: event.target
-                  .value as InstallationJob["installationApprovalStatus"],
-              })
-            }
-          >
-            {Object.entries(approvalLabels).map(([value, label]) => (
-              <option value={value} key={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Scheduling status
-          <select
-            value={draft.scheduleStatus}
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                scheduleStatus: event.target
-                  .value as InstallationJob["scheduleStatus"],
-              })
-            }
-          >
-            {Object.entries(statusLabels).map(([value, label]) => (
-              <option value={value} key={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Customer availability
-          <select
-            value={draft.customerAvailabilityStatus}
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                customerAvailabilityStatus: event.target
-                  .value as InstallationJob["customerAvailabilityStatus"],
-              })
-            }
-          >
-            <option value="pending">Pending confirmation</option>
-            <option value="available">Available</option>
-            <option value="unavailable">Not available</option>
-          </select>
-        </label>
-        <label>
-          Preferred installation date
-          <input
-            type="date"
-            value={draft.preferredInstallationDate ?? ""}
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                preferredInstallationDate: event.target.value || null,
-              })
-            }
-          />
-        </label>
-      </div>
-      <label>
-        Customer availability remarks
-        <textarea
-          rows={3}
-          value={draft.availabilityRemarks}
-          onChange={(event) =>
-            onChange({ ...draft, availabilityRemarks: event.target.value })
-          }
-          placeholder="Reason unavailable, alternative dates, or confirmation notes"
-        />
-      </label>
-
-      <div className="form-section-heading">
-        <AlertTriangle size={17} />
-        <strong>Below-59% special case</strong>
-      </div>
-      <div className="form-grid">
-        <label>
-          Management approval
-          <select
-            value={draft.paymentOverrideStatus}
-            onChange={(event) =>
-              onChange({
-                ...draft,
-                paymentOverrideStatus: event.target
-                  .value as InstallationJob["paymentOverrideStatus"],
-              })
-            }
-          >
-            <option value="none">Not required</option>
-            <option value="pending">Pending management approval</option>
-            <option value="approved">Approved by management</option>
-            <option value="rejected">Rejected</option>
-          </select>
-        </label>
-        <label>
-          Approval reason / reference
-          <input
-            value={draft.paymentOverrideReason}
-            onChange={(event) =>
-              onChange({ ...draft, paymentOverrideReason: event.target.value })
-            }
-            placeholder="Required for a special case"
-          />
-        </label>
-      </div>
-      </section>
-
-      <section className="edit-job-section" style={{ order: 3 }}>
-      <div className="form-section-heading">
-        <Zap size={17} />
-        <strong>Installation details</strong>
-      </div>
-      <div className="form-grid">
-        <label>
-          Panel
-          <textarea
-            rows={3}
-            value={draft.panelDetails}
-            onChange={(event) =>
-              onChange({ ...draft, panelDetails: event.target.value })
-            }
-          />
-        </label>
-        <label>
-          Wiring
-          <textarea
-            rows={3}
-            value={draft.wiringDetails}
-            onChange={(event) =>
-              onChange({ ...draft, wiringDetails: event.target.value })
-            }
-            placeholder="Wiring requirements and progress"
-          />
-        </label>
-        <label>
-          Battery
-          <textarea
-            rows={3}
-            value={draft.batteryDetails}
-            onChange={(event) =>
-              onChange({ ...draft, batteryDetails: event.target.value })
-            }
-          />
-        </label>
-      </div>
-      </section>
-
-      <div className="team-editor" style={{ order: 5 }}>
-        <div className="section-title">
-          <div>
-            <Users size={17} />
-            <strong>Team assignments</strong>
-          </div>
-          <button className="text-button" onClick={addTeam} type="button">
-            + Add activity
-          </button>
-        </div>
-        {draft.teams.map((team, index) => (
-          <div className="activity-assignment" key={team.id}>
-            <div className="assignment-header">
-              <strong>Activity {index + 1}</strong>
-              <button
-                className="icon-button"
-                aria-label={`Remove activity ${index + 1}`}
-                onClick={() =>
-                  onChange({
-                    ...draft,
-                    teams: draft.teams.filter((item) => item.id !== team.id),
-                  })
-                }
-                type="button"
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <div className="assignment-fields">
-              <label>
-                Activity
+            <SpecBlock title="Installation details" nested>
+              {job.teams.length === 0 && (
+                <div className="work-empty">No installation work added yet.</div>
+              )}
+              {job.teams.map((team) => (
+                <div className="work-row" key={team.id}>
+                  <span className="work-activity">
+                    {team.activity === "other"
+                      ? team.customActivity || "Other activity"
+                      : installationActivities.find(
+                          (activity) => activity.value === team.activity,
+                        )?.label || "Installation activity"}
+                  </span>
+                  <span className="work-team">{team.teamName}</span>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label={`Remove ${team.teamName}`}
+                    disabled={saving}
+                    onClick={() => removeWorkItem(team.id)}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+              <div className="work-add">
                 <select
-                  value={team.activity}
-                  onChange={(event) => {
-                    const teams = [...draft.teams];
-                    teams[index] = {
-                      ...team,
+                  aria-label="Work item"
+                  value={workDraft.activity}
+                  onChange={(event) =>
+                    setWorkDraft((current) => ({
+                      ...current,
                       activity: event.target
                         .value as TeamAssignment["activity"],
-                    };
-                    onChange({ ...draft, teams });
-                  }}
+                    }))
+                  }
                 >
                   {installationActivities.map((activity) => (
-                    <option value={activity.value} key={activity.value}>
+                    <option key={activity.value} value={activity.value}>
                       {activity.label}
                     </option>
                   ))}
                 </select>
-              </label>
-              <label>
-                Installation team role
+                {workDraft.activity === "other" && (
+                  <input
+                    aria-label="Custom work item"
+                    placeholder="Describe the work"
+                    value={workDraft.customActivity}
+                    onChange={(event) =>
+                      setWorkDraft((current) => ({
+                        ...current,
+                        customActivity: event.target.value,
+                      }))
+                    }
+                  />
+                )}
                 <select
-                  value={team.role}
-                  onChange={(event) => {
-                    const teams = [...draft.teams];
-                    teams[index] = {
-                      ...team,
-                      role: event.target.value as TeamAssignment["role"],
-                      teamName: "",
-                    };
-                    onChange({ ...draft, teams });
-                  }}
+                  aria-label="Team"
+                  value={workDraft.teamName}
+                  onChange={(event) =>
+                    setWorkDraft((current) => ({
+                      ...current,
+                      teamName: event.target.value,
+                    }))
+                  }
                 >
-                  {teamRoles.map((role) => (
-                    <option value={role.value} key={role.value}>
-                      {role.label}
+                  <option value="">Select team</option>
+                  {availableTeams.map((team) => (
+                    <option key={team.id} value={team.name}>
+                      {team.name}
                     </option>
                   ))}
                 </select>
-              </label>
-              <label>
-                Assigned team
-                <select
-                  value={team.teamName}
-                  onChange={(event) => {
-                    const teams = [...draft.teams];
-                    teams[index] = {
-                      ...team,
-                      teamName: event.target.value,
-                    };
-                    onChange({ ...draft, teams });
+                <button
+                  type="button"
+                  className="button primary"
+                  disabled={saving || !workDraft.teamName}
+                  onClick={addWorkItem}
+                >
+                  Add
+                </button>
+              </div>
+            </SpecBlock>
+          </div>
+        </section>
+
+        <SpecBlock title="Material stock delivery">
+          <SpecRow
+            label="Delivery run"
+            value={deliveryRun?.name || "Not assigned"}
+            emphasis={Boolean(deliveryRun)}
+          />
+          <SpecRow
+            label="Delivery status"
+            value={
+              deliveryRun
+                ? deliveryRunStatusLabels[deliveryRun.status]
+                : deliveryLabels[job.deliveryStatus]
+            }
+            emphasis={deliveryRun?.status === "delivered"}
+          />
+          <SpecRow
+            label="Delivery date"
+            value={
+              deliveryRun?.deliveryDate || job.deliveryDate || "Not scheduled"
+            }
+          />
+          <SpecRow
+            label="Arrival date"
+            value={job.arrivalDate || "Not recorded"}
+          />
+          <SpecRow
+            label="Warehouse / origin"
+            value={
+              deliveryRun?.warehouse || job.warehouseLocation || "Not selected"
+            }
+          />
+          <SpecRow
+            label="Delivery team"
+            value={deliveryRun?.deliveryTeam || "Not assigned"}
+          />
+          <SpecRow
+            label="Delivery PIC"
+            value={deliveryRun?.deliveryPic || "Not assigned"}
+          />
+          <SpecRow
+            label="Delivery contact"
+            value={
+              deliveryRun?.contactNumber ||
+              job.deliveryContactNumber ||
+              job.customerPhone ||
+              "Not entered"
+            }
+          />
+          <SpecRow
+            label="Stock details"
+            value={job.stockDetails || "Not entered"}
+          />
+          <SpecRow
+            label="Delivery destination"
+            value={
+              job.address
+                ? formatCustomerAddress(job.address)
+                : "Client address unavailable"
+            }
+          />
+        </SpecBlock>
+
+        <SpecBlock title="Remarks" wide>
+          {editingRemarks ? (
+            <div className="record-remarks-edit">
+              <textarea
+                rows={4}
+                value={remarksDraft}
+                autoFocus
+                aria-label="Remarks"
+                placeholder="Add blockers, customer confirmation, or special instructions…"
+                onChange={(event) => setRemarksDraft(event.target.value)}
+              />
+              <div className="form-actions">
+                <button
+                  className="button secondary"
+                  onClick={() => {
+                    setRemarksDraft(job.remarks);
+                    setEditingRemarks(false);
                   }}
                 >
-                  <option value="">Select team</option>
-                  {availableTeams
-                    .filter((availableTeam) =>
-                      team.role === "wiring"
-                        ? availableTeam.role === "wiring"
-                        : availableTeam.role === "installation",
-                    )
-                    .map((availableTeam) => (
-                      <option value={availableTeam.name} key={availableTeam.id}>
-                        {availableTeam.name}
-                      </option>
-                    ))}
-                  {team.teamName &&
-                    !availableTeams.some(
-                      (availableTeam) =>
-                        availableTeam.name === team.teamName,
-                    ) && <option value={team.teamName}>{team.teamName}</option>}
-                </select>
-              </label>
-              {team.activity === "other" && (
-                <label>
-                  Other activity
-                  <input
-                    placeholder="Describe other activity"
-                    value={team.customActivity ?? ""}
-                    onChange={(event) => {
-                      const teams = [...draft.teams];
-                      teams[index] = {
-                        ...team,
-                        customActivity: event.target.value,
-                      };
-                      onChange({ ...draft, teams });
-                    }}
-                  />
-                </label>
-              )}
+                  Cancel
+                </button>
+                <button
+                  className="button primary"
+                  disabled={saving}
+                  onClick={() => {
+                    onSave({ ...job, remarks: remarksDraft });
+                    setEditingRemarks(false);
+                  }}
+                >
+                  {saving ? "Saving…" : "Save remarks"}
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          ) : (
+            <div className="record-remarks-view">
+              <p>{job.remarks || "No remarks recorded."}</p>
+              <button
+                className="button secondary"
+                onClick={() => setEditingRemarks(true)}
+              >
+                Edit remarks
+              </button>
+            </div>
+          )}
+        </SpecBlock>
       </div>
-
-      <label style={{ order: 6 }}>
-        Remarks
-        <textarea
-          rows={4}
-          value={draft.remarks}
-          onChange={(event) => onChange({ ...draft, remarks: event.target.value })}
-          placeholder="Add blockers, customer confirmation, or special instructionsâ€¦"
-        />
-      </label>
-
-      <div className="form-actions" style={{ order: 7 }}>
-        <button className="button secondary" type="button" onClick={onCancel}>
-          Cancel
-        </button>
-        <button
-          className="button primary"
-          type="button"
-          onClick={onSave}
-          disabled={saving || draft.teams.some((team) => !team.teamName.trim())}
-        >
-          {saving && <LoaderCircle size={16} className="spin" />}
-          {saving ? "Savingâ€¦" : "Save changes"}
-        </button>
-      </div>
-    </div>
+    </aside>
   );
 }
 
-function DetailSection({
+// Datasheet blocks: an uppercase rule-under heading with dense label/value
+// rows beneath, so a record reads like a spec sheet rather than a form.
+function SpecBlock({
   title,
   children,
-  order,
+  nested = false,
+  wide = false,
 }: {
   title: string;
   children: React.ReactNode;
-  order?: number;
+  nested?: boolean;
+  wide?: boolean;
 }) {
   return (
-    <section className="detail-section" style={{ order }}>
-      <h3>{title}</h3>
-      {children}
+    <section
+      className={`spec-block${nested ? " nested" : ""}${wide ? " wide" : ""}`}
+    >
+      <h4>{title}</h4>
+      <dl>{children}</dl>
     </section>
   );
 }
 
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="detail-row">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function SourceField({
+function SpecRow({
   label,
   value,
   emphasis = false,
@@ -5566,11 +5572,9 @@ function SourceField({
   emphasis?: boolean;
 }) {
   return (
-    <div className={`source-field ${emphasis ? "emphasis" : ""}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
+    <div className={`spec-row${emphasis ? " emphasis" : ""}`}>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
     </div>
   );
 }
-
-

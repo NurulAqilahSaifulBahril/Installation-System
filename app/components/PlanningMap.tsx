@@ -269,7 +269,7 @@ export default function PlanningMap({
           <strong>Customer map</strong>
           <span>Approximate postcode locations</span>
         </div>
-        <small>{locating ? "Locatingâ€¦" : `${markers.length} markers`}</small>
+        <small>{locating ? "Locating…" : `${markers.length} markers`}</small>
       </div>
       <MapContainer
         center={[4.2105, 101.9758]}
@@ -310,7 +310,7 @@ export default function PlanningMap({
         </div>
       )}
       <div className="planning-map-legend">
-        <span>Hover a group or customer name to highlight Â· Click a group to zoom</span>
+        <span>Hover a group or customer name to highlight · Click a group to zoom</span>
       </div>
     </aside>
   );

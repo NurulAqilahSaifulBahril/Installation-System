@@ -39,7 +39,11 @@ export type InstallationJob = {
   sldUrl: string | null;
   packageName: string;
   installationDate: string | null;
-  customerAvailabilityStatus: "pending" | "available" | "unavailable";
+  customerAvailabilityStatus:
+    | "pending"
+    | "available"
+    | "unavailable"
+    | "cancelled";
   preferredInstallationDate: string | null;
   availabilityRemarks: string;
   scheduleStatus:
