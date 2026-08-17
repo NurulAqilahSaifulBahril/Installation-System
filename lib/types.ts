@@ -10,8 +10,34 @@ export type TeamAssignment = {
     | "pv_panels"
     | "cable_trunking"
     | "earthing"
+    | "inverter_installation"
+    | "dc_cable_inverter"
+    | "ac_cable_house_elc"
+    | "pv_meter_termination"
+    | "mobile_app_wifi_setup"
+    | "saj_string_inverter"
+    | "jinko_panels"
+    | "skylift"
+    | "follow_proposed_drawing"
+    | "rubbish_clear"
     | "other";
   customActivity?: string;
+};
+
+// What the sidebar calendar shows when a day is hovered: the crews out that
+// day, and every customer with their stock delivery ETA and installation time.
+// Assembled on the dashboard page, where job -> group -> team assignment can
+// be resolved; the calendar only reads a date off it.
+export type CalendarDayDetail = {
+  // Only crews booked for this exact day. A crew committed to another date is
+  // not listed at all, so the card never implies a booking that isn't there.
+  teams: string[];
+  customers: Array<{
+    id: string;
+    name: string;
+    stockDelivery: string | null;
+    installTime: string | null;
+  }>;
 };
 
 export type InstallationJob = {
@@ -27,6 +53,8 @@ export type InstallationJob = {
   totalAmount: number;
   paymentPercent: number;
   paymentBalance: number;
+  // The deposit — the customer's first payment against the invoice.
+  firstPaymentDate?: string | null;
   secondPaymentDate?: string | null;
   panelQuantity: number | null;
   panelRating: number | null;
@@ -40,6 +68,7 @@ export type InstallationJob = {
   packageName: string;
   installationDate: string | null;
   customerAvailabilityStatus:
+    | "not_set"
     | "pending"
     | "available"
     | "unavailable"
@@ -66,6 +95,7 @@ export type InstallationJob = {
     | "partially_delivered";
   deliveryDate: string | null;
   arrivalDate: string | null;
+  arrivalTime: string | null;
   stockDetails: string;
   deliveryContactNumber: string;
   warehouseLocation: string;
@@ -92,6 +122,7 @@ export type JobUpdate = Pick<
   | "deliveryStatus"
   | "deliveryDate"
   | "arrivalDate"
+  | "arrivalTime"
   | "stockDetails"
   | "deliveryContactNumber"
   | "warehouseLocation"
