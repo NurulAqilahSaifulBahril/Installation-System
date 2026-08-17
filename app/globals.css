@@ -80,6 +80,179 @@ button:disabled {
   align-items: start;
 }
 
+/* The calendar panel takes its own column beside the nav sidebar rather than
+   overlaying the page, so the workspace tabs stay reachable on its left and
+   the pipeline table stays visible and usable on its right. */
+.app-layout.with-calendar-panel {
+  grid-template-columns: 248px minmax(400px, 30vw) minmax(0, 1fr);
+}
+
+.app-layout.with-calendar-panel.sidebar-is-collapsed {
+  grid-template-columns: 68px minmax(400px, 30vw) minmax(0, 1fr);
+}
+
+.calendar-side-panel {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+}
+
+.calendar-side-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.calendar-side-panel-header strong {
+  font-size: 15px;
+}
+
+.calendar-side-panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px 20px;
+}
+
+/* Denser than the Schedule & assign grid — this column is narrower, so the
+   day boxes have to give up some height to keep six weeks on screen. */
+.calendar-side-panel .full-calendar-grid {
+  gap: 5px;
+}
+
+/* The chosen day's customers, listed under the grid rather than crammed into
+   a cell. The panel body already scrolls, so this can run as long as it needs. */
+.calendar-day-detail {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.calendar-day-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.calendar-day-detail-head strong {
+  font-size: 13px;
+}
+
+.calendar-day-detail-count {
+  padding: 1px 7px;
+  color: var(--primary);
+  background: var(--surface-soft);
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.calendar-day-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.calendar-day-detail-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.calendar-day-detail-holiday {
+  color: var(--primary);
+}
+
+.calendar-day-detail-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.calendar-day-detail-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.calendar-day-detail-row {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 8px;
+  text-align: left;
+  color: var(--ink);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.calendar-day-detail-row:hover {
+  border-color: var(--primary);
+}
+
+.calendar-day-detail-name {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.calendar-day-detail-teams {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.calendar-day-detail-delivery {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--primary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.calendar-side-panel .week-day-box {
+  min-height: 88px;
+  gap: 4px;
+  padding: 7px;
+}
+
+@media (max-width: 1180px) {
+  .app-layout.with-calendar-panel,
+  .app-layout.with-calendar-panel.sidebar-is-collapsed {
+    grid-template-columns: 248px minmax(0, 1fr);
+  }
+
+  /* Too narrow for a third column: the panel slides over the workspace from
+     the left, still clear of the nav sidebar so the tabs stay clickable. */
+  .calendar-side-panel {
+    position: fixed;
+    inset: 0 auto 0 248px;
+    z-index: 1900;
+    width: min(420px, calc(100% - 248px));
+    box-shadow: 12px 0 34px rgba(20, 20, 18, 0.2);
+  }
+
+  .sidebar-is-collapsed .calendar-side-panel {
+    inset: 0 auto 0 68px;
+    width: min(420px, calc(100% - 68px));
+  }
+}
+
 .sidebar {
   position: sticky;
   top: 0;
@@ -116,6 +289,14 @@ button:disabled {
   width: min(1480px, calc(100% - 40px));
   margin: 0 auto;
   padding-bottom: 48px;
+}
+
+/* Team planning's table needs more room than any other page here — nine
+   columns plus a map, which cannot both fit at the standard 1480px shell
+   width without the table scrolling sideways. Widening only while that page
+   is open keeps every other page's layout exactly as it was. */
+.app-shell-wide {
+  width: min(1900px, calc(100% - 20px));
 }
 
 .topbar {
@@ -321,18 +502,52 @@ button:disabled {
   background: transparent;
 }
 
+/* Red rather than amber: nothing can be saved while this is showing, which is
+   a harder failure than the advisory messages the plain notice carries. */
+.notice-blocking {
+  color: #7f1d1d;
+  background: #fdeaea;
+  border-color: #f0b4b4;
+  font-weight: 600;
+  padding-right: 116px;
+}
+
+:root[data-theme="dark"] .notice-blocking {
+  color: #ffd9d9;
+  background: #3a1c1c;
+  border-color: #7a3a3a;
+}
+
+.notice-blocking button {
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 5px 12px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.notice-blocking button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 /* Eight cards: two even rows of four, dropping to two rows of two on
    narrower screens. */
+/* One column per pipeline stage, so the cards read as a single row running left
+   to right in the order a job travels through them. */
 .metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 18px;
 }
 
 @media (max-width: 1180px) {
   .metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -514,6 +729,145 @@ textarea:focus {
   box-shadow: inset 0 0 0 1px var(--line);
 }
 
+/* Month-at-a-glance box under the workspace links. Every day is a button into
+   Schedule & assign, so the whole grid reads as one clickable surface. */
+.sidebar-panels {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar-calendar {
+  padding: 10px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.sidebar-calendar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.sidebar-calendar-header strong {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sidebar-calendar-header .icon-button {
+  width: 22px;
+  height: 22px;
+  flex: none;
+}
+
+.sidebar-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.sidebar-calendar-weekday {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+  padding-bottom: 2px;
+}
+
+.sidebar-calendar-day {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.sidebar-calendar-day:hover {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* A day already carrying installations. */
+.sidebar-calendar-day.has-jobs {
+  color: var(--surface);
+  background: var(--primary);
+  font-weight: 700;
+}
+
+/* Public holidays are shown so nobody schedules into one by accident. They
+   keep the weight of an ordinary day but pick up the warning colour. */
+.sidebar-calendar-day.is-holiday {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.sidebar-calendar-day.is-today {
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+/* The day currently filtering the Active installation pipeline. Last of the
+   day rules on purpose: it shares specificity with .has-jobs and must win, so
+   an applied filter is never masked by the day also carrying installations.
+   Technical blue rather than the neutral primary — it reads as an instrument
+   setting that is switched on, distinct from "this day has work in it". */
+.sidebar-calendar-day.is-selected {
+  color: #ffffff;
+  background: #0b6fb8;
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px #0b6fb8;
+}
+
+:root[data-theme="dark"] .sidebar-calendar-day.is-selected {
+  color: #0b1a24;
+  background: #57a9e6;
+  box-shadow: inset 0 0 0 1px #57a9e6;
+}
+
+.sidebar-pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 11px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.sidebar-pending span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.sidebar-pending strong {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-pending:hover {
+  color: var(--ink);
+  background: var(--surface-soft);
+}
+
 /* Collapsed rail. These must sit after the .brand and .dashboard-tabs rules
    they override — `.brand > div:last-child` outweighs a two-class selector. */
 .app-layout.sidebar-is-collapsed {
@@ -588,6 +942,38 @@ textarea:focus {
   font-size: 11px;
 }
 
+.source-age {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.source-age strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.source-age small {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Stale data is the failure this is here to catch, so it has to read as a
+   warning rather than as another quiet timestamp. */
+.source-age.stale strong {
+  color: var(--red);
+}
+
+@media (max-width: 720px) {
+  .source-age {
+    align-items: flex-start;
+    text-align: left;
+  }
+}
+
 .bulk-actions {
   display: flex;
   align-items: center;
@@ -644,19 +1030,6 @@ tbody tr.selected {
 :root[data-theme="dark"] tbody tr:hover,
 :root[data-theme="dark"] tbody tr.selected {
   background: #2e2e2b;
-}
-
-/* Team planning: towns marked available pin to the top and carry the column
-   header's surface so the shortlist reads as one block. */
-.team-planning-table tbody tr.suggestion-available,
-.team-planning-table tbody tr.suggestion-available:hover {
-  background: var(--surface-soft);
-}
-
-/* Pinned rows are contiguous at the top, so the first unpinned row after them
-   carries the divider. */
-.team-planning-table tbody tr.suggestion-available + tr:not(.suggestion-available) td {
-  border-top: 2px solid var(--line);
 }
 
 /* Active installation pipeline: bare header, and the four assignment columns
@@ -772,9 +1145,57 @@ tbody tr.selected {
   background: #34342f;
 }
 
-/* The first unarranged row closes the pinned block. */
-.pipeline-table tbody tr.arranged + tr:not(.arranged) td {
+/* Manually pinned rows sort to the top of the table (see pipelineJobs in
+   app/page.tsx), so unlike the arrangement tiers above, "pinned" rows really
+   are contiguous — this divider marks where the pinned block ends. */
+.pipeline-table tbody tr.pinned + tr:not(.pinned) td {
   border-top: 2px solid var(--line);
+}
+
+.pin-cell {
+  text-align: center;
+}
+
+.pin-toggle {
+  color: var(--muted);
+}
+
+.pipeline-table tbody tr.pinned .pin-toggle {
+  color: var(--primary);
+}
+
+.pin-toggle.is-pinned {
+  color: var(--primary);
+}
+
+
+/* Complete installations read as done at a glance. Comes before the
+   cancellation rule below so a cancelled-but-installed edge case (rare, but
+   possible on a reconciled record) still reads red, not green. */
+.pipeline-table tbody tr.installation-complete td,
+.pipeline-table tbody tr.installation-complete td:nth-child(6),
+.pipeline-table tbody tr.installation-complete td:nth-child(7),
+.pipeline-table tbody tr.installation-complete td:nth-child(8),
+.pipeline-table tbody tr.installation-complete td:nth-child(9) {
+  background: var(--green-soft);
+}
+
+.pipeline-table tbody tr.installation-complete td:first-child {
+  box-shadow: inset 3px 0 0 var(--green);
+}
+
+.pipeline-table tbody tr.installation-complete:hover td,
+.pipeline-table tbody tr.installation-complete:hover td:nth-child(6),
+.pipeline-table tbody tr.installation-complete:hover td:nth-child(7),
+.pipeline-table tbody tr.installation-complete:hover td:nth-child(8),
+.pipeline-table tbody tr.installation-complete:hover td:nth-child(9),
+.pipeline-table tbody tr.installation-complete.selected td {
+  background: #d3ecdc;
+}
+
+:root[data-theme="dark"] .pipeline-table tbody tr.installation-complete:hover td,
+:root[data-theme="dark"] .pipeline-table tbody tr.installation-complete.selected td {
+  background: #2c4a38;
 }
 
 /* A cancellation outranks the arrangement tier: a job with teams and a
@@ -925,48 +1346,6 @@ td span {
 .contact-lines svg {
   flex: 0 0 auto;
   margin-top: 1px;
-}
-
-.checkpoints {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-  margin: 15px 0;
-}
-
-.checkpoint {
-  min-height: 62px;
-  padding: 8px;
-  background: var(--surface-soft);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-
-.checkpoint.complete {
-  background: var(--green-soft);
-  border-color: #c6e0cb;
-}
-
-.checkpoint.blocked {
-  background: var(--red-soft);
-  border-color: #f4c4bd;
-}
-
-.checkpoint small,
-.checkpoint strong {
-  display: block;
-}
-
-.checkpoint small {
-  margin-bottom: 5px;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.checkpoint strong {
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.4;
 }
 
 .detail-section {
@@ -1156,6 +1535,13 @@ td span {
   padding: 17px 18px;
 }
 
+.planning-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .planning-heading h2,
 .group-header h3 {
   margin: 0;
@@ -1196,9 +1582,12 @@ td span {
   flex-wrap: wrap;
 }
 
-/* Stacked by default so the suggestions table always gets the full width and
-   never needs sideways scrolling. Side by side only above 1500px, where the
-   map's 360px and the table's ~780px both fit without squeezing the table. */
+/* Always stacked, map above table. The table now carries nine columns (it
+   used to be three), so putting the map beside it — as this used to do above
+   1500px — leaves too little width for the table and forces it back into a
+   sideways scroll on anything short of an ultra-wide monitor. Keeping the
+   map's ~360-520px out of that horizontal budget is what actually lets the
+   table fit; see .app-shell-wide below for the rest of the room this needed. */
 .team-planning-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -1223,7 +1612,7 @@ td span {
   letter-spacing: 0.04em;
 }
 
-@media (min-width: 1500px) {
+@media (min-width: 2200px) {
   .team-planning-workspace {
     grid-template-columns: minmax(360px, 0.8fr) minmax(0, 1.7fr);
     min-height: 620px;
@@ -1344,6 +1733,121 @@ td span {
   overflow: auto;
 }
 
+/* Each customer is its own row now; the town/group cell spans all of a
+   group's rows, so it needs to sit at the top of that span rather than
+   centered, and carry enough width for the add-customer control below it. */
+.team-planning-group-cell {
+  min-width: 135px;
+  vertical-align: top;
+  border-right: 1px solid var(--line);
+}
+
+.team-planning-table td input,
+.team-planning-table td select {
+  min-height: 36px;
+  min-width: 90px;
+  padding: 6px 8px;
+}
+
+/* Available and Pending customers pin above every location group, tinted by
+   status and paired with a left bar so the tier survives for colour-blind
+   readers, matching the "arranged" tier styling on the pipeline table. */
+/* Already in an installation group: pinned above everything and tinted apart
+   from the availability colours, because "committed" is a different state
+   from "customer has confirmed". */
+.team-planning-pinned-row.status-grouped td {
+  background: var(--surface-soft);
+}
+
+.team-planning-pinned-row.status-grouped td:first-child {
+  box-shadow: inset 3px 0 0 var(--primary, #3a6ea5);
+}
+
+.team-planning-pinned-row.status-grouped:hover td {
+  background: #e6e6e1;
+}
+
+:root[data-theme="dark"] .team-planning-pinned-row.status-grouped:hover td {
+  background: #33332f;
+}
+
+.assigned-group-badge {
+  display: inline-block;
+  width: fit-content;
+  margin-top: 4px;
+  padding: 2px 7px;
+  color: var(--primary, #3a6ea5);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.team-planning-pinned-row.status-available td {
+  background: var(--green-soft);
+}
+
+.team-planning-pinned-row.status-available td:first-child {
+  box-shadow: inset 3px 0 0 var(--green);
+}
+
+.team-planning-pinned-row.status-pending td {
+  background: var(--amber-soft);
+}
+
+.team-planning-pinned-row.status-pending td:first-child {
+  box-shadow: inset 3px 0 0 var(--amber);
+}
+
+.team-planning-pinned-row.status-available:hover td,
+.team-planning-pinned-row.status-available.selected td {
+  background: #dfeee5;
+}
+
+:root[data-theme="dark"] .team-planning-pinned-row.status-available:hover td,
+:root[data-theme="dark"] .team-planning-pinned-row.status-available.selected td {
+  background: #234531;
+}
+
+.team-planning-pinned-row.status-pending:hover td,
+.team-planning-pinned-row.status-pending.selected td {
+  background: #f5e9c9;
+}
+
+:root[data-theme="dark"] .team-planning-pinned-row.status-pending:hover td,
+:root[data-theme="dark"] .team-planning-pinned-row.status-pending.selected td {
+  background: #453923;
+}
+
+.team-planning-add-customer-toggle {
+  margin-top: 8px;
+}
+
+.team-planning-add-customer {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 10px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.team-planning-add-customer input,
+.team-planning-add-customer select {
+  min-height: 34px;
+  min-width: 0;
+  width: 100%;
+  padding: 6px 8px;
+}
+
+.team-planning-add-customer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 @media (max-width: 1100px) {
   .team-management-workspace {
     grid-template-columns: 1fr;
@@ -1356,6 +1860,26 @@ td span {
 
   /* The team planning workspace is stacked by default now, so it needs no
      override here. */
+}
+
+.installation-date-filter-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 22px;
+  color: var(--ink);
+  background: var(--green-soft);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.installation-date-filter-banner svg {
+  flex: 0 0 auto;
+  color: var(--green);
+}
+
+.installation-date-filter-banner span {
+  flex: 1;
 }
 
 .planning-note {
@@ -1376,43 +1900,13 @@ td span {
   background: var(--surface-soft);
 }
 
+/* A plain heading now — the run's details sit inline beneath it rather than
+   behind a popup, so there is nothing to click through to. */
 .delivery-run-summary {
   display: grid;
   gap: 3px;
-  padding: 0;
   color: inherit;
   text-align: left;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-}
-
-.delivery-run-summary h3 {
-  text-decoration: underline;
-  text-decoration-color: transparent;
-  transition: text-decoration-color 120ms ease;
-}
-
-.delivery-run-summary:hover h3 {
-  text-decoration-color: currentColor;
-}
-
-.delivery-run-modal {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 90%;
-  max-width: 1100px;
-  max-height: 80vh;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  box-shadow: 0 20px 25px rgba(0, 0, 0, 0.15);
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-  z-index: 100;
 }
 
 .run-controls {
@@ -1429,12 +1923,155 @@ td span {
   padding: 6px 8px;
 }
 
+/* All of a run's fields on one line; scrolls sideways rather than wrapping so
+   the row reads as a single record. */
 .delivery-run-edit-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex;
+  align-items: flex-end;
   gap: 10px;
   padding: 14px 18px;
+  overflow-x: auto;
   border-top: 1px solid var(--line);
+}
+
+.delivery-run-edit-grid > label {
+  flex: 1 1 0;
+  min-width: 150px;
+}
+
+.delivery-date-pair {
+  display: flex;
+  gap: 6px;
+}
+
+/* Stock details is the only cell that stacked (tag list above its input),
+   which made every delivery row ~70px tall. Laying it out inline keeps
+   Customer / Location / Stock details / ETA reading as one line.
+   Scoped by its own placeholder so team member tags elsewhere are untouched. */
+.member-tag-input:has(input[placeholder="Add stock item"]) {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.member-tag-input:has(input[placeholder="Add stock item"])
+  .member-tag-list:empty {
+  display: none;
+}
+
+.member-tag-input:has(input[placeholder="Add stock item"]) .member-tag-list {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  min-width: 0;
+}
+
+.member-tag-input:has(input[placeholder="Add stock item"]) .member-tag {
+  white-space: nowrap;
+}
+
+.member-tag-input:has(input[placeholder="Add stock item"]) .member-tag-add {
+  flex: 0 0 auto;
+}
+
+/* Rows stay on one line: nothing wraps, long values ellipsize instead. */
+.delivery-run-customers td {
+  padding: 8px 10px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.delivery-run-customers td:first-child,
+.delivery-run-customers td:nth-child(2) {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Higher specificity than the generic ".planning-panel td input/select" rule
+   (width: 100%, max-width: 210px) further down, which would otherwise win and
+   stretch every one of these cells out to ~140-210px each — the accumulated
+   difference across 5+ columns is what forced this table into sideways
+   scrolling even on a wide screen. */
+.planning-panel .delivery-date-pair input[type="time"] {
+  width: 85px;
+  min-width: 0;
+  max-width: none;
+}
+
+.planning-panel .delivery-date-pair input[type="date"] {
+  width: 105px;
+  min-width: 0;
+  max-width: none;
+}
+
+/* Run name / warehouse / PIC / contact: the column header already names the
+   field, so these cells hold just the input — no repeated label text. */
+.planning-panel .run-field-cell input {
+  height: 34px;
+  width: 108px;
+  min-width: 0;
+  max-width: none;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+/* Warehouse address + "Calculate ETAs", above each run's table. The address is
+   the departure point every ETA in the run counts up from, so it sits with the
+   run rather than inside the per-customer rows. */
+.run-route-bar {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 18px;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--line);
+}
+
+.run-route-address {
+  display: grid;
+  gap: 5px;
+  flex: 1 1 380px;
+  min-width: 240px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Beats the ".planning-panel td input" max-width — this one is a full street
+   address and needs the whole bar, not a 108px column cell. */
+.planning-panel .run-route-address input {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.run-route-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.run-route-note.failed {
+  color: var(--red);
+}
+
+/* Committed assignment date stacked above the picker for the next one. */
+.assignment-date-cell {
+  display: grid;
+  gap: 4px;
+}
+
+/* Read-only stand-in shown until the row is clicked into edit mode. */
+.run-field-readout {
+  display: inline-block;
+  padding: 2px;
+  color: var(--ink);
 }
 
 .delivery-run-edit-grid label {
@@ -1478,14 +2115,110 @@ td span {
   min-width: 0;
 }
 
+/* Nine columns became seven when Contact and Base location were dropped, so
+   the table no longer needs to force as wide a scroll. */
 .unified-team-table table {
-  min-width: 1200px;
+  min-width: 1040px;
 }
 
 .row-actions {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.group-multiselect {
+  position: relative;
+  min-width: 200px;
+}
+
+.group-multiselect-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.group-multiselect-trigger:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.group-multiselect-trigger span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.group-multiselect-trigger svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.group-multiselect-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  width: max-content;
+  min-width: 100%;
+  max-width: 340px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(20, 20, 18, 0.18);
+}
+
+.group-multiselect-section + .group-multiselect-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.group-multiselect-section > small {
+  display: block;
+  padding: 4px 6px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.group-multiselect-option {
+  display: block;
+  width: 100%;
+  padding: 6px;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.group-multiselect-option:hover {
+  background: var(--surface-soft);
+}
+
+.group-multiselect-option.selected {
+  color: var(--green);
+  background: var(--green-soft);
+  font-weight: 600;
 }
 
 .member-tag-input {
@@ -1527,6 +2260,103 @@ td span {
 .member-tag button:hover {
   color: var(--ink);
   background: var(--line);
+}
+
+/* The customer groups a team already holds, shown as removable chips in its
+   own row so an assignment can be undone where it was made. */
+.assignment-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.assignment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 5px 3px 9px;
+  color: var(--green);
+  background: var(--green-soft);
+  border: 1px solid #c6e0cb;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+:root[data-theme="dark"] .assignment-chip {
+  border-color: #2f5a3f;
+}
+
+.assignment-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The chip carries a second line — the customers in the group — so it stacks
+   rather than being one ellipsised line, and the remove button stays level
+   with the group name instead of centring against both lines. */
+.assignment-chip {
+  align-items: flex-start;
+  max-width: 320px;
+}
+
+/* Two classes deep on purpose: it has to outrank ".assignment-chip > span"
+   above, which forces nowrap + ellipsis and would collapse both lines. */
+.assignment-chip > .assignment-chip-text {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  overflow: visible;
+  white-space: normal;
+}
+
+.assignment-chip-customers {
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.assignment-chip button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  opacity: 0.7;
+}
+
+.assignment-chip button:hover {
+  opacity: 1;
+  background: #c6e0cb;
+}
+
+:root[data-theme="dark"] .assignment-chip button:hover {
+  background: #2f5a3f;
+}
+
+/* Teams already holding a customer group pin to the top, tinted to match the
+   Available rows on Customer Scheduling. */
+.unified-team-table tbody tr.team-row-assigned td {
+  background: var(--green-soft);
+}
+
+.unified-team-table tbody tr.team-row-assigned td:first-child {
+  box-shadow: inset 3px 0 0 var(--green);
+}
+
+/* A value the row inherited rather than one somebody entered — the Stock
+   delivery ETA falling back to its run's delivery date. Muted so a real
+   estimate stands out against the defaults around it. */
+.is-inherited {
+  color: var(--muted);
+  font-style: italic;
 }
 
 .member-tag-add {
@@ -1841,28 +2671,6 @@ td span {
   font-size: 12px;
 }
 
-.full-calendar-modal {
-  width: min(1040px, 100%);
-  max-height: calc(100vh - 48px);
-  overflow-y: auto;
-  padding: 20px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  box-shadow: 0 24px 70px rgba(20, 20, 18, 0.24);
-}
-
-.full-calendar-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 14px;
-}
-
-.full-calendar-header strong {
-  font-size: 16px;
-}
-
 .full-calendar-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -1931,6 +2739,13 @@ td span {
   color: inherit;
 }
 
+/* Dry days still show a chip so the row reads consistently, but in muted ink
+   so the amber and red risk days remain the ones that catch the eye. */
+.week-day-box-weather.low-risk {
+  color: var(--muted);
+  background: var(--surface-soft);
+}
+
 .week-day-box-weather.medium-risk {
   color: var(--amber);
   background: var(--amber-soft);
@@ -1952,6 +2767,21 @@ td span {
   font-weight: 700;
 }
 
+.week-day-box.is-selected {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.week-day-box-count {
+  width: fit-content;
+  padding: 1px 6px;
+  color: var(--primary);
+  background: var(--surface-soft);
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .week-day-box-customers {
   display: grid;
   gap: 2px;
@@ -1965,14 +2795,36 @@ td span {
   white-space: nowrap;
 }
 
+.week-day-box-teams {
+  display: grid;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.week-day-box-teams span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .week-day-box-delivery {
+  display: grid;
+  gap: 2px;
+  margin-top: auto;
+}
+
+.week-day-box-delivery span {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-top: auto;
+  overflow: hidden;
   color: var(--primary);
   font-size: 10px;
   font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .standard-calendar-unscheduled {
@@ -2107,6 +2959,13 @@ td span {
   font-size: 13px;
 }
 
+.run-all-complete {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 16px;
+}
+
 .group-drawer-customer-list {
   display: grid;
   gap: 6px;
@@ -2218,113 +3077,6 @@ td span {
   border: 0;
 }
 
-.suggestion-modal {
-  width: min(1780px, 96vw);
-  max-height: calc(100vh - 48px);
-  overflow-y: auto;
-  padding: 20px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  box-shadow: 0 24px 70px rgba(20, 20, 18, 0.24);
-}
-
-.suggestion-modal-workspace {
-  display: grid;
-  grid-template-columns: 1fr;
-  align-items: start;
-  margin: 14px 0;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-}
-
-.suggestion-modal-workspace .planning-map-panel {
-  border-bottom: 1px solid var(--line);
-}
-
-.suggestion-modal-workspace .planning-map {
-  height: 260px;
-}
-
-/* Side-by-side only once there's room for the map without squeezing the
-   table below its readable column widths (it needs ~1150px on its own) -
-   otherwise the table falls back to its internal horizontal scroll. The
-   map column is a fixed width here (not fr-based) so the table always
-   gets the rest, instead of the two competing for space unpredictably. */
-@media (min-width: 1600px) {
-  .suggestion-modal-workspace {
-    grid-template-columns: 300px minmax(1150px, 1fr);
-  }
-
-  .suggestion-modal-workspace .planning-map-panel {
-    border-bottom: 0;
-    border-right: 1px solid var(--line);
-  }
-
-  .suggestion-modal-workspace .planning-map {
-    height: 340px;
-  }
-}
-
-@media (max-width: 900px) {
-  .suggestion-modal-workspace {
-    grid-template-columns: 1fr;
-  }
-
-  .suggestion-modal-workspace .planning-map-panel {
-    position: static;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-}
-
-.suggestion-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding-top: 14px;
-}
-
-.suggestion-actions span {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.customer-picker {
-  display: grid;
-  grid-template-columns: minmax(180px, 0.8fr) minmax(260px, 1.4fr) auto auto;
-  align-items: end;
-  gap: 10px;
-  margin-bottom: 12px;
-  padding: 12px;
-  background: var(--surface-soft);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-}
-
-.customer-picker label {
-  display: grid;
-  gap: 5px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.customer-picker input,
-.customer-picker select {
-  min-height: 38px;
-  padding: 6px 9px;
-}
-
-.customer-picker > span {
-  align-self: center;
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
 .phone-number {
   display: inline-flex !important;
   align-items: center;
@@ -2342,28 +3094,10 @@ td span {
   font-weight: 600;
 }
 
-.availability-assignment {
-  display: grid;
-  gap: 7px;
-  min-width: 220px;
-}
-
-.suggestion-modal td input,
-.suggestion-modal td select,
-.unavailable-section td input,
-.unavailable-section td select {
-  min-height: 36px;
-  min-width: 150px;
-  padding: 6px 8px;
-}
-
 .suggestion-address-cell {
-  min-width: 220px;
-  max-width: 280px;
-}
-
-.unavailable-section {
-  border-top: 1px solid var(--line);
+  min-width: 125px;
+  max-width: 180px;
+  overflow-wrap: break-word;
 }
 
 .form-grid {
@@ -2540,13 +3274,9 @@ td span {
     grid-template-columns: 1fr 1fr;
   }
 
+  /* Narrow screens: let the one-line row wrap instead of scrolling. */
   .delivery-run-edit-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .customer-picker {
-    grid-template-columns: 1fr;
-    align-items: stretch;
+    flex-wrap: wrap;
   }
 }
 
@@ -2554,8 +3284,17 @@ td span {
   /* The rail has nowhere to collapse to once the sidebar is a top strip, so
      the stored collapsed choice is ignored below this width. */
   .app-layout,
-  .app-layout.sidebar-is-collapsed {
+  .app-layout.sidebar-is-collapsed,
+  .app-layout.with-calendar-panel,
+  .app-layout.with-calendar-panel.sidebar-is-collapsed {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* No side rail to clear once the sidebar is a top strip. */
+  .calendar-side-panel,
+  .sidebar-is-collapsed .calendar-side-panel {
+    inset: 0 auto 0 0;
+    width: min(420px, 100%);
   }
 
   .sidebar-toggle {
@@ -2698,10 +3437,6 @@ td span {
     padding: 15px;
   }
 
-  .checkpoints {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .form-grid,
   .team-row {
     grid-template-columns: 1fr;
@@ -2752,6 +3487,14 @@ td span {
 
 :root[data-theme="dark"] .metric-accent-red .metric-icon {
   background: rgba(236, 130, 122, 0.16);
+}
+
+/* The stage whose filter is currently applied to the pipeline below. Declared
+   after the accent rules so the selected outline still shows on the amber and
+   red cards, which set a border colour of their own. */
+.metric-selected {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
 }
 
 .schedule-modal {
@@ -3039,17 +3782,23 @@ td span {
   text-transform: uppercase;
 }
 
+.record-idstrip span.status-good {
+  color: var(--green);
+}
+
+.record-idstrip span.status-warning {
+  color: var(--amber);
+}
+
+.record-idstrip span.status-danger {
+  color: var(--red);
+}
+
 .record-header-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-}
-
-.record .checkpoints {
-  margin: 0;
-  padding: 14px 22px;
-  border-bottom: 1px solid var(--line);
 }
 
 .record-body {
@@ -3110,6 +3859,45 @@ td span {
 }
 
 .spec-row.emphasis dd {
+  color: var(--green);
+}
+
+.spec-table-wrap {
+  overflow-x: auto;
+}
+
+.spec-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.spec-table th,
+.spec-table td {
+  padding: 7px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+
+.spec-table th {
+  background: transparent;
+  color: var(--ink);
+  font-weight: 700;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--line);
+}
+
+.spec-table td {
+  border-bottom: 0;
+  color: var(--muted);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.spec-table td.emphasis {
   color: var(--green);
 }
 
@@ -3197,10 +3985,6 @@ td span {
   .spec-block.nested:last-child {
     border-bottom: 0;
   }
-
-  .record .checkpoints {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 /* Installation details is the one editable block: work item + team, added and
@@ -3251,4 +4035,192 @@ td span {
 
 .work-add .button {
   min-height: 34px;
+}
+
+/* ── Sidebar calendar hover card ──────────────────────────────────────────
+   An instrument readout rather than a tooltip: square corners, hairline
+   rules, uppercase micro-labels and tabular figures so every time column
+   aligns down the card no matter the digits. Position comes from the
+   component (fixed to the viewport) because the sidebar clips its overflow. */
+.calendar-hover-card {
+  --tech-accent: #0b6fb8;
+  --tech-grid: rgba(11, 111, 184, 0.16);
+  position: fixed;
+  z-index: 60;
+  width: 292px;
+  padding: 0;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  /* A 2px rule along the top edge, the way a rack panel is labelled. */
+  border-top: 2px solid var(--tech-accent);
+  border-radius: 2px;
+  box-shadow: 0 6px 20px rgba(20, 20, 18, 0.13);
+  pointer-events: none;
+}
+
+:root[data-theme="dark"] .calendar-hover-card {
+  --tech-accent: #57a9e6;
+  --tech-grid: rgba(87, 169, 230, 0.2);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+}
+
+.calendar-hover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.calendar-hover-date {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  font-variant-numeric: tabular-nums;
+}
+
+.calendar-hover-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 1px 6px;
+  color: var(--tech-accent);
+  background: var(--tech-grid);
+  border-radius: 2px;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.calendar-hover-count small {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.calendar-hover-section {
+  padding: 8px 10px;
+}
+
+.calendar-hover-section + .calendar-hover-section {
+  border-top: 1px solid var(--line);
+}
+
+.calendar-hover-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.calendar-hover-team {
+  display: block;
+  padding-left: 7px;
+  /* Each crew ticked off against the accent rule, so the block reads as a
+     list of committed resources at a glance. */
+  border-left: 2px solid var(--tech-accent);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.calendar-hover-conditions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+/* Rain reading. Squared and outlined rather than a soft pill, so it reads as
+   an instrument value next to the times below it. */
+.calendar-hover-rain {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.calendar-hover-rain.low-risk {
+  color: var(--muted);
+}
+
+.calendar-hover-rain.medium-risk {
+  color: var(--amber);
+  border-color: var(--amber);
+}
+
+.calendar-hover-rain.high-risk {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.calendar-hover-noforecast {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+/* A public holiday is a hard stop on scheduling, so it takes the warning
+   colour rather than sitting as another neutral chip. */
+.calendar-hover-holiday {
+  padding: 1px 6px;
+  color: var(--red);
+  background: var(--red-soft);
+  border-radius: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.calendar-hover-rows {
+  display: grid;
+  gap: 1px;
+}
+
+/* Name takes the slack; the two time columns are fixed so they line up
+   between rows and against the header. */
+.calendar-hover-row {
+  display: grid;
+  grid-template-columns: 1fr 46px 46px;
+  gap: 6px;
+  align-items: baseline;
+  padding: 2px 0;
+}
+
+.calendar-hover-row.is-head {
+  padding-bottom: 3px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.calendar-hover-row.is-head span:not(:first-child),
+.calendar-hover-time {
+  text-align: right;
+}
+
+.calendar-hover-name {
+  overflow: hidden;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendar-hover-time {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 }
