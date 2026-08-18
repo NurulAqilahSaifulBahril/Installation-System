@@ -1,20 +1,30 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { Database, LoaderCircle, LogIn, UserPlus } from "lucide-react";
+import {
+  Database,
+  Eye,
+  EyeOff,
+  LoaderCircle,
+  LogIn,
+  UserPlus,
+} from "lucide-react";
 
 export default function LoginPage() {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   // Connection settings have to be reachable from here, not just from the
   // dashboard. Signing in is itself a database call, so a machine with no
   // connection yet can never get past this screen to the settings dialog
-  // behind it — which is exactly how a fresh install ends up stuck.
+  // behind it — which is exactly how a fresh install ends up stuck. A build
+  // that ships credentials never opens this panel; it exists for the key-free
+  // installer, where nothing is stored yet.
   const [isDesktop, setIsDesktop] = useState(false);
   const [showConnection, setShowConnection] = useState(false);
   const [connectionSaved, setConnectionSaved] = useState(false);
@@ -60,7 +70,7 @@ export default function LoginPage() {
         setConnectionBusy(false);
         return;
       }
-      // Reload rather than just closing the panel: the setup check above ran
+      // Reload rather than just closing the panel: the setup check below ran
       // against the old (absent) connection, so its answer is stale now.
       setConnectionSaved(true);
       window.location.reload();
@@ -159,13 +169,28 @@ export default function LoginPage() {
 
         <label>
           Password
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            autoComplete={needsSetup ? "new-password" : "current-password"}
-            disabled={!ready}
-          />
+          {/* Typing a password blind is where most failed sign-ins here come
+              from — this is a shared office machine, not a public site. */}
+          <div className="login-password">
+            <input
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete={needsSetup ? "new-password" : "current-password"}
+              disabled={!ready}
+            />
+            <button
+              type="button"
+              className="login-password-toggle"
+              onClick={() => setShowPassword((shown) => !shown)}
+              disabled={!ready}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              aria-pressed={showPassword}
+              title={showPassword ? "Hide password" : "Show password"}
+            >
+              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
         </label>
 
         {error && (
