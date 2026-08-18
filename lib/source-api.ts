@@ -274,12 +274,22 @@ export async function fetchEligibleSourceJobs(): Promise<SourceJobsResult> {
   // app's own read-write operational store. This is the read-only connection
   // to the upstream business database (invoices, customers, payments) that
   // the pipeline is built from.
-  const proxyUrl = process.env.PG_SOURCE_PROXY_URL;
-  const database = process.env.PG_SOURCE_PROXY_DATABASE;
-  const token = process.env.PG_SOURCE_PROXY_TOKEN;
+  // Falls back to the operational connection when no separate source one is
+  // configured. Splitting them is the better arrangement, but a deployment
+  // that only ever had PG_PROXY_* must keep reading its pipeline rather than
+  // dropping to demo data the moment it updates.
+  const proxyUrl =
+    process.env.PG_SOURCE_PROXY_URL || process.env.PG_PROXY_URL;
+  const database =
+    process.env.PG_SOURCE_PROXY_DATABASE || process.env.PG_PROXY_DATABASE;
+  const token =
+    process.env.PG_SOURCE_PROXY_TOKEN || process.env.PG_PROXY_TOKEN;
 
   if (!proxyUrl || !database || !token) {
-    throw new Error("Source API environment variables are incomplete.");
+    throw new Error(
+      "No database connection is configured. Open Connection settings and " +
+        "enter the address, database name and access token.",
+    );
   }
 
   // Invoices operations already have an installation_jobs record for (e.g. a

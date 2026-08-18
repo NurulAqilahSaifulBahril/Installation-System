@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { LoaderCircle, LogIn, UserPlus } from "lucide-react";
+import { Database, LoaderCircle, LogIn, UserPlus } from "lucide-react";
 
 export default function LoginPage() {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
@@ -10,6 +10,69 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Connection settings have to be reachable from here, not just from the
+  // dashboard. Signing in is itself a database call, so a machine with no
+  // connection yet can never get past this screen to the settings dialog
+  // behind it — which is exactly how a fresh install ends up stuck.
+  const [isDesktop, setIsDesktop] = useState(false);
+  const [showConnection, setShowConnection] = useState(false);
+  const [connectionSaved, setConnectionSaved] = useState(false);
+  const [connectionBusy, setConnectionBusy] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [connection, setConnection] = useState({
+    url: "",
+    database: "",
+    token: "",
+    sourceUrl: "",
+    sourceDatabase: "",
+    sourceToken: "",
+  });
+
+  useEffect(() => {
+    const desktop = window.installationDesktop;
+    if (!desktop) return;
+    setIsDesktop(true);
+    void desktop.getSettings().then((current) => {
+      setConnection((form) => ({
+        ...form,
+        url: current.url,
+        database: current.database,
+        sourceUrl: current.sourceUrl,
+        sourceDatabase: current.sourceDatabase,
+      }));
+      // Nothing stored yet is the fresh-install case, so open the panel
+      // rather than making someone hunt for it behind a sign-in they
+      // cannot complete.
+      if (!current.url || !current.database) setShowConnection(true);
+    });
+  }, []);
+
+  async function saveConnection() {
+    const desktop = window.installationDesktop;
+    if (!desktop || connectionBusy) return;
+    setConnectionBusy(true);
+    setConnectionError(null);
+    try {
+      const result = await desktop.saveSettings(connection);
+      if (!result.ok) {
+        setConnectionError(result.message);
+        setConnectionBusy(false);
+        return;
+      }
+      // Reload rather than just closing the panel: the setup check above ran
+      // against the old (absent) connection, so its answer is stale now.
+      setConnectionSaved(true);
+      window.location.reload();
+    } catch (saveError) {
+      setConnectionError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Could not save the connection settings.",
+      );
+      setConnectionBusy(false);
+    }
+  }
 
   useEffect(() => {
     fetch("/api/auth/setup")
@@ -132,6 +195,125 @@ export default function LoginPage() {
               : "Sign in"}
         </button>
       </form>
+
+      {isDesktop && (
+        <div className="login-card login-connection">
+          <button
+            type="button"
+            className="button secondary full"
+            onClick={() => setShowConnection((open) => !open)}
+          >
+            <Database size={16} />
+            {showConnection ? "Hide connection settings" : "Connection settings"}
+          </button>
+
+          {showConnection && (
+            <>
+              <p className="login-hint">
+                Where this computer reads and saves data. Ask whoever set up
+                the system for these — signing in needs them.
+              </p>
+
+              <label>
+                Address
+                <input
+                  value={connection.url}
+                  onChange={(event) =>
+                    setConnection({ ...connection, url: event.target.value })
+                  }
+                  placeholder="https://…/api/sql"
+                />
+              </label>
+
+              <label>
+                Database name
+                <input
+                  value={connection.database}
+                  onChange={(event) =>
+                    setConnection({ ...connection, database: event.target.value })
+                  }
+                />
+              </label>
+
+              <label>
+                Access token
+                <input
+                  type="password"
+                  value={connection.token}
+                  onChange={(event) =>
+                    setConnection({ ...connection, token: event.target.value })
+                  }
+                  placeholder="Leave blank to keep the stored one"
+                />
+              </label>
+
+              <p className="login-hint">
+                Source database — the read-only business data the pipeline is
+                built from. Leave blank to use the same connection above.
+              </p>
+
+              <label>
+                Source address
+                <input
+                  value={connection.sourceUrl}
+                  onChange={(event) =>
+                    setConnection({ ...connection, sourceUrl: event.target.value })
+                  }
+                  placeholder="Same as above"
+                />
+              </label>
+
+              <label>
+                Source database name
+                <input
+                  value={connection.sourceDatabase}
+                  onChange={(event) =>
+                    setConnection({
+                      ...connection,
+                      sourceDatabase: event.target.value,
+                    })
+                  }
+                  placeholder="Same as above"
+                />
+              </label>
+
+              <label>
+                Source access token
+                <input
+                  type="password"
+                  value={connection.sourceToken}
+                  onChange={(event) =>
+                    setConnection({ ...connection, sourceToken: event.target.value })
+                  }
+                  placeholder="Leave blank to keep the stored one"
+                />
+              </label>
+
+              {connectionError && (
+                <p className="login-error" role="alert">
+                  {connectionError}
+                </p>
+              )}
+
+              <button
+                type="button"
+                className="button primary full"
+                onClick={() => void saveConnection()}
+                disabled={connectionBusy || connectionSaved}
+              >
+                {connectionBusy || connectionSaved ? (
+                  <LoaderCircle size={16} className="spin" />
+                ) : (
+                  <Database size={16} />
+                )}
+                {connectionBusy || connectionSaved
+                  ? "Saving…"
+                  : "Save connection"}
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

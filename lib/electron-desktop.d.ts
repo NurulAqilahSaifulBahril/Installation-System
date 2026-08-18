@@ -10,6 +10,9 @@ export type ConnectionSettings = {
   url: string;
   database: string;
   hasToken: boolean;
+  sourceUrl: string;
+  sourceDatabase: string;
+  hasSourceToken: boolean;
 };
 
 export type SaveSettingsResult = { ok: true } | { ok: false; message: string };
@@ -24,6 +27,9 @@ declare global {
         url: string;
         database: string;
         token: string;
+        sourceUrl?: string;
+        sourceDatabase?: string;
+        sourceToken?: string;
       }) => Promise<SaveSettingsResult>;
       checkForUpdates: () => Promise<void>;
       installUpdate: () => Promise<void>;

@@ -50,7 +50,14 @@ function loadEnvFile() {
 // beside the executable, because an update replaces the program directory and
 // would otherwise wipe them. Applied after loadEnvFile so a value entered by the
 // user always beats a stale one baked into the build.
-const CONNECTION_KEYS = ['PG_PROXY_URL', 'PG_PROXY_DATABASE', 'PG_PROXY_TOKEN'];
+const CONNECTION_KEYS = [
+  'PG_PROXY_URL',
+  'PG_PROXY_DATABASE',
+  'PG_PROXY_TOKEN',
+  'PG_SOURCE_PROXY_URL',
+  'PG_SOURCE_PROXY_DATABASE',
+  'PG_SOURCE_PROXY_TOKEN',
+];
 
 function connectionConfigPath() {
   return path.join(app.getPath('userData'), 'connection.json');
@@ -167,6 +174,9 @@ ipcMain.handle('settings:get', () => ({
   url: process.env.PG_PROXY_URL || '',
   database: process.env.PG_PROXY_DATABASE || '',
   hasToken: Boolean(process.env.PG_PROXY_TOKEN),
+  sourceUrl: process.env.PG_SOURCE_PROXY_URL || '',
+  sourceDatabase: process.env.PG_SOURCE_PROXY_DATABASE || '',
+  hasSourceToken: Boolean(process.env.PG_SOURCE_PROXY_TOKEN),
 }));
 
 ipcMain.handle('settings:save', (_event, settings) => {
@@ -187,10 +197,31 @@ ipcMain.handle('settings:save', (_event, settings) => {
     return { ok: false, message: 'Address must be a full URL, starting with https://' };
   }
 
+  // The read-only source connection. Left blank it mirrors the operational
+  // one, which is the single-database arrangement every earlier build used.
+  const sourceUrl = String(settings?.sourceUrl ?? '').trim() || url;
+  const sourceDatabase =
+    String(settings?.sourceDatabase ?? '').trim() || database;
+  const typedSourceToken = String(settings?.sourceToken ?? '').trim();
+  const sourceToken =
+    typedSourceToken || process.env.PG_SOURCE_PROXY_TOKEN || token;
+
+  try {
+    new URL(sourceUrl);
+  } catch {
+    return {
+      ok: false,
+      message: 'Source address must be a full URL, starting with https://',
+    };
+  }
+
   const values = {
     PG_PROXY_URL: url,
     PG_PROXY_DATABASE: database,
     PG_PROXY_TOKEN: token,
+    PG_SOURCE_PROXY_URL: sourceUrl,
+    PG_SOURCE_PROXY_DATABASE: sourceDatabase,
+    PG_SOURCE_PROXY_TOKEN: sourceToken,
   };
 
   try {

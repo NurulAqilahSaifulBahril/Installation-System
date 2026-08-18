@@ -4172,6 +4172,21 @@ a.phone-number:hover {
   color: var(--red);
 }
 
+/* A second card under the sign-in one. A machine that cannot reach the
+   database has to be able to be pointed at it here, because the settings
+   dialog on the dashboard sits behind a sign-in that needs the database. */
+.login-connection {
+  margin-top: 16px;
+  padding: 20px 28px;
+}
+
+.login-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
 /* ---- IT Admin page ---- */
 
 .admin-layout {
