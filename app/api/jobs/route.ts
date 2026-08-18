@@ -1,11 +1,20 @@
 ﻿import { NextResponse } from 'next/server';
+import { toDateOnly } from '@/lib/dates';
 import { demoJobs } from '@/lib/demo-data';
 import { ensureInstallationSchema } from '@/lib/installation-schema';
 import { queryProxy } from '@/lib/proxy-db';
 import { fetchEligibleSourceJobs } from '@/lib/source-api';
 import type { InstallationJob } from '@/lib/types';
 
+import { getCached, getInflight, setCached, setInflight } from '@/lib/jobs-cache';
+
 export const dynamic = 'force-dynamic';
+
+// The source query joins invoice/payment/customer/agent/seda_registration over
+// a remote proxy (Railway), so every uncached request pays full network +
+// join latency. A short TTL turns repeat loads (tab switches, accidental
+// double-fetches, quick navigation back to the dashboard) into a memory hit
+// instead of a multi-second round trip, without staling the pipeline for long.
 
 type OperationalRow = {
   source_invoice_id: string;
@@ -18,6 +27,7 @@ type OperationalRow = {
   delivery_status: InstallationJob['deliveryStatus'];
   delivery_date: string | null;
   arrival_date: string | null;
+  arrival_time: string | null;
   stock_details: string | null;
   delivery_contact_number: string | null;
   warehouse_location: string | null;
@@ -53,16 +63,17 @@ function mergeOperations(
 
     return {
       ...job,
-      installationDate: operation.installation_date,
+      installationDate: toDateOnly(operation.installation_date),
       customerAvailabilityStatus:
-        operation.customer_availability_status ?? 'pending',
-      preferredInstallationDate: operation.preferred_installation_date,
+        operation.customer_availability_status ?? 'not_set',
+      preferredInstallationDate: toDateOnly(operation.preferred_installation_date),
       availabilityRemarks: operation.availability_remarks ?? '',
       scheduleStatus: operation.schedule_status,
       installationApprovalStatus: operation.installation_approval_status,
       deliveryStatus: operation.delivery_status,
-      deliveryDate: operation.delivery_date,
-      arrivalDate: operation.arrival_date,
+      deliveryDate: toDateOnly(operation.delivery_date),
+      arrivalDate: toDateOnly(operation.arrival_date),
+      arrivalTime: operation.arrival_time,
       stockDetails: operation.stock_details ?? '',
       deliveryContactNumber:
         operation.delivery_contact_number ?? job.customerPhone,
@@ -100,6 +111,7 @@ async function readOperationalRows(sourceIds: string[]) {
         '  delivery_status,',
         '  delivery_date,',
         '  arrival_date,',
+        '  arrival_time,',
         '  stock_details,',
         '  delivery_contact_number,',
         '  warehouse_location,',
@@ -147,13 +159,33 @@ async function readOperationalRows(sourceIds: string[]) {
   }));
 }
 
-export async function GET() {
+// The newest upstream edit across the returned jobs. This is the age of the
+// data itself, which is not the same thing as syncedAt (the moment we queried)
+// — a stalled upstream sync leaves syncedAt current while the data goes stale.
+function newestSourceUpdate(jobs: InstallationJob[]): string | null {
+  let newest: string | null = null;
+  for (const job of jobs) {
+    const updated = job.sourceUpdatedAt;
+    if (updated && (!newest || updated > newest)) {
+      newest = updated;
+    }
+  }
+  return newest;
+}
+
+async function loadJobsPayload() {
   let source: 'live' | 'demo' = 'live';
   let warning: string | null = null;
   let jobs: InstallationJob[];
 
   try {
-    jobs = await fetchEligibleSourceJobs();
+    const result = await fetchEligibleSourceJobs();
+    jobs = result.jobs;
+    if (result.truncated) {
+      warning =
+        'Source returned the maximum number of rows, so some jobs are missing. ' +
+        'Raise SOURCE_ROW_LIMIT in lib/source-api.ts.';
+    }
   } catch (error) {
     source = 'demo';
     warning =
@@ -163,27 +195,57 @@ export async function GET() {
     jobs = demoJobs;
   }
 
+  const sourceUpdatedAt = newestSourceUpdate(jobs);
+
   try {
     await ensureInstallationSchema();
     const merged = mergeOperations(jobs, await readOperationalRows(jobs.map((job) => job.id)));
-    return NextResponse.json({
+    return {
       jobs: merged,
       source,
       persistence: 'api-db',
       warning,
       syncedAt: new Date().toISOString(),
-    });
+      sourceUpdatedAt,
+    };
   } catch (error) {
     const sharedWarning =
       error instanceof Error
         ? 'API database unavailable: ' + error.message
         : 'API database unavailable.';
-    return NextResponse.json({
+    return {
       jobs,
       source,
       persistence: 'browser',
       warning: warning ? warning + ' ' + sharedWarning : sharedWarning,
       syncedAt: new Date().toISOString(),
-    });
+      sourceUpdatedAt,
+    };
+  }
+}
+
+export async function GET(request: Request) {
+  const bypassCache = new URL(request.url).searchParams.get('fresh') === '1';
+
+  if (!bypassCache) {
+    const cached = getCached();
+    if (cached) return NextResponse.json(cached);
+
+    // Two tabs/effects racing in on a cold cache would otherwise both pay the
+    // full remote-join latency; the second one rides the first's in-flight
+    // request instead of firing a duplicate query.
+    const inflight = getInflight();
+    if (inflight) return NextResponse.json(await inflight);
+  }
+
+  const requestPromise = loadJobsPayload();
+  setInflight(requestPromise);
+
+  try {
+    const body = await requestPromise;
+    setCached(body);
+    return NextResponse.json(body);
+  } finally {
+    setInflight(null);
   }
 }

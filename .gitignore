@@ -14,6 +14,7 @@ npm-debug.log*
 
 # Customer data — never commit. Real names, addresses and payment records
 # must not leave the local machine.
+/backups/
 *.xlsx
 *.xls
 *.xlsm

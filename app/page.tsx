@@ -16,6 +16,7 @@ import {
   FileSearch,
   Filter,
   LoaderCircle,
+  LogOut,
   MapPin,
   Moon,
   PackageCheck,
@@ -26,6 +27,7 @@ import {
   RefreshCw,
   Search,
   Settings,
+  ShieldCheck,
   Sun,
   Truck,
   Users,
@@ -377,15 +379,26 @@ function describeSourceAge(iso: string | null) {
     timeZone: "Asia/Kuala_Lumpur",
   }).format(updated);
 
-  let age: string;
-  if (hours < 1) age = "just now";
-  else if (hours < 24) age = `${Math.round(hours)}h ago`;
+  let elapsed: string;
+  if (hours < 1) elapsed = "under an hour";
+  else if (hours < 24) elapsed = `${Math.round(hours)}h`;
   else {
     const days = Math.floor(hours / 24);
-    age = `${days} day${days === 1 ? "" : "s"} ago`;
+    elapsed = `${days} day${days === 1 ? "" : "s"}`;
   }
 
-  return { date, age, stale: hours >= STALE_SOURCE_HOURS };
+  const stale = hours >= STALE_SOURCE_HOURS;
+  // Worded as an absence rather than an age. "Source data 5 days ago" reads as
+  // "this dashboard has not looked recently", so pressing refresh and watching
+  // it not move looks like a broken button; what it actually means is that the
+  // refresh did run and found nothing newer upstream.
+  const headline = stale
+    ? `No new source data in ${elapsed} — sync may have stopped`
+    : hours < 1
+      ? "Source data just now"
+      : `Source data ${elapsed} ago`;
+
+  return { date, headline, stale };
 }
 
 function formatWeekRange(weekDates: Date[]) {
@@ -522,26 +535,55 @@ function isOutOfPlanning(job: InstallationJob) {
   );
 }
 
-// A customer who was available on installation day and whose date is at
-// least a full day gone is assumed complete without waiting on the source
-// system to mark it installed — otherwise a finished job can sit on the
-// chase list indefinitely just because the sign-off never got recorded.
-// Customers who were only pending/not set, or who went unavailable or
-// cancelled, keep chasing as before regardless of how overdue the date is.
-// The date itself follows the same confirmed-else-preferred fallback the
-// Customer details "Installation date" column already shows — a preferred
-// date that was never overridden counts the same as a confirmed one here.
+// A booked date that is at least a full day gone counts as installed, without
+// waiting on the source system to record the sign-off — otherwise a finished
+// job sits on the chase list forever just because nobody marked it.
+//
+// Availability is deliberately not consulted: admin cancels a customer before
+// the installation date, so a date that was allowed to pass is a date that was
+// kept. A cancellation arriving after the fact is corrected on the job itself
+// rather than by holding every finished job back waiting for a sign-off.
+//
+// Only the confirmed date counts, not preferredInstallationDate. A preferred
+// date is the customer's proposal rather than a booking, and with no
+// availability guard left a stale proposal would mark the job complete on its
+// own.
 function isAssumedComplete(job: InstallationJob, todayIso: string) {
-  const effectiveDate = job.installationDate || job.preferredInstallationDate;
-  return (
-    job.customerAvailabilityStatus === "available" &&
-    effectiveDate !== null &&
-    effectiveDate < todayIso
-  );
+  return job.installationDate !== null && job.installationDate < todayIso;
 }
 
 function isCompleteInstallation(job: InstallationJob, todayIso: string) {
   return job.scheduleStatus === "installed" || isAssumedComplete(job, todayIso);
+}
+
+// Group and delivery-run membership live outside the job record, so any
+// question about how arranged a job is needs both maps alongside it.
+type PlanningLookup = {
+  groupByJobId: Map<string, InstallationGroup>;
+  deliveryRunByJobId: Map<string, DeliveryRun>;
+};
+
+// The five arrangement columns on Customer details, in the order they appear
+// there. Each test mirrors what its column renders, so a row showing a value
+// while the filter disagrees about it is not possible.
+function planningGaps(job: InstallationJob, lookup: PlanningLookup): string[] {
+  const group = lookup.groupByJobId.get(job.id) ?? null;
+  const gaps: string[] = [];
+  if (!group?.installationTeam && !group?.wiringTeam) gaps.push("teams");
+  if (!group) gaps.push("group");
+  if (!lookup.deliveryRunByJobId.get(job.id)) gaps.push("delivery run");
+  if (!job.stockDetails.trim()) gaps.push("stock details");
+  // The confirmed date only — the customer's own, or the one their group
+  // carries. preferredInstallationDate appears in that column too, but
+  // labelled as a proposal, and a proposal is not a booking.
+  if (!job.installationDate && !group?.installationDate) {
+    gaps.push("installation date");
+  }
+  return gaps;
+}
+
+function isFullyPlanned(job: InstallationJob, lookup: PlanningLookup) {
+  return planningGaps(job, lookup).length === 0;
 }
 
 // Financially free to move: paid 59% or more, or carrying an approved
@@ -673,6 +715,14 @@ function formatPhoneNumber(value: string) {
   return value;
 }
 
+function phoneCallHref(value: string) {
+  const digits = value.replace(/\D/g, "");
+  if (!digits) return null;
+  if (digits.startsWith("60")) return `tel:+${digits}`;
+  if (digits.startsWith("0")) return `tel:+60${digits.slice(1)}`;
+  return `tel:+${digits}`;
+}
+
 function normalizeSeda(status: string) {
   const value = status.toLowerCase();
   return ["approved", "complete", "completed", "success"].some((word) =>
@@ -680,47 +730,6 @@ function normalizeSeda(status: string) {
   )
     ? "Approved"
     : status || "Pending";
-}
-
-function calculateDaysSince(dateStr: string): number | null {
-  if (!dateStr) return null;
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffTime = now.getTime() - date.getTime();
-  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-  return diffDays >= 0 ? diffDays : null;
-}
-
-function getPendingInstallationMetrics(jobs: InstallationJob[]) {
-  // Overdue is 30+ days since the second payment. calculateDaysSince is the only
-  // thing that decides how old a job is, here and in the breakdown below, so the
-  // total can never disagree with the three buckets it is split into.
-  const overdue = jobs.filter((job) => {
-    if (!job.secondPaymentDate) return false;
-    const days = calculateDaysSince(job.secondPaymentDate);
-    return days !== null && days >= 30;
-  });
-
-  const breakdown = {
-    days30to60: overdue.filter(job => {
-      const days = calculateDaysSince(job.secondPaymentDate!);
-      return days !== null && days >= 30 && days < 60;
-    }).length,
-    days60to90: overdue.filter(job => {
-      const days = calculateDaysSince(job.secondPaymentDate!);
-      return days !== null && days >= 60 && days < 90;
-    }).length,
-    days90plus: overdue.filter(job => {
-      const days = calculateDaysSince(job.secondPaymentDate!);
-      return days !== null && days >= 90;
-    }).length,
-  };
-
-  return {
-    total: overdue.length,
-    breakdown,
-    jobs: overdue,
-  };
 }
 
 const knownTownships = [
@@ -929,20 +938,20 @@ const PIPELINE_STAGES = [
   {
     value: "scheduled",
     label: "Scheduled Installation",
-    note: "Dated, customer in play",
-    hint: "An installation date is set and the customer's availability is Available or Pending. Customers who have gone unavailable or cancelled are not counted even though the date is still on the record.",
+    note: "Fully arranged",
+    hint: "All five arrangement columns are filled: assigned teams, location/group, delivery run, stock details and a confirmed installation date. A job with a date but no crew, no run or no stock line is not counted — it stays under the earlier stages until it is fully arranged. Customers who have gone unavailable or cancelled are not counted either.",
   },
   {
     value: "pending_complete",
     label: "Pending Complete Installation",
     note: "Booked, not finished",
-    hint: "Has a date but is not installed: the customer cancelled or went unavailable, or hasn't confirmed availability and the date passed with no sign-off, or it is installation day and the stock is still not delivered. Bookings still in the future are not counted here — those stay under Scheduled Installation. An available customer whose date has passed counts as Complete Installation instead.",
+    hint: "Booked but not finished: the customer cancelled or went unavailable while the date is still ahead, or it is installation day and the stock is still not delivered. Once the date itself passes the job counts as Complete Installation instead.",
   },
   {
     value: "complete",
     label: "Complete Installation",
     note: "Installation done",
-    hint: "Marked installed in the source system, or assumed complete once an available customer's installation date is at least a day past.",
+    hint: "Marked installed in the source system, or assumed complete once the confirmed installation date is at least a day past — whatever the availability says, since a cancellation is expected to arrive before the date rather than after it.",
   },
   {
     value: "attention",
@@ -992,6 +1001,7 @@ function matchesPipelineStage(
   job: InstallationJob,
   stage: string,
   todayIso: string,
+  lookup: PlanningLookup,
 ) {
   const installationDate = job.installationDate;
   const installed = isCompleteInstallation(job, todayIso);
@@ -1018,13 +1028,18 @@ function matchesPipelineStage(
         job.paymentPercent >= 60
       );
 
-    // A date is on the calendar and the customer is still in play. Someone who
-    // has gone unavailable or cancelled is not a scheduled installation even
-    // though the date is still sitting on the record.
+    // Fully arranged: all five arrangement columns on Customer details are
+    // filled — teams, location/group, delivery run, stock details and a
+    // confirmed installation date. A date on its own is not enough, because
+    // the crew, the stock and the run are what make that date real.
+    //
+    // Half-planned jobs therefore do not appear here. They stay visible under
+    // the earlier stages, where the blank columns and each field's own remarks
+    // and status show what is still outstanding.
     case "scheduled":
       return (
-        installationDate !== null &&
         !installed &&
+        isFullyPlanned(job, lookup) &&
         (availability === "available" ||
           availability === "pending" ||
           availability === "not_set")
@@ -1502,32 +1517,6 @@ function JobDetail({
     onSave({ ...job, teams: job.teams.filter((team) => team.id !== id) });
   }
 
-  const checkpoints = [
-    {
-      label: "Payment",
-      value: `${job.paymentPercent.toFixed(0)}% · ${
-        job.paymentPercent >= 59 ? "Eligible" : "Review"
-      }`,
-      state: job.paymentPercent >= 59 ? "complete" : "blocked",
-    },
-    {
-      label: "SEDA",
-      value: normalizeSeda(job.sedaStatus),
-      state:
-        normalizeSeda(job.sedaStatus) === "Approved" ? "complete" : "blocked",
-    },
-    {
-      label: "Stock",
-      value: deliveryLabels[job.deliveryStatus],
-      state: job.deliveryStatus === "delivered" ? "complete" : "pending",
-    },
-    {
-      label: "Date",
-      value: job.installationDate || "Not arranged",
-      state: job.installationDate ? "complete" : "pending",
-    },
-  ];
-
   if (sldOpen) {
     return (
       <aside className="detail-panel sld-panel">
@@ -1608,15 +1597,6 @@ function JobDetail({
           </button>
         </div>
       </header>
-
-      <div className="checkpoints">
-        {checkpoints.map((item) => (
-          <div className={`checkpoint ${item.state}`} key={item.label}>
-            <small>{item.label}</small>
-            <strong>{item.value}</strong>
-          </div>
-        ))}
-      </div>
 
       <div className="record-body">
         <SpecBlock title="Customer and site">
@@ -2026,8 +2006,7 @@ export default function DashboardPage() {
   const [teamWeekAssignments, setTeamWeekAssignments] = useState<
     TeamWeekAssignment[]
   >([]);
-  const [composer, setComposer] = useState<"group" | "delivery" | null>(null);
-  const [showPendingModal, setShowPendingModal] = useState(false);
+  const [composer, setComposer] = useState<"group" | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsForm, setSettingsForm] = useState({
     url: "",
@@ -2036,6 +2015,38 @@ export default function DashboardPage() {
   });
   const [settingsHasToken, setSettingsHasToken] = useState(false);
   const [isDesktop, setIsDesktop] = useState(false);
+  const [currentUser, setCurrentUser] = useState<{
+    id: string;
+    username: string;
+    displayName: string;
+    role: "admin" | "staff";
+  } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then(async (response) => {
+        if (response.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const payload = (await response.json()) as {
+          user: typeof currentUser;
+        };
+        setCurrentUser(payload.user);
+      })
+      .catch(() => {
+        // Database unreachable — the offline banner already covers this;
+        // don't bounce the user to the login page over a connection blip.
+      });
+  }, []);
+
+  async function signOut() {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      window.location.href = "/login";
+    }
+  }
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [groupDraft, setGroupDraft] = useState({
@@ -2043,14 +2054,6 @@ export default function DashboardPage() {
     area: "",
     installationDate: "",
     installationEndDate: "",
-  });
-  const [deliveryDraft, setDeliveryDraft] = useState({
-    name: "",
-    deliveryDate: "",
-    warehouse: "",
-    deliveryPic: "",
-    contactNumber: "",
-    installationGroupId: "",
   });
 
   const jobUpdatesRef = useRef<Record<string, JobUpdate>>({});
@@ -2246,7 +2249,12 @@ export default function DashboardPage() {
       if (manual) {
         await loadSharedState(false);
       }
-      const response = await fetch("/api/jobs", { cache: "no-store" });
+      // cache: "no-store" only defeats the browser cache. The route keeps its
+      // own short-lived one, so an explicit "check for new jobs" has to ask for
+      // ?fresh=1 or a press inside that TTL never reaches the source at all.
+      const response = await fetch(manual ? "/api/jobs?fresh=1" : "/api/jobs", {
+        cache: "no-store",
+      });
       const data = (await response.json()) as JobsResponse;
       if (!response.ok) throw new Error("Could not load installation jobs.");
       const merged = applyJobUpdates(data.jobs, jobUpdatesRef.current);
@@ -2331,6 +2339,21 @@ export default function DashboardPage() {
     );
     return result;
   }, [groups]);
+
+  const deliveryRunByJobId = useMemo(() => {
+    const result = new Map<string, DeliveryRun>();
+    deliveryRuns.forEach((run) =>
+      run.jobIds.forEach((jobId) => result.set(jobId, run)),
+    );
+    return result;
+  }, [deliveryRuns]);
+
+  // What "Scheduled Installation" needs to know about a job beyond the job
+  // record itself. Declared here, above every stage filter that reads it.
+  const planningLookup = useMemo(
+    () => ({ groupByJobId, deliveryRunByJobId }),
+    [groupByJobId, deliveryRunByJobId],
+  );
 
   // The sidebar calendar sits outside the groups workspace, so it needs its
   // own forecast rather than the one InstallationGroupsView holds.
@@ -2458,7 +2481,7 @@ export default function DashboardPage() {
 
   const filteredJobs = useMemo(() => {
     return pipelineScopedJobs
-      .filter((job) => matchesPipelineStage(job, status, todayIso))
+      .filter((job) => matchesPipelineStage(job, status, todayIso, planningLookup))
       .sort((a, b) => {
         if (!a.secondPaymentDate && !b.secondPaymentDate) {
           return a.customerName.localeCompare(b.customerName);
@@ -2470,7 +2493,7 @@ export default function DashboardPage() {
           new Date(b.secondPaymentDate).getTime();
         return dateOrder || a.customerName.localeCompare(b.customerName);
       });
-  }, [pipelineScopedJobs, status, todayIso]);
+  }, [pipelineScopedJobs, status, todayIso, planningLookup]);
 
   const selected = jobs.find((job) => job.id === selectedId) ?? null;
 
@@ -2516,24 +2539,11 @@ export default function DashboardPage() {
     const counts = {} as Record<StageValue, number>;
     PIPELINE_STAGES.forEach((stage) => {
       counts[stage.value] = pool.filter((job) =>
-        matchesPipelineStage(job, stage.value, todayIso),
+        matchesPipelineStage(job, stage.value, todayIso, planningLookup),
       ).length;
     });
     return counts;
-  }, [view, planningScopedJobs, pipelineScopedJobs, todayIso]);
-
-  const metrics = useMemo(
-    () => ({ pendingInstallation: getPendingInstallationMetrics(jobs) }),
-    [jobs],
-  );
-
-  const deliveryRunByJobId = useMemo(() => {
-    const result = new Map<string, DeliveryRun>();
-    deliveryRuns.forEach((run) =>
-      run.jobIds.forEach((jobId) => result.set(jobId, run)),
-    );
-    return result;
-  }, [deliveryRuns]);
+  }, [view, planningScopedJobs, pipelineScopedJobs, todayIso, planningLookup]);
 
   // How many of the three arrangement columns a job has filled in: assigned
   // teams, delivery run, installation date. Drives the row shade in the
@@ -2666,7 +2676,6 @@ export default function DashboardPage() {
     composer ||
       selectedJobForDisplay ||
       showSettings ||
-      showPendingModal ||
       showScheduleModal,
   );
 
@@ -2688,17 +2697,12 @@ export default function DashboardPage() {
       setShowSettings(false);
       return;
     }
-    if (showPendingModal) {
-      setShowPendingModal(false);
-      return;
-    }
     if (showScheduleModal) setShowScheduleModal(false);
   }, [
     composer,
     selectedJobForDisplay,
     sldOpen,
     showSettings,
-    showPendingModal,
     showScheduleModal,
   ]);
 
@@ -2769,35 +2773,6 @@ export default function DashboardPage() {
     setShowScheduleModal(true);
   }
 
-  function createDeliveryRun() {
-    if (!deliveryDraft.name.trim()) return;
-    const nextRun: DeliveryRun = {
-      id: crypto.randomUUID(),
-      name: deliveryDraft.name.trim(),
-      deliveryDate: deliveryDraft.deliveryDate,
-      warehouse: deliveryDraft.warehouse.trim(),
-      deliveryTeam: "",
-      deliveryPic: deliveryDraft.deliveryPic.trim(),
-      contactNumber: deliveryDraft.contactNumber.trim(),
-      installationGroupId: deliveryDraft.installationGroupId,
-      status: "pending_stock",
-      jobIds:
-        groups.find(
-          (group) => group.id === deliveryDraft.installationGroupId,
-        )?.jobIds ?? [],
-    };
-    saveDeliveryRuns([...deliveryRuns, nextRun]);
-    setDeliveryDraft({
-      name: "",
-      deliveryDate: "",
-      warehouse: "",
-      deliveryPic: "",
-      contactNumber: "",
-      installationGroupId: "",
-    });
-    setComposer(null);
-    setView("delivery");
-  }
 
   async function saveJob(updated: InstallationJob) {
     // Demo records are placeholders shown when the live source is unreachable
@@ -2890,6 +2865,11 @@ export default function DashboardPage() {
           <div className="brand-text">
             <strong>Installation Operations</strong>
             <span>Solar scheduling and delivery</span>
+            {currentUser && (
+              <span className="brand-greeting">
+                Hi {currentUser.displayName || currentUser.username}!
+              </span>
+            )}
           </div>
         </div>
 
@@ -2951,14 +2931,6 @@ export default function DashboardPage() {
                 setView("pipeline");
               }}
             />
-            <button
-              className="sidebar-pending"
-              onClick={() => setShowPendingModal(true)}
-            >
-              <Clock3 size={15} />
-              <span>Pending installations</span>
-              <strong>{metrics.pendingInstallation.total}</strong>
-            </button>
           </div>
         )}
       </aside>
@@ -3009,6 +2981,24 @@ export default function DashboardPage() {
             <RefreshCw size={16} className={syncing ? "spin" : ""} />
             {syncing ? "Checking…" : "Check for new jobs"}
           </button>
+          {currentUser && (
+            <>
+              {currentUser.role === "admin" && (
+                <a className="button secondary" href="/admin" title="IT Admin">
+                  <ShieldCheck size={16} />
+                  IT Admin
+                </a>
+              )}
+              <button
+                className="button secondary"
+                onClick={() => void signOut()}
+                title={`Signed in as ${currentUser.displayName || currentUser.username}`}
+              >
+                <LogOut size={16} />
+                {currentUser.displayName || currentUser.username}
+              </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -3195,18 +3185,18 @@ export default function DashboardPage() {
                 className={`source-age${sourceAge.stale ? " stale" : ""}`}
                 title={
                   sourceAge.stale
-                    ? "No upstream change in over a day — the sync feeding this dashboard may have stopped."
+                    ? "No upstream record has changed in over a day. Checking for new jobs does re-query the source, but this stays until the sync feeding that source produces newer data."
                     : undefined
                 }
               >
                 <strong>
                   {sourceAge.stale && "⚠ "}
-                  Source data {sourceAge.age}
+                  {sourceAge.headline}
                 </strong>
                 <small>
                   Newest record {sourceAge.date}
                   {meta?.syncedAt &&
-                    ` · checked ${new Intl.DateTimeFormat("en-MY", {
+                    ` · last checked ${new Intl.DateTimeFormat("en-MY", {
                       hour: "numeric",
                       minute: "2-digit",
                       timeZone: "Asia/Kuala_Lumpur",
@@ -3435,6 +3425,7 @@ export default function DashboardPage() {
         {view === "teams" && (
           <TeamPlanningView
             groups={groups}
+            deliveryRuns={deliveryRuns}
             jobs={jobs}
             planningFilter={planningFilter}
             onPlanningFilterChange={setPlanningFilter}
@@ -3456,7 +3447,6 @@ export default function DashboardPage() {
             jobs={jobs}
             onChange={saveDeliveryRuns}
             onUpdateJob={(job) => void saveJob(job)}
-            onCreate={() => setComposer("delivery")}
             pinnedJobIds={pinnedJobIds}
             onTogglePin={togglePinJob}
           />
@@ -3469,22 +3459,14 @@ export default function DashboardPage() {
             className="composer-modal"
             role="dialog"
             aria-modal="true"
-            aria-label={
-              composer === "group"
-                ? "Create installation group"
-                : "Create delivery run"
-            }
+            aria-label="Create installation group"
           >
             <div className="detail-header">
               <div>
                 <p className="eyebrow">
                   Manual planning
                 </p>
-                <h2>
-                  {composer === "group"
-                    ? "Create installation group"
-                    : "Create delivery run"}
-                </h2>
+                <h2>Create installation group</h2>
               </div>
               <button
                 className="icon-button"
@@ -3494,8 +3476,7 @@ export default function DashboardPage() {
                 <X size={19} />
               </button>
             </div>
-            {composer === "group" ? (
-              <div className="edit-form">
+            <div className="edit-form">
                 <label>
                   Group name
                   <input
@@ -3559,112 +3540,8 @@ export default function DashboardPage() {
                   </button>
                 </div>
               </div>
-            ) : (
-              <div className="edit-form">
-                <label>
-                  Delivery run name
-                  <input
-                    value={deliveryDraft.name}
-                    onChange={(event) =>
-                      setDeliveryDraft({
-                        ...deliveryDraft,
-                        name: event.target.value,
-                      })
-                    }
-                    placeholder="Example: Johor Route 08"
-                  />
-                </label>
-                <label>
-                  Delivery date
-                  <input
-                    type="date"
-                    value={deliveryDraft.deliveryDate}
-                    onChange={(event) =>
-                      setDeliveryDraft({
-                        ...deliveryDraft,
-                        deliveryDate: event.target.value,
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  Warehouse
-                  <input
-                    value={deliveryDraft.warehouse}
-                    onChange={(event) =>
-                      setDeliveryDraft({
-                        ...deliveryDraft,
-                        warehouse: event.target.value,
-                      })
-                    }
-                    placeholder="Warehouse name and location"
-                  />
-                </label>
-                <label>
-                  Group location
-                  <select
-                    value={deliveryDraft.installationGroupId}
-                    onChange={(event) =>
-                      setDeliveryDraft({
-                        ...deliveryDraft,
-                        installationGroupId: event.target.value,
-                      })
-                    }
-                  >
-                    <option value="">Select customer group</option>
-                    {groups.map((group) => (
-                      <option value={group.id} key={group.id}>
-                        {group.name} · {group.area}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Delivery PIC
-                  <input
-                    value={deliveryDraft.deliveryPic}
-                    onChange={(event) =>
-                      setDeliveryDraft({
-                        ...deliveryDraft,
-                        deliveryPic: event.target.value,
-                      })
-                    }
-                    placeholder="Person in charge"
-                  />
-                </label>
-                <label>
-                  Contact number
-                  <input
-                    type="tel"
-                    value={deliveryDraft.contactNumber}
-                    onChange={(event) =>
-                      setDeliveryDraft({
-                        ...deliveryDraft,
-                        contactNumber: event.target.value,
-                      })
-                    }
-                    placeholder="Delivery PIC contact"
-                  />
-                </label>
-                <div className="form-actions">
-                  <button
-                    className="button secondary"
-                    onClick={() => setComposer(null)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="button primary"
-                    disabled={!deliveryDraft.name.trim()}
-                    onClick={createDeliveryRun}
-                  >
-                    Create delivery run
-                  </button>
-                </div>
-              </div>
-            )}
+            </div>
           </div>
-        </div>
       )}
       {selectedJobForDisplay && (
         <div
@@ -3853,100 +3730,6 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {showPendingModal && (
-        <div className="modal-backdrop" role="presentation">
-          <div
-            className="pending-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Pending installations monitoring"
-          >
-            <div className="detail-header">
-              <div>
-                <p className="eyebrow">Installation monitoring</p>
-                <h2>Pending installations</h2>
-                <p>Customers awaiting installation beyond 30 days from 2nd payment date</p>
-              </div>
-              <button
-                className="icon-button"
-                aria-label="Close"
-                onClick={() => setShowPendingModal(false)}
-              >
-                <X size={19} />
-              </button>
-            </div>
-
-            <div className="pending-modal-content">
-              <div className="pending-table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Customer / site</th>
-                      <th>Agent</th>
-                      <th>2nd payment date</th>
-                      <th>Days since</th>
-                      <th>Location</th>
-                      <th>Installation date</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {metrics.pendingInstallation.jobs
-                      .sort((a, b) => {
-                        const daysA = calculateDaysSince(a.secondPaymentDate!) || 0;
-                        const daysB = calculateDaysSince(b.secondPaymentDate!) || 0;
-                        return daysB - daysA;
-                      })
-                      .map((job) => {
-                        const daysSince = calculateDaysSince(job.secondPaymentDate!);
-                        const rowClass =
-                          daysSince && daysSince >= 90
-                            ? "critical-overdue"
-                            : daysSince && daysSince >= 60
-                            ? "severe-overdue"
-                            : "overdue";
-
-                        return (
-                          <tr key={job.id} className={`pending-row ${rowClass}`}>
-                            <td>
-                              <strong>{formatPersonName(job.customerName)}</strong>
-                              <span>{job.invoiceNumber}</span>
-                            </td>
-                            <td>
-                              <strong>{formatPersonName(job.agentName)}</strong>
-                              <span>Sales agent</span>
-                            </td>
-                            <td>
-                              <strong>
-                                {job.secondPaymentDate
-                                  ? new Intl.DateTimeFormat("en-MY", {
-                                      day: "numeric",
-                                      month: "short",
-                                      year: "numeric",
-                                    }).format(new Date(job.secondPaymentDate))
-                                  : "Not recorded"}
-                              </strong>
-                            </td>
-                            <td>
-                              <strong className={`days-badge ${rowClass}`}>
-                                {daysSince ? `${daysSince}d` : "—"}
-                              </strong>
-                            </td>
-                            <td>
-                              <span>{townshipForJob(job)}</span>
-                            </td>
-                            <td>
-                              <strong className="not-scheduled">Not scheduled</strong>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
       </main>
     </div>
   );
@@ -4452,10 +4235,10 @@ function InstallationGroupsView({
     groupHasSchedulingReadyMember(group, jobs),
   );
 
-  // Which team already holds each group. A customer group belongs to one team
-  // only, so the picker below hides a group another team is committed to —
-  // two crews turning up at the same customers is the failure this prevents,
-  // and it is cheaper to make unavailable than to detect afterwards.
+  // Which team already holds each group. A group committed to one team stays
+  // selectable for the others: a second crew on the same customers is a real
+  // arrangement the planner has to be able to enter, and hiding the option
+  // only meant the group could not be moved once the first team took it.
   const teamIdByGroupId = useMemo(() => {
     const owners = new Map<string, string>();
     weekAssignments.forEach((assignment) => {
@@ -4464,9 +4247,14 @@ function InstallationGroupsView({
     return owners;
   }, [weekAssignments]);
 
-  function heldByAnotherTeam(groupId: string, teamId: string) {
+  // Names the crew already committed to a group, as a suffix for the option
+  // label. The choice is allowed, but it cannot be silent — an unlabelled
+  // option is how two teams end up at one customer without anyone noticing.
+  function heldByLabel(groupId: string, teamId: string) {
     const owner = teamIdByGroupId.get(groupId);
-    return Boolean(owner) && owner !== teamId;
+    if (!owner || owner === teamId) return "";
+    const holder = teams.find((candidate) => candidate.id === owner);
+    return ` · also held by ${holder?.name ?? "another team"}`;
   }
 
   // Available/Pending customers who aren't in any saved group yet, grouped by
@@ -4813,7 +4601,7 @@ function InstallationGroupsView({
                           <div className="row-actions">
                           <GroupMultiSelect
                             single
-                            emptyLabel="Every group is taken"
+                            emptyLabel="No customer groups yet"
                             ariaLabel={`${team.name} assigned installation group`}
                             selectedIds={rowDraft.installationGroupIds}
                             onChange={(installationGroupIds) =>
@@ -4828,35 +4616,35 @@ function InstallationGroupsView({
                                 // stay selectable even if it no longer holds an
                                 // Available/Pending customer, otherwise the
                                 // picker would show a selection it cannot name.
-                                // The same reason keeps this row's own draft
-                                // exempt from the other-team filter.
+                                // Groups another team is committed to are listed
+                                // too, carrying that crew's name in the label.
                                 options: groups
                                   .filter(
                                     (group) =>
                                       rowDraft.installationGroupIds.includes(
                                         group.id,
                                       ) ||
-                                      (availabilityReadyGroups.some(
+                                      availabilityReadyGroups.some(
                                         (ready) => ready.id === group.id,
-                                      ) &&
-                                        !heldByAnotherTeam(group.id, team.id)),
+                                      ),
                                   )
                                   .map((group) => ({
                                     id: group.id,
-                                    label: groupOptionLabel(group),
+                                    label:
+                                      groupOptionLabel(group) +
+                                      heldByLabel(group.id, team.id),
                                   })),
                               },
                               {
                                 label: "Available customers not yet grouped",
-                                options: liveGroupSuggestions
-                                  .filter(
-                                    (suggestion) =>
-                                      !heldByAnotherTeam(suggestion.id, team.id),
-                                  )
-                                  .map((suggestion) => ({
+                                options: liveGroupSuggestions.map(
+                                  (suggestion) => ({
                                     id: suggestion.id,
-                                    label: suggestionOptionLabel(suggestion),
-                                  })),
+                                    label:
+                                      suggestionOptionLabel(suggestion) +
+                                      heldByLabel(suggestion.id, team.id),
+                                  }),
+                                ),
                               },
                             ]}
                           />
@@ -5753,6 +5541,7 @@ function GroupDrawer({
 
 function TeamPlanningView({
   groups,
+  deliveryRuns,
   jobs,
   planningFilter,
   onPlanningFilterChange,
@@ -5767,6 +5556,7 @@ function TeamPlanningView({
   onTogglePin,
 }: {
   groups: InstallationGroup[];
+  deliveryRuns: DeliveryRun[];
   jobs: InstallationJob[];
   planningFilter: string;
   onPlanningFilterChange: (next: string) => void;
@@ -5831,12 +5621,25 @@ function TeamPlanningView({
     return result;
   }, [groups]);
 
+  const planningLookup = useMemo(() => {
+    const deliveryRunByJobId = new Map<string, DeliveryRun>();
+    deliveryRuns.forEach((run) =>
+      run.jobIds.forEach((jobId) => deliveryRunByJobId.set(jobId, run)),
+    );
+    return { groupByJobId, deliveryRunByJobId };
+  }, [groupByJobId, deliveryRuns]);
+
   // The same predicate the Customer details page runs, so "Need Attention"
   // there and here can never disagree about which jobs qualify.
   const planningTodayIso = malaysiaToday();
 
   function matchesPlanningStatus(job: InstallationJob) {
-    return matchesPipelineStage(job, planningFilter, planningTodayIso);
+    return matchesPipelineStage(
+      job,
+      planningFilter,
+      planningTodayIso,
+      planningLookup,
+    );
   }
 
   // Whole-month match: the filter holds "YYYY-MM" and dates are ISO "YYYY-MM-DD",
@@ -6133,10 +5936,22 @@ function TeamPlanningView({
           >
             <strong>{formatPersonName(job.customerName)}</strong>
           </span>
-          <span className="phone-number">
-            <Phone size={13} />
-            {formatPhoneNumber(job.customerPhone)}
-          </span>
+          {phoneCallHref(job.customerPhone) ? (
+            <a
+              className="phone-number"
+              href={phoneCallHref(job.customerPhone)!}
+              onClick={(event) => event.stopPropagation()}
+              title={`Call ${formatPersonName(job.customerName)}`}
+            >
+              <Phone size={13} />
+              {formatPhoneNumber(job.customerPhone)}
+            </a>
+          ) : (
+            <span className="phone-number">
+              <Phone size={13} />
+              {formatPhoneNumber(job.customerPhone)}
+            </span>
+          )}
           {job.paymentPercent < 59 && (
             <span className="special-case-label">
               Special case · Management approval required
@@ -6612,7 +6427,6 @@ function DeliveryPlanningView({
   jobs,
   onChange,
   onUpdateJob,
-  onCreate,
   pinnedJobIds,
   onTogglePin,
 }: {
@@ -6620,7 +6434,6 @@ function DeliveryPlanningView({
   jobs: InstallationJob[];
   onChange: (runs: DeliveryRun[]) => void;
   onUpdateJob: (job: InstallationJob) => void;
-  onCreate: () => void;
   pinnedJobIds: Set<string>;
   onTogglePin: (id: string) => void;
 }) {
@@ -6631,6 +6444,27 @@ function DeliveryPlanningView({
   // run in or out of this set — independent of every other run's state.
   const [editingRunIds, setEditingRunIds] = useState<Set<string>>(new Set());
   const [etaFeedback, setEtaFeedback] = useState<Record<string, EtaFeedback>>({});
+
+  // Creates a blank run and drops it straight into edit mode — the row-level
+  // equivalent of the old "Create delivery run" popup. Customers are linked
+  // to it afterward from Customer details, same as any existing run.
+  function createRun() {
+    const id = crypto.randomUUID();
+    const nextRun: DeliveryRun = {
+      id,
+      name: "",
+      deliveryDate: "",
+      warehouse: "",
+      deliveryTeam: "",
+      deliveryPic: "",
+      contactNumber: "",
+      installationGroupId: "",
+      status: "pending_stock",
+      jobIds: [],
+    };
+    onChange([...runs, nextRun]);
+    setEditingRunIds((prev) => new Set(prev).add(id));
+  }
 
   async function calculateEtas(run: DeliveryRun) {
     const runJobs = jobs.filter(
@@ -6787,12 +6621,55 @@ function DeliveryPlanningView({
 
   if (runs.length === 0) {
     return (
-      <div className="planning-panel empty-state">
-        <Truck />
-        <p>Create an empty delivery run, then link customers from Customer details.</p>
-        <button className="button primary" onClick={onCreate}>
-          Create delivery run
-        </button>
+      <div className="planning-panel">
+        <div className="planning-heading">
+          <div>
+            <h2>Stock delivery</h2>
+            <p>Group customer materials into warehouse delivery routes.</p>
+          </div>
+          <button className="button primary" onClick={createRun}>
+            <Truck size={16} />
+            Create delivery run
+          </button>
+        </div>
+        <section className="planning-group">
+          <div className="table-wrap">
+            <table className="delivery-run-customers">
+              <thead>
+                <tr>
+                  <th>Run name</th>
+                  <th>Status</th>
+                  <th>Delivery date &amp; departure</th>
+                  <th>Warehouse</th>
+                  <th>Delivery PIC</th>
+                  <th>Contact number</th>
+                  <th>Customer</th>
+                  <th>Location</th>
+                  <th>Stock details</th>
+                  <th>ETA</th>
+                  <th aria-label="Pin"></th>
+                  <th aria-label="Actions"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="delivery-run-placeholder-row">
+                  <td>—</td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td></td>
+                  <td></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
       </div>
     );
   }
@@ -6804,7 +6681,7 @@ function DeliveryPlanningView({
           <h2>Stock delivery</h2>
           <p>Group customer materials into warehouse delivery routes.</p>
         </div>
-        <button className="button primary" onClick={onCreate}>
+        <button className="button primary" onClick={createRun}>
           <Truck size={16} />
           Create delivery run
         </button>
@@ -6862,11 +6739,11 @@ function DeliveryPlanningView({
                     <th>Warehouse</th>
                     <th>Delivery PIC</th>
                     <th>Contact number</th>
-                    <th aria-label="Pin"></th>
                     <th>Customer</th>
                     <th>Location</th>
                     <th>Stock details</th>
                     <th>ETA</th>
+                    <th aria-label="Pin"></th>
                     <th aria-label="Actions"></th>
                   </tr>
                 </thead>
@@ -6883,7 +6760,7 @@ function DeliveryPlanningView({
                         run.jobIds.includes(job.id) &&
                         !isCompleteInstallation(job, todayIso),
                     );
-                    if (runJobs.length === 0) {
+                    if (run.jobIds.length > 0 && runJobs.length === 0) {
                       return (
                         <tr>
                           <td colSpan={12} className="run-all-complete">
@@ -6892,15 +6769,34 @@ function DeliveryPlanningView({
                         </tr>
                       );
                     }
-                    return runJobs.map((job, index) => (
+                    // No customers linked yet (a just-created run, or one
+                    // that never had any) — still show one row so the run's
+                    // own fields (name, status, warehouse…) stay editable.
+                    const displayRows: (InstallationJob | null)[] =
+                      runJobs.length > 0 ? runJobs : [null];
+                    return displayRows.map((job, index) => {
+                      // Customer Scheduling's own definition of "in play":
+                      // available or still waiting on confirmation. A row's
+                      // own current customer stays selectable even if their
+                      // status has since moved on, and a customer already
+                      // parked in another row of this same run is hidden so
+                      // the same person can't end up double-booked.
+                      const eligibleJobs = jobs.filter(
+                        (candidate) =>
+                          (candidate.customerAvailabilityStatus === "available" ||
+                            candidate.customerAvailabilityStatus === "pending") &&
+                          (candidate.id === job?.id ||
+                            !run.jobIds.includes(candidate.id)),
+                      );
+                      return (
                       <tr
-                        key={job.id}
+                        key={job ? job.id : "empty"}
                         className={isEditing ? "selected" : undefined}
                         onClick={() => toggleRunEdit(run.id)}
                       >
                         {index === 0 && (
                           <td
-                            rowSpan={runJobs.length}
+                            rowSpan={displayRows.length}
                             className="run-field-cell"
                             onClick={isEditing ? (event) => event.stopPropagation() : undefined}
                           >
@@ -6921,7 +6817,7 @@ function DeliveryPlanningView({
                         )}
                         {index === 0 && (
                           <td
-                            rowSpan={runJobs.length}
+                            rowSpan={displayRows.length}
                             className="run-field-cell"
                             onClick={isEditing ? (event) => event.stopPropagation() : undefined}
                           >
@@ -6949,7 +6845,7 @@ function DeliveryPlanningView({
                         )}
                         {index === 0 && (
                           <td
-                            rowSpan={runJobs.length}
+                            rowSpan={displayRows.length}
                             className="run-field-cell"
                             onClick={isEditing ? (event) => event.stopPropagation() : undefined}
                           >
@@ -6983,7 +6879,7 @@ function DeliveryPlanningView({
                         )}
                         {index === 0 && (
                           <td
-                            rowSpan={runJobs.length}
+                            rowSpan={displayRows.length}
                             className="run-field-cell"
                             onClick={isEditing ? (event) => event.stopPropagation() : undefined}
                           >
@@ -7004,7 +6900,7 @@ function DeliveryPlanningView({
                         )}
                         {index === 0 && (
                           <td
-                            rowSpan={runJobs.length}
+                            rowSpan={displayRows.length}
                             className="run-field-cell"
                             onClick={isEditing ? (event) => event.stopPropagation() : undefined}
                           >
@@ -7025,7 +6921,7 @@ function DeliveryPlanningView({
                         )}
                         {index === 0 && (
                           <td
-                            rowSpan={runJobs.length}
+                            rowSpan={displayRows.length}
                             className="run-field-cell"
                             onClick={isEditing ? (event) => event.stopPropagation() : undefined}
                           >
@@ -7045,131 +6941,173 @@ function DeliveryPlanningView({
                             )}
                           </td>
                         )}
-                        <td className="pin-cell" onClick={(event) => event.stopPropagation()}>
-                          <button
-                            type="button"
-                            className={`icon-button pin-toggle ${pinnedJobIds.has(job.id) ? "is-pinned" : ""}`}
-                            aria-label={pinnedJobIds.has(job.id) ? "Unpin row" : "Pin row to top"}
-                            aria-pressed={pinnedJobIds.has(job.id)}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onTogglePin(job.id);
-                            }}
-                          >
-                            {pinnedJobIds.has(job.id) ? <Pin size={14} /> : <PinOff size={14} />}
-                          </button>
-                        </td>
-                        <td><strong>{job.customerName}</strong><span>{job.invoiceNumber}</span></td>
-                        <td>{job.city || job.state || "Not available"}</td>
                         <td onClick={isEditing ? (event) => event.stopPropagation() : undefined}>
                           {isEditing ? (
-                            <div className="member-tag-input">
-                              <div className="member-tag-list">
-                                {stockTags(job).map((item) => (
-                                  <span className="member-tag" key={item}>
-                                    {item}
-                                    <button
-                                      type="button"
-                                      aria-label={`Remove ${item}`}
-                                      onClick={() => removeStockTag(job, item)}
-                                    >
-                                      <X size={12} />
-                                    </button>
-                                  </span>
-                                ))}
-                              </div>
-                              <div className="member-tag-add">
-                                <input
-                                  value={stockDraft[job.id] ?? ""}
-                                  onChange={(event) =>
-                                    setStockDraft((prev) => ({
-                                      ...prev,
-                                      [job.id]: event.target.value,
-                                    }))
-                                  }
-                                  onKeyDown={(event) => {
-                                    if (event.key === "Enter") {
-                                      event.preventDefault();
-                                      addStockTag(job);
-                                    }
-                                  }}
-                                  placeholder="Add stock item"
-                                  aria-label={`Add stock item for ${job.customerName}`}
-                                />
-                                <button
-                                  type="button"
-                                  className="icon-button"
-                                  aria-label={`Add stock item for ${job.customerName}`}
-                                  onClick={() => addStockTag(job)}
-                                >
-                                  <Plus size={14} />
-                                </button>
-                              </div>
-                            </div>
+                            <select
+                              value={job?.id ?? ""}
+                              onChange={(event) => {
+                                const nextJobId = event.target.value;
+                                const withoutCurrent = run.jobIds.filter(
+                                  (id) => id !== job?.id,
+                                );
+                                updateRun(run.id, {
+                                  jobIds: nextJobId
+                                    ? [...withoutCurrent, nextJobId]
+                                    : withoutCurrent,
+                                });
+                              }}
+                              aria-label="Customer"
+                            >
+                              <option value="">Select customer</option>
+                              {eligibleJobs.map((candidate) => (
+                                <option value={candidate.id} key={candidate.id}>
+                                  {candidate.customerName} · {candidate.invoiceNumber}
+                                </option>
+                              ))}
+                            </select>
+                          ) : job ? (
+                            <>
+                              <strong>{job.customerName}</strong>
+                              <span>{job.invoiceNumber}</span>
+                            </>
                           ) : (
-                            <span className="run-field-readout">
-                              {stockTags(job).length > 0
-                                ? stockTags(job).join(", ")
-                                : "No stock details"}
-                            </span>
+                            <span className="run-field-readout">No customer selected</span>
                           )}
                         </td>
-                        {/* Estimated arrival at the customer's address. Falls
-                            back to the run's delivery date/departure time
-                            until someone gives this customer their own, the
-                            same way a job's installation date falls back to
-                            its group's. The fallback is shown, not saved:
-                            leaving the row alone keeps arrivalDate/arrivalTime
-                            null, so moving the run's date or departure time
-                            carries every un-estimated stop along with it. */}
-                        <td onClick={isEditing ? (event) => event.stopPropagation() : undefined}>
-                          {isEditing ? (
-                            <div className="delivery-date-pair">
-                              <input
-                                type="date"
-                                className={job.arrivalDate ? "" : "is-inherited"}
-                                value={job.arrivalDate ?? run.deliveryDate ?? ""}
-                                onChange={(event) =>
-                                  onUpdateJob({
-                                    ...job,
-                                    arrivalDate: event.target.value || null,
-                                  })
-                                }
-                                aria-label={`Estimated arrival date for ${job.customerName}`}
-                                title={
-                                  job.arrivalDate
-                                    ? "Estimated for this customer. Clear it to go back to the run's delivery date."
-                                    : "Taken from the delivery run. Set a date here to estimate this stop on its own."
-                                }
-                              />
-                              <input
-                                type="time"
-                                className={job.arrivalTime ? "" : "is-inherited"}
-                                value={job.arrivalTime ?? run.departureTime ?? "09:00"}
-                                onChange={(event) =>
-                                  onUpdateJob({
-                                    ...job,
-                                    arrivalTime: event.target.value || null,
-                                  })
-                                }
-                                aria-label={`Estimated arrival time for ${job.customerName}`}
-                                title={
-                                  job.arrivalTime
-                                    ? "Estimated for this customer. Clear it to go back to the run's departure time."
-                                    : "Taken from the delivery run's departure time. Set a time here to estimate this stop on its own."
-                                }
-                              />
-                            </div>
-                          ) : (
-                            <span className="run-field-readout">
-                              {job.arrivalDate ?? run.deliveryDate ?? "Not set"} ·{" "}
-                              {job.arrivalTime ?? run.departureTime ?? "09:00"}
-                            </span>
+                        {job ? (
+                          <>
+                            <td>{job.city || job.state || "Not available"}</td>
+                            <td onClick={isEditing ? (event) => event.stopPropagation() : undefined}>
+                              {isEditing ? (
+                                <div className="member-tag-input">
+                                  <div className="member-tag-list">
+                                    {stockTags(job).map((item) => (
+                                      <span className="member-tag" key={item}>
+                                        {item}
+                                        <button
+                                          type="button"
+                                          aria-label={`Remove ${item}`}
+                                          onClick={() => removeStockTag(job, item)}
+                                        >
+                                          <X size={12} />
+                                        </button>
+                                      </span>
+                                    ))}
+                                  </div>
+                                  <div className="member-tag-add">
+                                    <input
+                                      value={stockDraft[job.id] ?? ""}
+                                      onChange={(event) =>
+                                        setStockDraft((prev) => ({
+                                          ...prev,
+                                          [job.id]: event.target.value,
+                                        }))
+                                      }
+                                      onKeyDown={(event) => {
+                                        if (event.key === "Enter") {
+                                          event.preventDefault();
+                                          addStockTag(job);
+                                        }
+                                      }}
+                                      placeholder="Add stock item"
+                                      aria-label={`Add stock item for ${job.customerName}`}
+                                    />
+                                    <button
+                                      type="button"
+                                      className="icon-button"
+                                      aria-label={`Add stock item for ${job.customerName}`}
+                                      onClick={() => addStockTag(job)}
+                                    >
+                                      <Plus size={14} />
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className="run-field-readout">
+                                  {stockTags(job).length > 0
+                                    ? stockTags(job).join(", ")
+                                    : "No stock details"}
+                                </span>
+                              )}
+                            </td>
+                            {/* Estimated arrival at the customer's address. Falls
+                                back to the run's delivery date/departure time
+                                until someone gives this customer their own, the
+                                same way a job's installation date falls back to
+                                its group's. The fallback is shown, not saved:
+                                leaving the row alone keeps arrivalDate/arrivalTime
+                                null, so moving the run's date or departure time
+                                carries every un-estimated stop along with it. */}
+                            <td onClick={isEditing ? (event) => event.stopPropagation() : undefined}>
+                              {isEditing ? (
+                                <div className="delivery-date-pair">
+                                  <input
+                                    type="date"
+                                    className={job.arrivalDate ? "" : "is-inherited"}
+                                    value={job.arrivalDate ?? run.deliveryDate ?? ""}
+                                    onChange={(event) =>
+                                      onUpdateJob({
+                                        ...job,
+                                        arrivalDate: event.target.value || null,
+                                      })
+                                    }
+                                    aria-label={`Estimated arrival date for ${job.customerName}`}
+                                    title={
+                                      job.arrivalDate
+                                        ? "Estimated for this customer. Clear it to go back to the run's delivery date."
+                                        : "Taken from the delivery run. Set a date here to estimate this stop on its own."
+                                    }
+                                  />
+                                  <input
+                                    type="time"
+                                    className={job.arrivalTime ? "" : "is-inherited"}
+                                    value={job.arrivalTime ?? run.departureTime ?? "09:00"}
+                                    onChange={(event) =>
+                                      onUpdateJob({
+                                        ...job,
+                                        arrivalTime: event.target.value || null,
+                                      })
+                                    }
+                                    aria-label={`Estimated arrival time for ${job.customerName}`}
+                                    title={
+                                      job.arrivalTime
+                                        ? "Estimated for this customer. Clear it to go back to the run's departure time."
+                                        : "Taken from the delivery run's departure time. Set a time here to estimate this stop on its own."
+                                    }
+                                  />
+                                </div>
+                              ) : (
+                                <span className="run-field-readout">
+                                  {job.arrivalDate ?? run.deliveryDate ?? "Not set"} ·{" "}
+                                  {job.arrivalTime ?? run.departureTime ?? "09:00"}
+                                </span>
+                              )}
+                            </td>
+                          </>
+                        ) : (
+                          <td colSpan={3} className="run-no-customers">
+                            Select a customer above to set location, stock, and ETA.
+                          </td>
+                        )}
+                        <td className="pin-cell" onClick={(event) => event.stopPropagation()}>
+                          {job && (
+                            <button
+                              type="button"
+                              className={`icon-button pin-toggle ${pinnedJobIds.has(job.id) ? "is-pinned" : ""}`}
+                              aria-label={pinnedJobIds.has(job.id) ? "Unpin row" : "Pin row to top"}
+                              aria-pressed={pinnedJobIds.has(job.id)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onTogglePin(job.id);
+                              }}
+                            >
+                              {pinnedJobIds.has(job.id) ? <Pin size={14} /> : <PinOff size={14} />}
+                            </button>
                           )}
                         </td>
                         {index === 0 && (
                           <td
-                            rowSpan={runJobs.length}
+                            rowSpan={displayRows.length}
                             onClick={(event) => event.stopPropagation()}
                           >
                             <div className="row-actions">
@@ -7200,7 +7138,9 @@ function DeliveryPlanningView({
                             </div>
                           </td>
                         )}
-                      </tr>                    ));
+                      </tr>
+                      );
+                    });
                   })()}
                 </tbody>
               </table>

@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { writeAuditLog } from "@/lib/audit";
+import { AuthError, requireUser } from "@/lib/auth";
 import { readOpsState, writeOpsState, type OpsState } from "@/lib/ops-store";
 
 export const dynamic = "force-dynamic";
@@ -8,16 +10,47 @@ const ALLOWED_KEYS: (keyof OpsState)[] = [
   "deliveryRuns",
   "teamResources",
   "teamWeekAssignments",
-  "availableSuggestions",
   "jobUpdates",
 ];
 
-export async function GET() {
-  const { exists, state } = await readOpsState();
-  return NextResponse.json({ exists, state });
+function describe(error: unknown) {
+  return error instanceof Error ? error.message : "Unknown database error.";
 }
 
+export async function GET() {
+  try {
+    const { exists, state } = await readOpsState();
+    return NextResponse.json({ exists, state });
+  } catch (error) {
+    // 503 rather than 500, and never an empty state: the client has to be able
+    // to tell "the shared store is unreachable" apart from "there is nothing
+    // saved yet", because it seeds the store from local data in the second case
+    // and must not do that in the first.
+    return NextResponse.json(
+      { error: "Shared planning data is unreachable: " + describe(error) },
+      { status: 503 },
+    );
+  }
+}
+
+// Human-readable names for the patch keys, for audit log summaries.
+const KEY_LABELS: Record<string, string> = {
+  groups: "installation groups",
+  deliveryRuns: "delivery runs",
+  teamResources: "teams",
+  teamWeekAssignments: "team week assignments",
+  jobUpdates: "job updates",
+};
+
 export async function PUT(request: Request) {
+  let user;
+  try {
+    user = await requireUser();
+  } catch (error) {
+    const status = error instanceof AuthError ? error.status : 401;
+    return NextResponse.json({ error: "Not signed in." }, { status });
+  }
+
   let body: Record<string, unknown>;
   try {
     body = (await request.json()) as Record<string, unknown>;
@@ -38,6 +71,25 @@ export async function PUT(request: Request) {
     );
   }
 
-  const state = await writeOpsState(patch);
-  return NextResponse.json({ state });
+  try {
+    const state = await writeOpsState(patch);
+
+    const touched = Object.keys(patch)
+      .map((key) => KEY_LABELS[key] ?? key)
+      .join(", ");
+    await writeAuditLog({
+      user,
+      action: "ops_state_updated",
+      entityType: "ops_state",
+      summary: `Updated ${touched}`,
+      details: patch,
+    });
+
+    return NextResponse.json({ state });
+  } catch (error) {
+    return NextResponse.json(
+      { error: "Could not save to the shared database: " + describe(error) },
+      { status: 503 },
+    );
+  }
 }

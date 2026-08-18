@@ -9,6 +9,7 @@
         "lint": "next lint",
         "typecheck": "tsc --noEmit",
         "desktop": "electron .",
+        "backup": "node scripts/backup-db.cjs",
         "dist:win": "node scripts/build-installer.cjs",
         "pack:win": "node scripts/build-installer.cjs --dir"
     },

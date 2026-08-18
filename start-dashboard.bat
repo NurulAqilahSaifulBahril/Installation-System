@@ -4,6 +4,12 @@ REM Used both for manual double-click starts and by the "EternalgyInstallationDa
 REM scheduled task (via start-dashboard-hidden.vbs), which also re-runs this every
 REM 5 minutes as a health check.
 REM
+REM IMPORTANT: this must stay a cheap no-op when the dashboard is already
+REM healthy. The watchdog invokes it every 5 minutes — if this script rebuilds
+REM unconditionally, the watchdog kills a perfectly good server and leaves the
+REM dashboard down for the 1-3 minutes every build takes, on a 5-minute cycle.
+REM To pick up new code, run rebuild-dashboard.bat by hand instead.
+REM
 REM Two logs on purpose: the running server holds dashboard-server.log open for
 REM append, so watchdog runs cannot write there.
 REM   dashboard-startup.log - guard / watchdog messages

@@ -1,16 +1,21 @@
 ﻿import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { writeAuditLog } from '@/lib/audit';
+import { AuthError, requireUser } from '@/lib/auth';
 import { ensureInstallationSchema } from '@/lib/installation-schema';
 import { queryProxy } from '@/lib/proxy-db';
+import { invalidateJobsCache } from '@/lib/jobs-cache';
 
 const updateSchema = z.object({
   invoiceNumber: z.string().min(1),
   customerName: z.string().min(1),
   installationDate: z.string().nullable(),
   customerAvailabilityStatus: z.enum([
+    'not_set',
     'pending',
     'available',
     'unavailable',
+    'cancelled',
   ]),
   preferredInstallationDate: z.string().nullable(),
   availabilityRemarks: z.string(),
@@ -37,6 +42,7 @@ const updateSchema = z.object({
   ]),
   deliveryDate: z.string().nullable(),
   arrivalDate: z.string().nullable(),
+  arrivalTime: z.string().nullable(),
   stockDetails: z.string(),
   deliveryContactNumber: z.string(),
   warehouseLocation: z.string(),
@@ -57,6 +63,16 @@ const updateSchema = z.object({
         'pv_panels',
         'cable_trunking',
         'earthing',
+        'inverter_installation',
+        'dc_cable_inverter',
+        'ac_cable_house_elc',
+        'pv_meter_termination',
+        'mobile_app_wifi_setup',
+        'saj_string_inverter',
+        'jinko_panels',
+        'skylift',
+        'follow_proposed_drawing',
+        'rubbish_clear',
         'other',
       ]),
       customActivity: z.string().optional(),
@@ -69,6 +85,15 @@ export async function PUT(
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
+
+  let user;
+  try {
+    user = await requireUser();
+  } catch (error) {
+    const status = error instanceof AuthError ? error.status : 401;
+    return NextResponse.json({ error: 'Not signed in.' }, { status });
+  }
+
   const parsed = updateSchema.safeParse(await request.json());
 
   if (!parsed.success) {
@@ -97,6 +122,7 @@ export async function PUT(
         '  delivery_status,',
         '  delivery_date,',
         '  arrival_date,',
+        '  arrival_time,',
         '  stock_details,',
         '  delivery_contact_number,',
         '  warehouse_location,',
@@ -130,6 +156,7 @@ export async function PUT(
         '  $19,',
         '  $20,',
         '  $21,',
+        '  $22,',
         '  now()',
         ') on conflict (source_invoice_id) do update set',
         '  invoice_number = excluded.invoice_number,',
@@ -143,6 +170,7 @@ export async function PUT(
         '  delivery_status = excluded.delivery_status,',
         '  delivery_date = excluded.delivery_date,',
         '  arrival_date = excluded.arrival_date,',
+        '  arrival_time = excluded.arrival_time,',
         '  stock_details = excluded.stock_details,',
         '  delivery_contact_number = excluded.delivery_contact_number,',
         '  warehouse_location = excluded.warehouse_location,',
@@ -168,6 +196,7 @@ export async function PUT(
         payload.deliveryStatus,
         payload.deliveryDate,
         payload.arrivalDate,
+        payload.arrivalTime,
         payload.stockDetails,
         payload.deliveryContactNumber,
         payload.warehouseLocation,
@@ -238,6 +267,16 @@ export async function PUT(
       [job.id, 'job_updated', JSON.stringify(payload)],
     );
 
+    await writeAuditLog({
+      user,
+      action: 'job_updated',
+      entityType: 'installation_job',
+      entityId: job.id,
+      summary: `Updated ${payload.customerName} (${payload.invoiceNumber})`,
+      details: payload,
+    });
+
+    invalidateJobsCache();
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json(

@@ -332,9 +332,13 @@ button:disabled {
   border-bottom: 1px solid var(--line);
 }
 
+/* Box and image scale together, so the PNG's built-in whitespace stays cropped
+   by the same proportion it always was — this is the old 154x46 at 1.3x. The
+   sidebar column is 248px wide and its padding leaves 204px, so 200px is the
+   practical ceiling before the mark starts fighting the edge. */
 .brand-logo {
-  width: 154px;
-  height: 46px;
+  width: 200px;
+  height: 60px;
   display: flex;
   align-items: center;
   overflow: hidden;
@@ -365,6 +369,16 @@ button:disabled {
 .brand span {
   color: var(--muted);
   font-size: 12px;
+}
+
+/* Sits under the product name and subtitle in the sidebar. Takes the body
+   colour rather than the muted tone its sibling uses, so it reads as a
+   greeting to the person rather than as one more label about the app. */
+.brand .brand-greeting {
+  margin-top: 8px;
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 600;
 }
 
 .topbar-actions {
@@ -833,39 +847,6 @@ textarea:focus {
   color: #0b1a24;
   background: #57a9e6;
   box-shadow: inset 0 0 0 1px #57a9e6;
-}
-
-.sidebar-pending {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 36px;
-  padding: 0 11px;
-  color: var(--muted);
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  font-weight: 600;
-  text-align: left;
-}
-
-.sidebar-pending span {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-}
-
-.sidebar-pending strong {
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-
-.sidebar-pending:hover {
-  color: var(--ink);
-  background: var(--surface-soft);
 }
 
 /* Collapsed rail. These must sit after the .brand and .dashboard-tabs rules
@@ -2966,6 +2947,16 @@ td span {
   padding: 16px;
 }
 
+.run-no-customers {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.delivery-run-placeholder-row td {
+  color: var(--muted);
+  text-align: center;
+}
+
 .group-drawer-customer-list {
   display: grid;
   gap: 6px;
@@ -3083,6 +3074,17 @@ td span {
   gap: 5px;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
+  color: inherit;
+  text-decoration: none;
+}
+
+a.phone-number {
+  cursor: pointer;
+}
+
+a.phone-number:hover {
+  color: var(--green);
+  text-decoration: underline;
 }
 
 .phone-number svg {
@@ -3529,23 +3531,6 @@ td span {
   overflow-x: visible;
 }
 
-.pending-modal {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 90%;
-  max-width: 1200px;
-  max-height: 80vh;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  box-shadow: 0 20px 25px rgba(0, 0, 0, 0.15);
-  display: flex;
-  flex-direction: column;
-  z-index: 100;
-}
-
 .detail-header {
   padding: 24px;
   border-bottom: 1px solid var(--line);
@@ -3579,116 +3564,6 @@ td span {
   font-size: 11px;
 }
 
-.pending-modal-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0;
-}
-
-.pending-table-wrap {
-  width: 100%;
-  overflow-x: auto;
-}
-
-.pending-table-wrap table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.pending-table-wrap thead {
-  background: var(--surface-soft);
-  position: sticky;
-  top: 0;
-}
-
-.pending-table-wrap th {
-  padding: 12px 16px;
-  text-align: left;
-  font-weight: 600;
-  color: var(--muted);
-  border-bottom: 1px solid var(--line);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.pending-table-wrap td {
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--line);
-  color: var(--ink);
-}
-
-.pending-row {
-  transition: background-color 0.15s ease;
-}
-
-.pending-row.overdue {
-  background-color: var(--amber-soft);
-}
-
-.pending-row.severe-overdue {
-  background-color: #fde4cc;
-}
-
-.pending-row.critical-overdue {
-  background-color: var(--red-soft);
-}
-
-.pending-row td strong {
-  font-weight: 600;
-}
-
-.pending-row td span {
-  display: block;
-  font-size: 12px;
-  color: var(--muted);
-  margin-top: 4px;
-}
-
-.days-badge {
-  display: inline-block;
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.days-badge.overdue {
-  background: rgba(152, 107, 22, 0.15);
-  color: var(--amber);
-}
-
-.days-badge.severe-overdue {
-  background: rgba(233, 140, 53, 0.15);
-  color: #e98c35;
-}
-
-.days-badge.critical-overdue {
-  background: rgba(179, 58, 50, 0.15);
-  color: var(--red);
-}
-
-.not-scheduled {
-  color: var(--red);
-  font-weight: 600;
-}
-
-@media (max-width: 768px) {
-  .pending-modal {
-    width: 95%;
-    max-height: 90vh;
-  }
-
-  .pending-table-wrap {
-    font-size: 12px;
-  }
-
-  .pending-table-wrap th,
-  .pending-table-wrap td {
-    padding: 10px 12px;
-  }
-}
 
 .connection-button {
   padding: 0;
@@ -4223,4 +4098,221 @@ td span {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
+}
+
+/* ---- Sign-in page ---- */
+
+.login-layout {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--surface-soft);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  display: grid;
+  gap: 14px;
+  padding: 32px 28px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
+}
+
+.login-brand {
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.login-brand img {
+  width: 150px;
+  height: auto;
+  margin-bottom: 6px;
+}
+
+.login-brand h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.login-brand p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.login-card label {
+  display: grid;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.login-card input {
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.login-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--red);
+}
+
+/* ---- IT Admin page ---- */
+
+.admin-layout {
+  min-height: 100vh;
+  padding: 28px clamp(16px, 4vw, 48px);
+  display: grid;
+  gap: 20px;
+  align-content: start;
+  background: var(--surface-soft);
+}
+
+.admin-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.admin-heading h1 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.admin-heading p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.admin-panel {
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  display: grid;
+  gap: 14px;
+}
+
+.admin-panel h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.admin-table-wrap {
+  overflow-x: auto;
+}
+
+.admin-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.admin-table-wrap th {
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.admin-table-wrap td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.admin-form-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.admin-form-row label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.admin-form-row input,
+.admin-form-row select {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  min-width: 150px;
+}
+
+.admin-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.admin-badge.role-admin {
+  background: rgba(59, 108, 176, 0.14);
+  color: var(--accent, #3b6cb0);
+}
+
+.admin-badge.role-staff {
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
+.admin-badge.inactive {
+  background: rgba(179, 58, 50, 0.12);
+  color: var(--red);
+}
+
+.admin-audit-filters {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.admin-audit-filters input,
+.admin-audit-filters select {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.audit-time {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
 }

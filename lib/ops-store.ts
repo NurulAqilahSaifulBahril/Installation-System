@@ -1,11 +1,11 @@
-﻿import { queryProxy } from '@/lib/proxy-db';
+import { ensureInstallationSchema } from '@/lib/installation-schema';
+import { queryProxy } from '@/lib/proxy-db';
 
 export type OpsState = {
   groups: unknown[];
   deliveryRuns: unknown[];
   teamResources: unknown[];
   teamWeekAssignments: unknown[];
-  availableSuggestions: unknown[];
   jobUpdates: Record<string, unknown>;
 };
 
@@ -14,27 +14,10 @@ export const EMPTY_OPS_STATE: OpsState = {
   deliveryRuns: [],
   teamResources: [],
   teamWeekAssignments: [],
-  availableSuggestions: [],
   jobUpdates: {},
 };
 
 const STATE_ROW_ID = 'default';
-let schemaReady: Promise<void> | null = null;
-
-async function ensureSchema() {
-  if (!schemaReady) {
-    schemaReady = queryProxy(
-      [
-        'create table if not exists public.installation_ops_state (',
-        '  id text primary key,',
-        "  state jsonb not null default '{}'::jsonb,",
-        '  updated_at timestamptz not null default now()',
-        ');',
-      ].join('\n'),
-    ).then(() => undefined);
-  }
-  await schemaReady;
-}
 
 function normalizeState(value: unknown): Record<string, unknown> | null {
   if (!value) return null;
@@ -51,7 +34,7 @@ export async function readOpsState(): Promise<{
   exists: boolean;
   state: OpsState;
 }> {
-  await ensureSchema();
+  await ensureInstallationSchema();
   const rows = await queryProxy<{ state: unknown }>(
     'select state from public.installation_ops_state where id = $1 limit 1',
     [STATE_ROW_ID],
@@ -66,18 +49,29 @@ export async function readOpsState(): Promise<{
   };
 }
 
+// `||` on jsonb merges one level deep, which is right for the list keys (the
+// client owns the whole list) but wrong for jobUpdates: there, a client sending
+// the one job it just edited would replace every other job's saved update. So
+// jobUpdates is merged a second level down, per job id, and a patch that leaves
+// it out keeps whatever is already stored.
+const MERGE_STATE_SQL = [
+  'insert into public.installation_ops_state (id, state) values ($1, $2::jsonb)',
+  'on conflict (id) do update set',
+  '  state = (public.installation_ops_state.state || excluded.state)',
+  "    || jsonb_build_object('jobUpdates',",
+  "      coalesce(public.installation_ops_state.state->'jobUpdates', '{}'::jsonb)",
+  "      || coalesce(excluded.state->'jobUpdates', '{}'::jsonb)",
+  '    ),',
+  '  updated_at = now()',
+  'returning state',
+].join('\n');
+
 export async function writeOpsState(patch: Partial<OpsState>): Promise<OpsState> {
-  await ensureSchema();
-  const rows = await queryProxy<{ state: unknown }>(
-    [
-      'insert into public.installation_ops_state (id, state) values ($1, $2::jsonb)',
-      'on conflict (id) do update set',
-      '  state = public.installation_ops_state.state || excluded.state,',
-      '  updated_at = now()',
-      'returning state',
-    ].join('\n'),
-    [STATE_ROW_ID, JSON.stringify(patch)],
-  );
+  await ensureInstallationSchema();
+  const rows = await queryProxy<{ state: unknown }>(MERGE_STATE_SQL, [
+    STATE_ROW_ID,
+    JSON.stringify(patch),
+  ]);
   const state = normalizeState(rows[0]?.state) ?? {};
   return {
     ...EMPTY_OPS_STATE,

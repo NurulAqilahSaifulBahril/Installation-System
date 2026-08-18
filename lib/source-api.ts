@@ -1,3 +1,5 @@
+import { toDateOnly } from "@/lib/dates";
+import { queryProxy } from "@/lib/proxy-db";
 import type { InstallationJob } from "@/lib/types";
 
 type ProxyRow = {
@@ -6,6 +8,7 @@ type ProxyRow = {
   total_amount: string | null;
   balance_due: string | null;
   percent_of_total_amount: string | null;
+  first_payment_date: string | null;
   second_payment_date: string | null;
   ballast_details: string | null;
   foc_details: string | null;
@@ -34,6 +37,17 @@ type ProxyResponse = {
   error?: string;
 };
 
+// A backstop against an unbounded payload, not a business rule — the pipeline
+// filter below is what decides which jobs belong. Reaching this limit means
+// rows are being dropped, so fetchEligibleSourceJobs reports it instead of
+// truncating silently.
+const SOURCE_ROW_LIMIT = 5000;
+
+export type SourceJobsResult = {
+  jobs: InstallationJob[];
+  truncated: boolean;
+};
+
 const INSTALLATION_SOURCE_QUERY = `
 with ranked_payments as (
   select
@@ -45,6 +59,14 @@ with ranked_payments as (
     ) as payment_sequence
   from payment
   where linked_invoice is not null
+),
+-- The deposit. Ranked the same way as the second payment rather than taken as
+-- min(payment_date), so an invoice whose payments share a date still resolves
+-- to one first and one second row instead of both collapsing onto the same one.
+first_payments as (
+  select linked_invoice, payment_date as first_payment_date
+  from ranked_payments
+  where payment_sequence = 1
 ),
 second_payments as (
   select linked_invoice, payment_date as second_payment_date
@@ -71,6 +93,7 @@ select
   i.total_amount,
   i.balance_due,
   i.percent_of_total_amount,
+  first_payments.first_payment_date,
   second_payments.second_payment_date,
   invoice_item_details.ballast_details,
   invoice_item_details.foc_details,
@@ -94,15 +117,37 @@ select
   s.drawing_pdf_system
 from invoice i
 left join customer c on c.customer_id = i.linked_customer
-left join agent a on a.linked_user_login = i.linked_agent
+-- linked_agent is inconsistent in the source data: most invoices store the
+-- agent's linked_user_login there, but a meaningful minority (630 as of this
+-- writing) store the agent's own bubble_id instead. Matching either avoids
+-- silently blank agent names for that second group. Confirmed collision-free:
+-- no agent's linked_user_login equals another agent's bubble_id.
+left join agent a
+  on a.linked_user_login = i.linked_agent
+  or a.bubble_id = i.linked_agent
 left join package p on p.bubble_id = i.linked_package
 left join product inverter_product on inverter_product.bubble_id = p.inverter_1
 left join seda_registration s on s.bubble_id = i.linked_seda_registration
+left join first_payments on first_payments.linked_invoice = i.bubble_id
 left join second_payments on second_payments.linked_invoice = i.bubble_id
 left join invoice_item_details on invoice_item_details.linked_invoice = i.bubble_id
 where coalesce(i.is_deleted, false) = false
+  and (
+    -- An invoice with no payment at all is an unsent quote, not an
+    -- installation candidate. Filtering on the pipeline itself (rather than
+    -- taking the N most recently touched invoices) is what keeps older jobs
+    -- that are still awaiting installation from silently falling off the
+    -- dashboard once newer rows arrive.
+    coalesce(i.percent_of_total_amount, 0) > 0
+    -- ...unless operations have already acted on it. A payment override can
+    -- legitimately put a zero-payment invoice into the pipeline, and dropping
+    -- it here would discard work someone already did. installation_jobs lives
+    -- in the app's own operational database, not this read-only source one,
+    -- so the id list is fetched separately and passed in rather than joined.
+    or i.bubble_id = any($1::text[])
+  )
 order by i.updated_at desc nulls last
-limit 1000
+limit ${SOURCE_ROW_LIMIT}
 `;
 
 function textUrl(value: string[] | string | null): string | null {
@@ -167,7 +212,8 @@ function rowToJob(row: ProxyRow): InstallationJob {
     totalAmount: Number(row.total_amount ?? 0),
     paymentPercent,
     paymentBalance: Number(row.balance_due ?? 0),
-    secondPaymentDate: row.second_payment_date,
+    firstPaymentDate: toDateOnly(row.first_payment_date),
+    secondPaymentDate: toDateOnly(row.second_payment_date),
     panelQuantity: row.panel_qty,
     panelRating: row.panel_rating,
     inverter:
@@ -183,7 +229,10 @@ function rowToJob(row: ProxyRow): InstallationJob {
     sldUrl: textUrl(row.drawing_pdf_system) || textUrl(row.pv_system_drawing),
     packageName: row.package_name || "Not available",
     installationDate: null,
-    customerAvailabilityStatus: "pending",
+    // A job just arrived from the source system — nobody has looked at
+    // availability yet. Distinct from "pending", which means someone actively
+    // reached out and is waiting on the customer to confirm.
+    customerAvailabilityStatus: "not_set",
     preferredInstallationDate: null,
     availabilityRemarks: "",
     installationApprovalStatus: sedaApproved
@@ -198,6 +247,7 @@ function rowToJob(row: ProxyRow): InstallationJob {
     deliveryStatus: "not_planned",
     deliveryDate: null,
     arrivalDate: null,
+    arrivalTime: null,
     stockDetails: "",
     deliveryContactNumber: row.phone || "",
     warehouseLocation: "",
@@ -219,13 +269,33 @@ function rowToJob(row: ProxyRow): InstallationJob {
   };
 }
 
-export async function fetchEligibleSourceJobs(): Promise<InstallationJob[]> {
-  const proxyUrl = process.env.PG_PROXY_URL;
-  const database = process.env.PG_PROXY_DATABASE;
-  const token = process.env.PG_PROXY_TOKEN;
+export async function fetchEligibleSourceJobs(): Promise<SourceJobsResult> {
+  // Deliberately separate from PG_PROXY_* (lib/proxy-db.ts), which is the
+  // app's own read-write operational store. This is the read-only connection
+  // to the upstream business database (invoices, customers, payments) that
+  // the pipeline is built from.
+  const proxyUrl = process.env.PG_SOURCE_PROXY_URL;
+  const database = process.env.PG_SOURCE_PROXY_DATABASE;
+  const token = process.env.PG_SOURCE_PROXY_TOKEN;
 
   if (!proxyUrl || !database || !token) {
     throw new Error("Source API environment variables are incomplete.");
+  }
+
+  // Invoices operations already have an installation_jobs record for (e.g. a
+  // payment override) stay in the pipeline even at zero payment. That table
+  // lives in the ops database, not this read-only source one, so its ids are
+  // fetched over the other connection and handed to the source query as a
+  // parameter. A failure here just means that carve-out doesn't apply for
+  // this load — it must not take down the whole source fetch.
+  let overrideInvoiceIds: string[] = [];
+  try {
+    const rows = await queryProxy<{ source_invoice_id: string }>(
+      "select source_invoice_id from public.installation_jobs",
+    );
+    overrideInvoiceIds = rows.map((row) => row.source_invoice_id);
+  } catch {
+    overrideInvoiceIds = [];
   }
 
   const response = await fetch(proxyUrl, {
@@ -237,7 +307,7 @@ export async function fetchEligibleSourceJobs(): Promise<InstallationJob[]> {
     body: JSON.stringify({
       db_name: database,
       sql: INSTALLATION_SOURCE_QUERY,
-      params: [],
+      params: [overrideInvoiceIds],
     }),
     cache: "no-store",
     signal: AbortSignal.timeout(20_000),
@@ -248,5 +318,9 @@ export async function fetchEligibleSourceJobs(): Promise<InstallationJob[]> {
     throw new Error(payload.error || `Source API returned ${response.status}.`);
   }
 
-  return (payload.rows ?? []).map(rowToJob);
+  const rows = payload.rows ?? [];
+  return {
+    jobs: rows.map(rowToJob),
+    truncated: rows.length >= SOURCE_ROW_LIMIT,
+  };
 }
