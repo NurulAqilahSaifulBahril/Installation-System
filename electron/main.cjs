@@ -82,8 +82,41 @@ function loadUserConfig() {
   }
 }
 
+// A build with credentials baked into its bundled .env.local (built locally
+// for hand-distribution to staff) keeps them only until the first auto-update
+// replaces the program directory. Copying them into userData on first boot
+// makes the zero-setup install permanent: updates wipe the bundle, not
+// userData. Never overwrites a connection.json someone already saved by hand.
+function seedUserConfigFromEnv() {
+  try {
+    const configPath = connectionConfigPath();
+    if (fs.existsSync(configPath)) {
+      return;
+    }
+
+    const values = {};
+    for (const key of CONNECTION_KEYS) {
+      const value = process.env[key];
+      if (typeof value === 'string' && value.trim()) {
+        values[key] = value.trim();
+      }
+    }
+
+    // Only the operational triple is required; the source keys mirror it when
+    // absent (lib/source-api.ts falls back). Half a triple is not a connection.
+    if (!values.PG_PROXY_URL || !values.PG_PROXY_DATABASE || !values.PG_PROXY_TOKEN) {
+      return;
+    }
+
+    fs.writeFileSync(configPath, JSON.stringify(values, null, 2), 'utf8');
+  } catch (error) {
+    console.error('Could not seed connection settings from the build:', error);
+  }
+}
+
 loadEnvFile();
 loadUserConfig();
+seedUserConfigFromEnv();
 
 let server = null;
 let nextApp = null;
