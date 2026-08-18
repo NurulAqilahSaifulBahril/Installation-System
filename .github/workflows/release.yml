@@ -18,8 +18,12 @@ name: Release
 #
 # Setting PG_PROXY_URL, PG_PROXY_DATABASE and PG_PROXY_TOKEN as repository
 # secrets makes the build seed those details instead, so staff enter nothing -
-# but that is refused on a public repository, because the credentials would
-# then be readable inside an installer anyone can download.
+# but that is a hard failure on a public repository, not a warning, because the
+# credentials would then be readable inside an installer anyone can download.
+#
+# The way to give staff a zero-setup install while this repository stays public
+# is to build locally - npm run dist:win reads .env.local - and hand that
+# installer over privately. Never attach it to a release.
 
 on:
   push:
@@ -82,13 +86,26 @@ jobs:
             exit 0
           }
 
-          # A seeded installer on a public release page carries live database
-          # credentials in a download anyone can fetch. The owner has decided
-          # to accept that (staff machines must connect with zero setup, and
-          # the token is due to be rotated), so this warns instead of refusing.
-          # If the token leaks, rotate it at the proxy and cut a new release.
+          # Release assets inherit repository visibility, so a seeded installer
+          # attached to a public release hands live database credentials to
+          # anyone who finds the URL - and the operational token is full-access,
+          # reaching customer and payment records without going near the login
+          # screen. A warning is not enough for something irreversible: once the
+          # asset is published it may already have been fetched. Refuse instead.
           if ($env:IS_PRIVATE -ne 'true') {
-            Write-Host "::warning::Building a credential-seeded installer on a PUBLIC repository. Anyone who downloads the installer can read the database token inside it. Accepted by the repository owner on 2026-08-18."
+            throw @"
+          PG_* secrets are configured but this repository is PUBLIC.
+
+          A seeded installer on a public release exposes live database
+          credentials to anyone who finds the URL. Either make the repository
+          private before tagging, or remove the PG_* secrets to build a
+          key-free installer.
+
+          To give staff a zero-setup install while the repository stays public,
+          build locally (npm run dist:win, which picks up .env.local) and hand
+          that installer over privately. Credentials land in userData on first
+          boot, so those machines keep working across key-free public updates.
+          "@
           }
 
           # Report every secret by name. A bare "it's missing" cannot distinguish
@@ -193,8 +210,13 @@ jobs:
             Windows will show a "Windows protected your PC" warning on first run —
             click **More info**, then **Run anyway**. See the
             [user guide](https://github.com/NurulAqilahSaifulBahril/Installation-System/blob/main/USER-GUIDE.md).
+
+            This installer asks for the database connection on first run. Staff
+            machines are set up from the internally distributed copy instead and
+            need no details entered.
           files: |
             C:/tmp/installation-system-release/Installation-System-Setup-${{ steps.ver.outputs.version }}.exe
             C:/tmp/installation-system-release/Installation-System-Setup-${{ steps.ver.outputs.version }}.exe.blockmap
             C:/tmp/installation-system-release/latest.yml
             C:/tmp/installation-system-release/SHA256SUMS.txt
+            Installation Desktop app_user_guide.pdf
