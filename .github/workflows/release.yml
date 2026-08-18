@@ -70,6 +70,9 @@ jobs:
           PG_PROXY_URL: ${{ secrets.PG_PROXY_URL }}
           PG_PROXY_DATABASE: ${{ secrets.PG_PROXY_DATABASE }}
           PG_PROXY_TOKEN: ${{ secrets.PG_PROXY_TOKEN }}
+          PG_SOURCE_PROXY_URL: ${{ secrets.PG_SOURCE_PROXY_URL }}
+          PG_SOURCE_PROXY_DATABASE: ${{ secrets.PG_SOURCE_PROXY_DATABASE }}
+          PG_SOURCE_PROXY_TOKEN: ${{ secrets.PG_SOURCE_PROXY_TOKEN }}
         run: |
           # No secrets is the normal path. The app asks for the connection
           # details on first run and stores them in userData, so a key-free
@@ -79,11 +82,13 @@ jobs:
             exit 0
           }
 
-          # Seeding only makes sense for a private repo. A seeded installer on a
-          # public release page hands live database credentials to anyone with
-          # the URL, so refuse rather than quietly publish one.
+          # A seeded installer on a public release page carries live database
+          # credentials in a download anyone can fetch. The owner has decided
+          # to accept that (staff machines must connect with zero setup, and
+          # the token is due to be rotated), so this warns instead of refusing.
+          # If the token leaks, rotate it at the proxy and cut a new release.
           if ($env:IS_PRIVATE -ne 'true') {
-            throw "PG_* secrets are configured but this repository is PUBLIC. A seeded installer attached to a public release exposes live database credentials to anyone who finds the URL. Make the repository private before tagging, or remove the secrets."
+            Write-Host "::warning::Building a credential-seeded installer on a PUBLIC repository. Anyone who downloads the installer can read the database token inside it. Accepted by the repository owner on 2026-08-18."
           }
 
           # Report every secret by name. A bare "it's missing" cannot distinguish
@@ -113,11 +118,26 @@ jobs:
           "@
           }
 
-          @"
-          PG_PROXY_URL=$env:PG_PROXY_URL
-          PG_PROXY_DATABASE=$env:PG_PROXY_DATABASE
-          PG_PROXY_TOKEN=$env:PG_PROXY_TOKEN
-          "@ | Set-Content -Path .env.local -Encoding utf8
+          # The source connection (read-only business database the pipeline is
+          # built from) ships alongside the operational one. If its secrets are
+          # absent the app falls back to the operational connection, matching
+          # the single-database arrangement older installs use.
+          $lines = @(
+            "PG_PROXY_URL=$env:PG_PROXY_URL",
+            "PG_PROXY_DATABASE=$env:PG_PROXY_DATABASE",
+            "PG_PROXY_TOKEN=$env:PG_PROXY_TOKEN"
+          )
+          if (-not [string]::IsNullOrWhiteSpace($env:PG_SOURCE_PROXY_TOKEN)) {
+            Write-Host "  present  PG_SOURCE_PROXY_* (source database seeded too)"
+            $lines += @(
+              "PG_SOURCE_PROXY_URL=$env:PG_SOURCE_PROXY_URL",
+              "PG_SOURCE_PROXY_DATABASE=$env:PG_SOURCE_PROXY_DATABASE",
+              "PG_SOURCE_PROXY_TOKEN=$env:PG_SOURCE_PROXY_TOKEN"
+            )
+          } else {
+            Write-Host "  absent   PG_SOURCE_PROXY_* (source falls back to the operational connection)"
+          }
+          $lines -join "`n" | Set-Content -Path .env.local -Encoding utf8
 
       - name: Install dependencies
         shell: pwsh
