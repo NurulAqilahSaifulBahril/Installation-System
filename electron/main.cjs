@@ -14,10 +14,14 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 // Load connection settings from the bundled .env.local before Next starts.
 // Next reads env files itself, but doing it explicitly means a packaged build
 // cannot silently fall back to demo data because of a working-directory quirk.
+// Returns what this build shipped with, so reconcileUserConfig can compare the
+// bundle against what is stored without guessing from process.env, which may
+// carry values from the environment rather than from the build.
 function loadEnvFile() {
+  const bundled = {};
   const envPath = path.join(ROOT_DIR, '.env.local');
   if (!fs.existsSync(envPath)) {
-    return;
+    return bundled;
   }
 
   for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
@@ -40,10 +44,13 @@ function loadEnvFile() {
       value = value.slice(1, -1);
     }
 
+    bundled[key] = value;
     if (!process.env[key]) {
       process.env[key] = value;
     }
   }
+
+  return bundled;
 }
 
 // Connection settings the user types into the app. Kept in userData rather than
@@ -59,44 +66,71 @@ const CONNECTION_KEYS = [
   'PG_SOURCE_PROXY_TOKEN',
 ];
 
+// Written alongside the connection values. CONFIG_SOURCE_KEY records who set
+// them - 'bundle' when seeded from the build, 'manual' when someone typed them
+// into the Connection settings dialog. CONFIG_VERSION_KEY is the app version
+// that last seeded the file, which is how a build carrying a rotated token
+// recognises that the stored copy predates it.
+const CONFIG_SOURCE_KEY = 'configSource';
+const CONFIG_VERSION_KEY = 'bundleVersion';
+
 function connectionConfigPath() {
   return path.join(app.getPath('userData'), 'connection.json');
 }
 
-function loadUserConfig() {
+function readUserConfig() {
   try {
     const configPath = connectionConfigPath();
     if (!fs.existsSync(configPath)) {
-      return;
+      return null;
     }
-
-    const saved = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    for (const key of CONNECTION_KEYS) {
-      const value = saved[key];
-      if (typeof value === 'string' && value.trim()) {
-        process.env[key] = value.trim();
-      }
-    }
+    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
   } catch (error) {
     console.error('Could not read saved connection settings:', error);
+    return null;
+  }
+}
+
+function writeUserConfig(values, source) {
+  const payload = {
+    ...values,
+    [CONFIG_SOURCE_KEY]: source,
+    [CONFIG_VERSION_KEY]: app.getVersion(),
+  };
+  fs.writeFileSync(connectionConfigPath(), JSON.stringify(payload, null, 2), 'utf8');
+}
+
+// Only CONNECTION_KEYS are applied, so the metadata stored beside them never
+// reaches the environment.
+function loadUserConfig() {
+  const saved = readUserConfig();
+  if (!saved) {
+    return;
+  }
+
+  for (const key of CONNECTION_KEYS) {
+    const value = saved[key];
+    if (typeof value === 'string' && value.trim()) {
+      process.env[key] = value.trim();
+    }
   }
 }
 
 // A build with credentials baked into its bundled .env.local (built locally
 // for hand-distribution to staff) keeps them only until the first auto-update
-// replaces the program directory. Copying them into userData on first boot
-// makes the zero-setup install permanent: updates wipe the bundle, not
-// userData. Never overwrites a connection.json someone already saved by hand.
-function seedUserConfigFromEnv() {
+// replaces the program directory. Copying them into userData makes the
+// zero-setup install permanent: updates wipe the bundle, not userData.
+//
+// The copy is also refreshed whenever a different build ships credentials,
+// which is what lets a rotated token reach machines that already have the app.
+// Seeding once on first boot was not enough: rotating the token at the proxy
+// left every existing install authenticating with the dead one, because the
+// update carrying the replacement skipped an existing connection.json.
+function reconcileUserConfig(bundled) {
   try {
-    const configPath = connectionConfigPath();
-    if (fs.existsSync(configPath)) {
-      return;
-    }
-
     const values = {};
     for (const key of CONNECTION_KEYS) {
-      const value = process.env[key];
+      const value = bundled[key];
       if (typeof value === 'string' && value.trim()) {
         values[key] = value.trim();
       }
@@ -104,19 +138,43 @@ function seedUserConfigFromEnv() {
 
     // Only the operational triple is required; the source keys mirror it when
     // absent (lib/source-api.ts falls back). Half a triple is not a connection.
+    // Returning here is also what makes a key-free build safe: it ships no
+    // credentials, so it can never blank out a connection that already works.
     if (!values.PG_PROXY_URL || !values.PG_PROXY_DATABASE || !values.PG_PROXY_TOKEN) {
       return;
     }
 
-    fs.writeFileSync(configPath, JSON.stringify(values, null, 2), 'utf8');
+    const saved = readUserConfig();
+
+    if (!saved) {
+      writeUserConfig(values, 'bundle');
+      return;
+    }
+
+    // Settings typed into the Connection dialog outrank the build, so an
+    // install deliberately pointed at another database keeps pointing there.
+    if (saved[CONFIG_SOURCE_KEY] === 'manual') {
+      return;
+    }
+
+    // Already reconciled against this build. Comparing the version rather than
+    // the values themselves keeps every launch from rewriting the file.
+    if (saved[CONFIG_VERSION_KEY] === app.getVersion()) {
+      return;
+    }
+
+    // Installs seeded before this metadata existed have neither key. Treating
+    // those as seeded rather than hand-saved is deliberate - they are exactly
+    // the machines a rotation has to reach, and the guard above means only a
+    // build carrying credentials of its own ever gets this far.
+    writeUserConfig(values, 'bundle');
   } catch (error) {
-    console.error('Could not seed connection settings from the build:', error);
+    console.error('Could not reconcile connection settings with the build:', error);
   }
 }
 
-loadEnvFile();
+reconcileUserConfig(loadEnvFile());
 loadUserConfig();
-seedUserConfigFromEnv();
 
 let server = null;
 let nextApp = null;
@@ -258,7 +316,7 @@ ipcMain.handle('settings:save', (_event, settings) => {
   };
 
   try {
-    fs.writeFileSync(connectionConfigPath(), JSON.stringify(values, null, 2), 'utf8');
+    writeUserConfig(values, 'manual');
   } catch (error) {
     return {
       ok: false,
