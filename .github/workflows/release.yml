@@ -174,6 +174,66 @@ jobs:
           "@
           }
 
+          # A secret pasted as the whole "KEY=value" line - the easy mistake
+          # when copying out of .env.local - is still non-empty, so the check
+          # above waves it through and the build ships an installer whose every
+          # connection value carries a duplicated key prefix. That one is not
+          # recoverable in the field: the same paste malforms
+          # UPDATE_GITHUB_TOKEN, so update checks 401 and the machine can never
+          # be offered the fix. It has to be reinstalled by hand. Checking the
+          # shape here costs a red X instead.
+          $problems = @()
+          foreach ($name in @(
+            "PG_PROXY_URL", "PG_PROXY_DATABASE", "PG_PROXY_TOKEN",
+            "PG_SOURCE_PROXY_URL", "PG_SOURCE_PROXY_DATABASE",
+            "PG_SOURCE_PROXY_TOKEN", "UPDATE_GITHUB_TOKEN")) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($value)) { continue }
+
+            if ($value -like "$name=*") {
+              $problems += "$name begins with '$name=' - the whole line was pasted, not just the value"
+              continue
+            }
+            if ($value -match '[\r\n]') {
+              $problems += "$name contains a line break"
+              continue
+            }
+            if ($value -ne $value.Trim()) {
+              $problems += "$name has leading or trailing whitespace"
+              continue
+            }
+            if ($name -like "*_URL" -and $value -notmatch '^https://') {
+              $problems += "$name does not start with https://"
+            }
+            # Proxy tokens are JWTs: three dot-separated base64url segments.
+            if ($name -like "PG_*_TOKEN" -and $value -notmatch '^[\w-]+\.[\w-]+\.[\w-]+$') {
+              $problems += "$name is not a JWT (expected three dot-separated segments)"
+            }
+            if ($name -eq "UPDATE_GITHUB_TOKEN" -and $value -notmatch '^(github_pat_|ghp_)') {
+              $problems += "$name does not look like a GitHub token (expected github_pat_... or ghp_...)"
+            }
+          }
+
+          if ($problems.Count -gt 0) {
+            $list = ($problems | ForEach-Object { "  - $_" }) -join [Environment]::NewLine
+            throw @"
+          These repository secrets are malformed:
+
+          $list
+
+          Enter only the value, not the whole line. For PG_PROXY_DATABASE that is
+
+            NUrul_DB
+
+          and not
+
+            PG_PROXY_DATABASE=NUrul_DB
+
+          Fix them under Settings > Secrets and variables > Actions, on the
+          "Secrets" tab, then run this workflow again.
+          "@
+          }
+
           # The source connection (read-only business database the pipeline is
           # built from) ships alongside the operational one. If its secrets are
           # absent the app falls back to the operational connection, matching
