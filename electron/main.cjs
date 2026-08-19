@@ -1,4 +1,4 @@
-﻿const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+﻿const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const fs = require('fs');
 const http = require('http');
@@ -78,13 +78,44 @@ function connectionConfigPath() {
   return path.join(app.getPath('userData'), 'connection.json');
 }
 
+// This file holds a full-access database token in the user's profile, where
+// any program running as them — and anyone who copies the folder — could read
+// it. safeStorage encrypts it with the OS keystore (DPAPI on Windows), so a
+// copied file is inert elsewhere: the key lives in "Local State" beside it in
+// userData and is itself tied to this Windows account on this machine, which
+// means the token now takes the account to read, not just the file. The same
+// property is why a connection.json restored from a backup taken on another
+// machine will not decrypt — treat it as unset and enter the details again.
+//
+// Every call is guarded: encryption is unavailable on some Linux desktops,
+// and an app that cannot remember its connection is worse than one that
+// stores it the way every earlier build did.
+//
+// Must not run before app.whenReady() — safeStorage is not usable until then,
+// which is why the startup sequence at the bottom loads the config there
+// rather than at module scope.
+function encryptionAvailable() {
+  try {
+    return safeStorage.isEncryptionAvailable();
+  } catch {
+    return false;
+  }
+}
+
 function readUserConfig() {
   try {
     const configPath = connectionConfigPath();
     if (!fs.existsSync(configPath)) {
       return null;
     }
-    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const stored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (stored && stored.encrypted === true && typeof stored.data === 'string') {
+      return JSON.parse(
+        safeStorage.decryptString(Buffer.from(stored.data, 'base64')),
+      );
+    }
+    // Written by a build that predates encryption, or on a machine without it.
+    return stored;
   } catch (error) {
     console.error('Could not read saved connection settings:', error);
     return null;
@@ -97,7 +128,52 @@ function writeUserConfig(values, source) {
     [CONFIG_SOURCE_KEY]: source,
     [CONFIG_VERSION_KEY]: app.getVersion(),
   };
-  fs.writeFileSync(connectionConfigPath(), JSON.stringify(payload, null, 2), 'utf8');
+  const configPath = connectionConfigPath();
+
+  if (encryptionAvailable()) {
+    const data = safeStorage
+      .encryptString(JSON.stringify(payload))
+      .toString('base64');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ encrypted: true, data }, null, 2),
+      'utf8',
+    );
+    return;
+  }
+
+  fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), 'utf8');
+}
+
+// An install that already has settings keeps them in plain text until
+// something happens to rewrite the file — and on a working machine nothing
+// does, so the upgrade would never reach the installs that most need it.
+// Rewriting in place at startup covers them without anyone opening a dialog.
+function encryptStoredConfig() {
+  try {
+    if (!encryptionAvailable()) {
+      return;
+    }
+    const configPath = connectionConfigPath();
+    if (!fs.existsSync(configPath)) {
+      return;
+    }
+    const stored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (!stored || stored.encrypted === true) {
+      return;
+    }
+    const data = safeStorage
+      .encryptString(JSON.stringify(stored))
+      .toString('base64');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ encrypted: true, data }, null, 2),
+      'utf8',
+    );
+  } catch (error) {
+    // Leaving it readable is not worth failing to start over.
+    console.error('Could not encrypt the stored connection settings:', error);
+  }
 }
 
 // Only CONNECTION_KEYS are applied, so the metadata stored beside them never
@@ -173,8 +249,11 @@ function reconcileUserConfig(bundled) {
   }
 }
 
-reconcileUserConfig(loadEnvFile());
-loadUserConfig();
+// The bundled file is plain text inside the installation directory and needs
+// no keystore, so it is read now: the auto-updater below wants
+// UPDATE_GITHUB_TOKEN at module scope. Everything that touches userData waits
+// for app.whenReady() further down, because safeStorage does.
+const bundledEnv = loadEnvFile();
 
 let server = null;
 let nextApp = null;
@@ -469,10 +548,23 @@ async function boot() {
   }
 }
 
-app.whenReady().then(boot).catch((error) => {
-  console.error(error);
-  app.exit(1);
-});
+// Order matters. Encrypting whatever is already on disk comes first, so an
+// upgrade covers installs that reconcileUserConfig would leave untouched (a
+// hand-saved connection, or one already matching this build). Then the stored
+// values land in process.env before boot() starts the Next server that reads
+// them.
+app
+  .whenReady()
+  .then(() => {
+    encryptStoredConfig();
+    reconcileUserConfig(bundledEnv);
+    loadUserConfig();
+    return boot();
+  })
+  .catch((error) => {
+    console.error(error);
+    app.exit(1);
+  });
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
