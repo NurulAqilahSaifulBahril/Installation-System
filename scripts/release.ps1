@@ -1,26 +1,24 @@
-# Cuts a release. One version, two installers, only one of them published:
+# Cuts a release, the way the Commission repository does it.
 #
-#   PUBLIC  - built by GitHub Actions when this script pushes the tag. No
-#             credentials, because no PG_* secrets are set and .github/workflows
-#             /release.yml refuses to seed on a public repository. This is the
-#             download on the releases page and the feed auto-update polls.
+# The installer published to GitHub carries no credentials. Release assets on a
+# public repository can be downloaded by anyone, and PG_PROXY_TOKEN is
+# full-access - it reaches the database directly, without going through the
+# sign-in screen. So the connection travels separately, as a 2 KB pack built by
+# scripts/make-connection-pack.ps1 and sent privately.
 #
-#   STAFF   - built here, with .env.local present, so it carries the database
-#             connection. Staff install it and type nothing. Hand it over
-#             privately (OneDrive, share, USB). Never upload it.
+# Staff therefore do this once per computer:
+#   1. install from the GitHub releases page
+#   2. double-click CONNECT-THIS-PC.cmd from the pack
+# and after that only ever click Install Update in the dashboard.
 #
-# A staff install keeps working across public updates: electron/main.cjs copies
-# the bundled credentials into userData on first boot, and the public build
-# ships none, so it can never blank out a connection that already works.
+# This script does not build anything itself. Pushing the tag is what starts
+# the build; .github/workflows/release.yml compiles the installer and publishes
+# it, and refuses to seed credentials while the repository is public.
 
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $root
-
-$outDir = 'C:/tmp/installation-system-release'
-$staffDir = 'C:/tmp/staff-seeded-build'
-$envFile = Join-Path $root '.env.local'
 
 $version = (Get-Content (Join-Path $root 'package.json') -Raw | ConvertFrom-Json).version
 $tag = "v$version"
@@ -40,49 +38,44 @@ $dirty = git status --porcelain
 if ($dirty) {
   Write-Host "  Uncommitted changes - the tag would not match what ships:" -ForegroundColor Yellow
   git status --short
-  throw "Commit or stash first, so $tag reflects the code it builds."
+  throw "Commit or stash first, so $tag describes the code it builds."
 }
 
-if (-not (Test-Path $envFile)) {
-  throw ".env.local not found - cannot build the staff installer."
+# Secrets plus a public repository is what the workflow refuses to build. Catch
+# it here instead, before a tag exists that has to be deleted afterwards.
+$visibility = (gh repo view --json visibility | ConvertFrom-Json).visibility
+$secrets = gh secret list 2>$null
+if ($visibility -eq 'PUBLIC' -and $secrets) {
+  throw @"
+PG_* secrets are set while the repository is PUBLIC.
+
+The build would refuse to run. Remove them - the connection is delivered by
+the connection pack now, so the build does not need them:
+
+  gh secret delete PG_PROXY_TOKEN
+"@
 }
 
-# --- 1. staff installer, built here ---------------------------------------
+Write-Host "  repository is $visibility, no blocking secrets"
 
-Write-Host "`n[1/3] Building the STAFF installer (database included)..." -ForegroundColor Cyan
-npm run dist:win
-if ($LASTEXITCODE -ne 0) { throw "Staff build failed." }
+# --- push the tag; GitHub builds and publishes ----------------------------
 
-$exe = Join-Path $outDir "Installation-System-Setup-$version.exe"
-if (-not (Test-Path $exe)) { throw "Build produced no installer." }
-
-# Confirm it is actually seeded rather than trusting that .env.local was read -
-# an unseeded copy handed to staff sends them hunting for a token.
-if (-not (Test-Path (Join-Path $outDir 'win-unpacked/resources/app/.env.local'))) {
-  throw "This build carries no .env.local, so staff would have to type a token."
-}
-
-New-Item -ItemType Directory -Force -Path $staffDir | Out-Null
-Copy-Item $exe $staffDir -Force
-Write-Host "      staff installer -> $staffDir" -ForegroundColor Green
-
-# --- 2. push the tag; GitHub builds the public one ------------------------
-
-Write-Host "`n[2/3] Pushing $tag - GitHub builds the public installer..." -ForegroundColor Cyan
+Write-Host "`n[1/2] Pushing $tag..." -ForegroundColor Cyan
 git push origin HEAD
 git tag $tag
 git push origin $tag
 if ($LASTEXITCODE -ne 0) { throw "Could not push $tag." }
 
-# --- 3. wait and report ---------------------------------------------------
-
-Write-Host "`n[3/3] Waiting for the build (about 5 minutes)..." -ForegroundColor Cyan
-gh run watch --exit-status (gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+Write-Host "`n[2/2] Waiting for the build (about 4 minutes)..." -ForegroundColor Cyan
+$runId = gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId'
+gh run watch --exit-status $runId
 if ($LASTEXITCODE -ne 0) {
-  throw "The release build failed. Check: gh run view --log-failed"
+  throw "The release build failed. Check: gh run view $runId --log-failed"
 }
 
 Write-Host "`nDone." -ForegroundColor Green
-Write-Host "  public : https://github.com/NurulAqilahSaifulBahril/Installation-System/releases/tag/$tag"
-Write-Host "  staff  : $staffDir\Installation-System-Setup-$version.exe" -ForegroundColor Yellow
-Write-Host "           ^ share privately - never upload this one" -ForegroundColor Yellow
+Write-Host "  https://github.com/NurulAqilahSaifulBahril/Installation-System/releases/tag/$tag"
+Write-Host ""
+Write-Host "  Staff already running the app just click Install Update." -ForegroundColor Cyan
+Write-Host "  A new computer installs from that page, then runs CONNECT-THIS-PC.cmd once." -ForegroundColor Cyan
+Write-Host "  Need a fresh pack? powershell -File scripts\make-connection-pack.ps1" -ForegroundColor Cyan

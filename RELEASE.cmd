@@ -1,11 +1,11 @@
 @echo off
-REM Double-click me to cut a release.
+REM Double-click me to publish a new version.
 REM
-REM Builds two installers from the version in package.json:
-REM   - the staff copy, with the database built in, left in C:\tmp\staff-seeded-build
-REM   - the public copy, with no credentials, uploaded to GitHub
+REM Bump "version" in package.json and commit first.
+REM GitHub builds and publishes the installer - about 4 minutes.
 REM
-REM Share the staff copy privately. Never upload it.
+REM The published installer has no database in it. Staff connect their
+REM computer once with the pack from scripts\make-connection-pack.ps1.
 cd /d "%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\release.ps1"
 echo.
