@@ -73,6 +73,12 @@ jobs:
             "skip=false" >> $env:GITHUB_OUTPUT
           }
 
+          # "gh release view" on a tag that doesn't exist yet - the expected,
+          # handled case above - exits non-zero. Without this, that leftover
+          # $LASTEXITCODE fails the step (and skips the release job, which
+          # `needs` this one to succeed) even though the logic above is fine.
+          exit 0
+
   release:
     needs: check
     if: needs.check.outputs.skip != 'true'
