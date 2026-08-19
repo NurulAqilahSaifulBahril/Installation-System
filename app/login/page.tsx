@@ -25,7 +25,18 @@ export default function LoginPage() {
   // behind it — which is exactly how a fresh install ends up stuck. A build
   // that ships credentials never opens this panel; it exists for the key-free
   // installer, where nothing is stored yet.
+  //
+  // On a machine that is already connected the panel stays out of sight
+  // entirely: it shows which server and database the office runs on to anyone
+  // who opens the app, and offers to repoint them, both before anyone has
+  // signed in. Whoever is signed in can still change the connection from the
+  // dashboard, so hiding it here costs nothing on a working machine — and
+  // connectionTrouble below brings it back when signing in fails for a reason
+  // that looks like the connection, so a wrong or stale one is still fixable
+  // from the one screen you can reach without it.
   const [isDesktop, setIsDesktop] = useState(false);
+  const [needsConnection, setNeedsConnection] = useState(false);
+  const [connectionTrouble, setConnectionTrouble] = useState(false);
   const [showConnection, setShowConnection] = useState(false);
   const [connectionSaved, setConnectionSaved] = useState(false);
   const [connectionBusy, setConnectionBusy] = useState(false);
@@ -43,19 +54,31 @@ export default function LoginPage() {
     const desktop = window.installationDesktop;
     if (!desktop) return;
     setIsDesktop(true);
-    void desktop.getSettings().then((current) => {
-      setConnection((form) => ({
-        ...form,
-        url: current.url,
-        database: current.database,
-        sourceUrl: current.sourceUrl,
-        sourceDatabase: current.sourceDatabase,
-      }));
-      // Nothing stored yet is the fresh-install case, so open the panel
-      // rather than making someone hunt for it behind a sign-in they
-      // cannot complete.
-      if (!current.url || !current.database) setShowConnection(true);
-    });
+    void desktop
+      .getSettings()
+      .then((current) => {
+        setConnection((form) => ({
+          ...form,
+          url: current.url,
+          database: current.database,
+          sourceUrl: current.sourceUrl,
+          sourceDatabase: current.sourceDatabase,
+        }));
+        // Nothing stored yet is the fresh-install case, so open the panel
+        // rather than making someone hunt for it behind a sign-in they
+        // cannot complete. A half-filled connection counts as unconfigured —
+        // an address with no token cannot sign anyone in either.
+        return Boolean(current.url && current.database && current.hasToken);
+      })
+      // If we cannot even read the stored settings we do not know whether this
+      // machine is configured. Treating that as unconfigured keeps a fresh
+      // install fixable; the other way would hide the only control that could
+      // rescue it.
+      .catch(() => false)
+      .then((configured) => {
+        setNeedsConnection(!configured);
+        if (!configured) setShowConnection(true);
+      });
   }, []);
 
   async function saveConnection() {
@@ -90,7 +113,13 @@ export default function LoginPage() {
       .then((payload: { needsSetup?: boolean }) =>
         setNeedsSetup(Boolean(payload.needsSetup)),
       )
-      .catch(() => setNeedsSetup(false));
+      .catch(() => {
+        // This check is itself a database call, so failing it means the
+        // connection is unusable — surface the panel rather than leaving a
+        // sign-in button that cannot work.
+        setNeedsSetup(false);
+        setConnectionTrouble(true);
+      });
   }, []);
 
   async function handleSubmit(event: FormEvent) {
@@ -113,12 +142,17 @@ export default function LoginPage() {
       const payload = (await response.json()) as { error?: string };
       if (!response.ok) {
         setError(payload.error || "Could not sign in.");
+        // 401 is a wrong username or password — the connection worked fine to
+        // find that out. Anything else (503 from a failed query, a proxy
+        // error) points at the connection itself, so offer the panel.
+        if (response.status !== 401) setConnectionTrouble(true);
         setBusy(false);
         return;
       }
       window.location.href = "/";
     } catch {
       setError("Could not reach the server. Is the database connection up?");
+      setConnectionTrouble(true);
       setBusy(false);
     }
   }
@@ -221,7 +255,7 @@ export default function LoginPage() {
         </button>
       </form>
 
-      {isDesktop && (
+      {isDesktop && (needsConnection || connectionTrouble) && (
         <div className="login-card login-connection">
           <button
             type="button"
