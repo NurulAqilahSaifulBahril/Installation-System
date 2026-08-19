@@ -2,10 +2,10 @@
 REM Double-click me to publish a new version.
 REM
 REM Bump "version" in package.json and commit first.
-REM GitHub builds and publishes the installer - about 4 minutes.
 REM
-REM The published installer has no database in it. Staff connect their
-REM computer once with the pack from scripts\make-connection-pack.ps1.
+REM Builds the installer here (about 8 minutes) with the database inside it,
+REM then publishes it to the private releases page. Staff download it and
+REM sign in - nothing to type.
 cd /d "%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\release.ps1"
 echo.

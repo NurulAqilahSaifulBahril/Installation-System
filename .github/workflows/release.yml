@@ -25,10 +25,12 @@ name: Release
 # is to build locally - npm run dist:win reads .env.local - and hand that
 # installer over privately. Never attach it to a release.
 
+# Manual dispatch only. Releases are built locally now: the machine that has
+# .env.local produces an installer with the database already in it, which is
+# what makes a new computer work with nothing to type. CI has no access to
+# those values and would publish a key-free build over the seeded one, so
+# tagging must not start a build.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       version:
@@ -77,6 +79,7 @@ jobs:
           PG_SOURCE_PROXY_URL: ${{ secrets.PG_SOURCE_PROXY_URL }}
           PG_SOURCE_PROXY_DATABASE: ${{ secrets.PG_SOURCE_PROXY_DATABASE }}
           PG_SOURCE_PROXY_TOKEN: ${{ secrets.PG_SOURCE_PROXY_TOKEN }}
+          UPDATE_GITHUB_TOKEN: ${{ secrets.UPDATE_GITHUB_TOKEN }}
         run: |
           # No secrets is the normal path. The app asks for the connection
           # details on first run and stores them in userData, so a key-free
@@ -154,6 +157,19 @@ jobs:
           } else {
             Write-Host "  absent   PG_SOURCE_PROXY_* (source falls back to the operational connection)"
           }
+
+          # Private release assets are not readable without credentials, so a
+          # build without this token checks for updates, gets 404, and reports
+          # "no update available" forever. Nothing appears broken, which is why
+          # this warns loudly rather than leaving it to be discovered when a fix
+          # fails to reach anyone.
+          if (-not [string]::IsNullOrWhiteSpace($env:UPDATE_GITHUB_TOKEN)) {
+            Write-Host "  present  UPDATE_GITHUB_TOKEN (auto-update will work)"
+            $lines += "UPDATE_GITHUB_TOKEN=$env:UPDATE_GITHUB_TOKEN"
+          } else {
+            Write-Host "::warning::UPDATE_GITHUB_TOKEN is not set. This build cannot read private release assets, so staff will never be offered an update. Add it as a repository secret and re-release."
+          }
+
           $lines -join "`n" | Set-Content -Path .env.local -Encoding utf8
 
       - name: Install dependencies

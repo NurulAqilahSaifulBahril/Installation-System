@@ -1,107 +1,95 @@
 # Releasing and setting up staff computers
 
-This follows the same pattern as the Commission repository: the repository and
-its releases are public, the published installer carries no credentials, and
-the database connection is handed over separately.
+The repository is **private**, so release assets are private too. That is what
+lets the installer carry the database connection: a new computer installs it
+and works with nothing to type.
 
 ## Cutting a release
 
 1. Bump `"version"` in `package.json`
-2. Commit and push
+2. Commit
 3. Double-click **`RELEASE.cmd`**
 
-That is all. Pushing the tag is what starts the build - GitHub compiles the
-installer and publishes it with the user guide and checksums, about four
-minutes. `RELEASE.cmd` refuses to run on a dirty working tree, because a tag
-that does not match its code is worse than no tag.
+About eight minutes. It builds the installer here, checks the database and the
+update token actually made it in, then publishes to the releases page.
 
-## Setting up a staff computer
+It refuses to run if the repository is public, if the working tree is dirty, or
+if either token is missing - each of those would otherwise produce a release
+that looks fine and is not.
 
-Once per computer:
+## Setting up a new computer
 
-1. Download the installer from the [releases page](https://github.com/NurulAqilahSaifulBahril/Installation-System/releases)
+1. Download the installer from the
+   [releases page](https://github.com/NurulAqilahSaifulBahril/Installation-System/releases)
+   (the staff member needs to be a repository collaborator)
 2. Windows shows "Windows protected your PC" -> **More info** -> **Run anyway**
-3. Double-click **`CONNECT-THIS-PC.cmd`** from the connection pack you were sent
-4. Open the app and sign in
+3. Open the app and sign in
 
-No address, no database name, no token. Step 3 is the only extra step, and it
-is never repeated - not even after an update.
-
-To produce the pack:
-
-```
-powershell -File scripts\make-connection-pack.ps1
-```
-
-It reads `.env.local` and writes three small files to `C:\tmp\staff-connection`.
-Send them privately - WhatsApp, email, USB. They are about 2 KB.
+No address, no database name, no token. The connection is inside the installer,
+and the app copies it into `userData` on first boot so updates never lose it.
 
 ## Updating
 
-Staff click **Install Update (v…)** in the dashboard when it appears. It
-downloads, restarts, done. Nobody reinstalls and nobody re-runs the connection
-pack.
+Staff click **Install Update (v…)** in the dashboard. It downloads, restarts,
+done. Nobody reinstalls.
 
-The connection lives in `%APPDATA%\eternalgy-installation-ops\connection.json`,
-outside the program folder, and an update only replaces the program folder. So
-updates cannot disturb it.
+## What is in .env.local
 
-## Why the installer has no database in it
+Seven values. Six are the database connection. The seventh is the update token:
 
-Release assets inherit repository visibility. This repository is public, so
-anything attached to a release can be downloaded by anyone who finds the URL.
+```
+UPDATE_GITHUB_TOKEN=github_pat_...
+```
 
-`PG_PROXY_TOKEN` is a full-access token and it talks to the SQL proxy directly
-- the sign-in screen does not stand in its way. Someone holding it reaches
-customer names, addresses and payment records without opening the app.
+Private release assets are not readable without credentials, so a build without
+this token checks for updates, gets 404, and reports "no update available"
+forever - silently. Create it under Settings > Developer settings > Personal
+access tokens > Fine-grained, scoped to this repository only, Contents:
+Read-only.
 
-So the installer ships key-free and the connection travels privately. The
-workflow enforces this: `.github/workflows/release.yml` fails the build if PG_*
-secrets are set while the repository is public, rather than quietly publishing
-a seeded installer.
+`.env.local` is gitignored and must stay that way.
 
 ## Rotating the database token
 
 1. Rotate it at the proxy
 2. Update `.env.local`
-3. Run `scripts\make-connection-pack.ps1`
-4. Send the new pack; staff double-click `CONNECT-THIS-PC.cmd` again
+3. Bump the version, commit, run `RELEASE.cmd`
 
-No new release is needed - the token is not in the app.
+Existing computers pick it up on their next update: `reconcileUserConfig` in
+`electron/main.cjs` refreshes the stored copy whenever a build ships different
+credentials, which is what stops a rotation stranding machines on a dead token.
 
-## If you ever make the repository private
+## Why CI does not build releases
 
-Two things change, both easy to miss:
+`.github/workflows/release.yml` no longer runs on a tag. The runner has no
+`.env.local`, so it would build a key-free installer and publish it over the
+seeded one - new computers would silently get a build with no database. The
+workflow is kept for manual dispatch only.
 
-- **Auto-update stops silently.** `autoUpdater` has no credentials, so private
-  release assets return 404 and the update button simply never appears - no
-  error message. It needs a fine-grained token (Contents: Read-only, this repo
-  only) baked into the build.
-- **Staff cannot download** from the releases page without being repository
-  collaborators, which also gives them the source code.
+## If you ever make the repository public again
 
-Going private does let the build seed the installer directly, making the
-connection pack unnecessary. The check in the workflow allows it once
-`github.event.repository.private` is true.
+`RELEASE.cmd` will stop and refuse to publish. That is deliberate: the
+installer contains a full-access database token, and on a public repository
+anyone who found the release URL could download it and reach customer names,
+addresses and payment records without going near the sign-in screen.
+
+To publish from a public repository, build without `.env.local` present - that
+produces a key-free installer, and staff then need the connection some other
+way.
 
 ## Troubleshooting
 
-**"v1.2.5 already exists"** - that version was already released. Bump it.
+**"STOPPED: the repository is PUBLIC"** - exactly the case above. Make it
+private again, or build key-free.
 
-**"Commit or stash first"** - uncommitted changes; the tag has to describe the
-code it builds.
+**"UPDATE_GITHUB_TOKEN is missing"** - add the line to `.env.local`. Without it
+staff never receive updates.
 
-**"PG_* secrets are set while the repository is PUBLIC"** - delete them. The
-build does not need them any more:
+**"v1.2.5 already exists"** - bump the version.
 
-```
-gh secret delete PG_PROXY_TOKEN
-```
+**Staff cannot download the installer** - they are not a collaborator. Settings
+> Collaborators > Add people.
 
-**Staff see "Could not reach the server. Is the database connection up?"** -
-the connection pack was not run on that computer, or the app was open while it
-ran. Close the app, double-click `CONNECT-THIS-PC.cmd`, reopen.
-
-**A staff machine needs a different database** - the sign-in screen has a
-Connection settings panel for typing values by hand. Anything entered there is
-marked `manual` and is never overwritten by a pack or a build.
+**Staff stopped receiving updates after going private** - builds made before
+the token existed cannot read private assets. Install the current version by
+hand once on those machines; auto-update works again afterwards.

@@ -189,6 +189,29 @@ let updateDownloaded = false;
 // installing quits+relaunches the app, so both are opt-in from the user.
 autoUpdater.autoDownload = false;
 
+// The repository is private, so release assets are not readable without
+// credentials. Without a token every check returns 404 and electron-updater
+// reports "no update available" - the button simply never appears and nothing
+// looks wrong, which is the worst possible failure for something staff rely on
+// to receive fixes. UPDATE_GITHUB_TOKEN is read-only and scoped to this one
+// repository; it ships in the same bundled .env.local as the database values.
+if (process.env.UPDATE_GITHUB_TOKEN) {
+  autoUpdater.setFeedURL({
+    provider: 'github',
+    owner: 'NurulAqilahSaifulBahril',
+    repo: 'Installation-System',
+    private: true,
+    token: process.env.UPDATE_GITHUB_TOKEN,
+  });
+} else if (app.isPackaged) {
+  // Say so in the log rather than failing silently, so "staff stopped getting
+  // updates" is diagnosable from the one place someone will look.
+  console.warn(
+    'No UPDATE_GITHUB_TOKEN in this build - update checks against a private ' +
+      'repository will return 404 and no update will ever be offered.',
+  );
+}
+
 function broadcastUpdate(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, payload);
