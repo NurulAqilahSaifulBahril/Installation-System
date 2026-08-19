@@ -13,24 +13,22 @@ name: Release
 # artifact with spaces replaced by dashes, so the nsis.artifactName override
 # in package.json must produce that exact name or auto-update breaks.
 #
-# No secrets are required. The installer ships key-free and the app asks for
-# the connection details on first run, storing them per-user in userData.
+# This repository is private, so CI is trusted to seed the database connection
+# from repository secrets (Settings > Secrets and variables > Actions):
+#   PG_PROXY_URL, PG_PROXY_DATABASE, PG_PROXY_TOKEN               required
+#   PG_SOURCE_PROXY_URL, PG_SOURCE_PROXY_DATABASE, PG_SOURCE_PROXY_TOKEN   optional
+#   UPDATE_GITHUB_TOKEN                                             required for auto-update
+# Release assets inherit repository visibility, so this build only runs the
+# seeding step when the repo is confirmed PRIVATE - see the guard below. If the
+# repo ever goes public, remove the PG_* secrets first; the guard refuses to
+# publish credentials on a public release rather than warning about it.
 #
-# Setting PG_PROXY_URL, PG_PROXY_DATABASE and PG_PROXY_TOKEN as repository
-# secrets makes the build seed those details instead, so staff enter nothing -
-# but that is a hard failure on a public repository, not a warning, because the
-# credentials would then be readable inside an installer anyone can download.
-#
-# The way to give staff a zero-setup install while this repository stays public
-# is to build locally - npm run dist:win reads .env.local - and hand that
-# installer over privately. Never attach it to a release.
-
-# Manual dispatch only. Releases are built locally now: the machine that has
-# .env.local produces an installer with the database already in it, which is
-# what makes a new computer work with nothing to type. CI has no access to
-# those values and would publish a key-free build over the seeded one, so
-# tagging must not start a build.
+# Runs automatically on every version tag push. workflow_dispatch is kept as a
+# manual fallback (e.g. to rebuild a tag without pushing a new one).
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
@@ -41,7 +39,43 @@ permissions:
   contents: write
 
 jobs:
+  # scripts/release.ps1 (RELEASE.cmd) is a fallback that builds locally and
+  # pushes the tag itself - which would also trigger this workflow for the
+  # same tag. Whichever publish happens first wins; this job lets the other
+  # one notice a release already exists and stand down instead of racing it
+  # or clobbering the assets that already went out.
+  check:
+    runs-on: windows-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - name: Resolve version and check for an existing release
+        id: check
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $v = "${{ github.event.inputs.version }}".TrimStart("v")
+          } else {
+            $v = "${{ github.ref_name }}".TrimStart("v")
+          }
+          $tag = "v$v"
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+          gh release view $tag --repo "${{ github.repository }}" 2>&1 | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "$tag is already published (likely built locally via RELEASE.cmd) - skipping."
+            "skip=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "Building $tag"
+            "skip=false" >> $env:GITHUB_OUTPUT
+          }
+
   release:
+    needs: check
+    if: needs.check.outputs.skip != 'true'
     runs-on: windows-latest
 
     steps:
@@ -51,14 +85,10 @@ jobs:
         id: ver
         shell: pwsh
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $v = "${{ github.event.inputs.version }}".TrimStart("v")
-          } else {
-            $v = "${{ github.ref_name }}".TrimStart("v")
-          }
-          "version=$v" >> $env:GITHUB_OUTPUT
-          "tag=v$v" >> $env:GITHUB_OUTPUT
-          Write-Host "Building version $v"
+          $tag = "${{ needs.check.outputs.tag }}"
+          "version=$($tag.TrimStart('v'))" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "Building version $tag"
 
       - uses: actions/setup-node@v5
         with:

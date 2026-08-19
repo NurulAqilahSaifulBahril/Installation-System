@@ -1,4 +1,9 @@
-# Builds the installer and publishes it to the private GitHub releases page.
+# Builds the installer LOCALLY and publishes it to the private GitHub releases
+# page. This is the fallback path - normally .github/workflows/release.yml
+# does this automatically on every "git push origin vX.Y.Z" tag, seeding the
+# database from repository secrets instead of this machine's .env.local. Use
+# this script when CI isn't set up yet, is down, or you need to hand someone
+# an installer before pushing a tag.
 #
 # The installer carries the database connection, so a new computer installs it
 # and works with nothing to type. That is only safe because the repository is
@@ -7,10 +12,6 @@
 # sign-in screen. The visibility check below is not a formality: if the
 # repository is ever made public again, publishing this file would put those
 # credentials on an open URL, so the script stops instead.
-#
-# CI cannot build this. The runner has no .env.local, so it would produce a
-# key-free installer and publish it over the seeded one - which is why
-# .github/workflows/release.yml no longer builds on a tag.
 
 $ErrorActionPreference = 'Stop'
 
