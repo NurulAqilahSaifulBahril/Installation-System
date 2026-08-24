@@ -13,8 +13,9 @@ status come across automatically from the sales system. You do not type any of
 that in. What you record here is the operational side: installation dates,
 customer confirmation, teams, stock and delivery.
 
-It installs like a normal Windows program. There is no website to log into and
-no link to remember.
+It installs like a normal Windows program. There is no website and no link to
+remember — you open it from the Start Menu and sign in with your own username
+and password.
 
 ---
 
@@ -25,15 +26,23 @@ You need:
 - A Windows PC (Windows 10 or 11)
 - An internet connection
 - About 5 minutes
-- **The three connection details from Nurul** — a server address, a database
-  name and an access token. Ask for these before you begin. You enter them once,
-  the first time you open the app, and never again.
+- **Your username and password from Nurul** — everyone has their own
+- **Access to the download page** — it is private, so ask Nurul to add your
+  GitHub account before you begin
+
+You will **not** be asked for a server address, a database name or an access
+token. The connection to the office database is already inside the installer.
 
 ---
 
 ## Step 1 — Download
 
-Go to the **[Installation System download page](https://github.com/NurulAqilahSaifulBahril/Installation-System/releases/latest)**.
+Sign in to **GitHub** with the account Nurul added for you, then go to the
+**[Installation System download page](https://github.com/NurulAqilahSaifulBahril/Installation-System/releases/latest)**.
+
+If the page says **404 — Not Found**, you are either not signed in to GitHub or
+your account has not been added yet. Tell Nurul; there is nothing wrong with the
+link.
 
 Scroll down to the **Assets** list and click the file that starts with
 `Installation-System-Setup` and ends in `.exe`. There will be a version number
@@ -73,37 +82,34 @@ The first time you open it, the window may stay blank or white for a few
 seconds while it starts up. This is normal and only happens on the first
 launch. Later launches are faster.
 
-You should then see the dashboard, with today's date and **Malaysia time** at
-the top.
+You should then see the **Installation Operations** sign-in screen. There is
+nothing to configure first — the connection to the office database came with
+the installer.
 
 ---
 
-## Step 4 — Enter the connection details (first time only)
+## Step 4 — Sign in
 
-The app arrives empty. It does not know where your customer database is until
-you tell it, so on first launch it shows **Demo source** in the top right and a
-**Set up connection** button next to it.
+Use the username and password Nurul gave you. Everyone has their own — your
+name is what appears against the changes you make, and in the audit log.
 
-1. Click **Set up connection**.
-2. Fill in the three details Nurul gave you:
-   - **Server address** — starts with `https://`
-   - **Database name**
-   - **Access token** — the long one; it stays hidden as you type
-3. Click **Save and connect**.
+1. Type your **username**.
+2. Type your **password**. Click the eye icon at the end of the box to check
+   what you typed before you send it.
+3. Click **Sign in**.
 
-The list reloads by itself. If it worked, the top right changes from **Demo
-source** to **Live source** and you will see customer names you recognise.
+You land on the dashboard, with today's date and **Malaysia time** at the top
+and your own name in the top right — click it to sign out.
 
-If it did not work, a message appears explaining what was wrong and the box
-stays open so you can correct it. The most common causes are a missing
-`https://` at the front of the address, or a space accidentally copied along
-with the token.
+It remembers you for about a month, so on your own PC you will rarely have to
+sign in again, and an update does not sign you out.
 
-**You only do this once.** The details are saved on your PC and survive every
-future update. To check or change them later, click the **Live source** /
-**Demo source** text in the top right at any time. You will not need to retype
-the token to fix a typo elsewhere — leave that box blank and it keeps the one
-already saved.
+If it says **Incorrect username or password**, try again with the eye icon on so
+you can see the password. If it still refuses, ask Nurul to reset it rather than
+guessing — repeated failures are recorded.
+
+If it asks you to **create the IT Admin account**, stop and tell Nurul. That
+screen only appears when the app is pointed at an empty database.
 
 ---
 
@@ -125,20 +131,23 @@ will also be a warning message across the top of the screen.
 **Anything you type while in this state will not be saved.** Work through these
 in order:
 
-1. Click the **Demo source** text in the top right and check the connection
-   details are still filled in and correct.
-2. Check your internet connection.
-3. Close the app completely and open it again.
+1. Check your internet connection.
+2. Close the app completely and open it again.
+3. If the top bar is offering an update, take it — an update can carry a new
+   database password, and an app left un-updated can drop to demo data for that
+   reason alone.
 
-If the demo names are still there, contact Nurul — do not carry on working.
+If the demo names are still there, contact Nurul — do not carry on working. You
+should never have to type connection details in yourself; if the app asks for
+them, something is wrong.
 
 ---
 
 ## Finding your way around
 
-There are four tabs across the top.
+There are four workspaces, listed down the left-hand side.
 
-### 🔍 Active pipeline
+### 🔍 Customer details
 
 Your main working screen. Every customer who is ready for installation, one row
 each.
@@ -155,7 +164,7 @@ Use the filter buttons to narrow the list:
 
 Click any customer row to open their full record.
 
-### 👥 Team planning
+### 👥 Customer Scheduling
 
 Where you plan which customers to install together.
 
@@ -196,7 +205,7 @@ delivered.
 
 ## Understanding a customer record
 
-Click any customer in the Active pipeline to open their record. At the top you
+Click any customer in **Customer details** to open their record. At the top you
 will see five checks:
 
 | Check | Green when | What it tells you |
@@ -247,11 +256,11 @@ jobs*, showing the new version number.
 ### Things worth knowing
 
 - **Nothing of yours is lost.** All your data lives in the shared database, and
-  your connection details are stored separately from the program. An update only
-  replaces the program itself — you will not be asked to set up the connection
-  again.
-- **You never download the installer again, and never re-enter the connection
-  details.** Steps 1–4 above are one time only.
+  the connection is kept separately from the program. An update only replaces
+  the program itself, and you stay signed in.
+- **You never download the installer again.** Steps 1–4 above are one time only.
+- **Take updates when they appear.** An update can also carry a new database
+  password, which is one way an un-updated app ends up on demo data.
 - **To check your version:** Settings → Apps → Installation System. The app
   itself does not show a version number on screen.
 - **If an update fails**, the app keeps working on the current version. Tell
@@ -291,9 +300,12 @@ Yes, as long as you have internet. It does not need to be on the office network.
 |---|---|
 | Blue "Windows protected your PC" screen | Normal. Click **More info** → **Run anyway** |
 | Window is blank or white | Wait 10 seconds. If still blank, close it completely and reopen |
-| Seeing DEMO CUSTOMER names | Not connected. Click **Demo source** top right and check the details, then check internet and reopen. Do not enter any data |
-| "Set up connection" button showing | The connection details have not been entered yet. See Step 4 |
-| Saved the details but still on Demo source | Read the message in the box — usually a missing `https://` or a stray space in the token |
+| **404 — Not Found** on the download page | The page is private. Sign in to GitHub, and ask Nurul to add your account if it still will not open |
+| "Incorrect username or password" | Turn on the eye icon and try again. Still refused — ask Nurul to reset it |
+| It asks you to create the IT Admin account | Stop and tell Nurul. The app is pointed at an empty database — do not create anything |
+| Seeing DEMO CUSTOMER names | Not connected. Check your internet, then close the app completely and reopen. Do not enter any data |
+| "Set up connection" button showing | The connection that ships with the app has not taken. Tell Nurul — do not type details in yourself |
+| Still on Demo source after reopening | Take any update the top bar offers, then reopen. If it persists, contact Nurul |
 | Warning bar across the top | Read it — it explains what is not working |
 | App will not start at all | Restart your PC, then try again |
 | An update failed | Tell Nurul — the app keeps working on the current version |
@@ -311,9 +323,8 @@ thing worth reporting.
 - **Your work is not stored on your PC.** All customer and scheduling data lives
   in the shared database, so there is nothing to back up and nothing lost if
   your PC is replaced.
-- **Only the connection details are kept locally.** That is why a new PC needs
-  Step 4 again — ask Nurul for the details rather than copying them off an old
-  machine.
+- **A new PC needs nothing but the installer and your sign-in.** The connection
+  comes with the installer, so there is nothing to copy off an old machine.
 - **To uninstall:** Settings → Apps → Installation System → Uninstall.
 
 ---

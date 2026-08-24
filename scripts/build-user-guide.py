@@ -6,13 +6,15 @@ installed and keeping it updated, nothing else.
 
     python scripts/build-user-guide.py
 
-Writes docs/Installation Desktop app_user_guide.pdf. This is deliberately NOT
+Writes "Installation Desktop app_user_guide.pdf" in the repository root.
+This is deliberately NOT
 the whole of USER-GUIDE.md: the markdown is the full manual (the four tabs, the
 customer record, common questions), while this PDF is the short handout you
 give someone on day one. Only the install/update/troubleshooting material is
 shared between them — keep those parts in step when either changes.
 """
 
+import json
 from pathlib import Path
 
 from reportlab.lib import colors
@@ -38,7 +40,10 @@ from reportlab.platypus import (
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "Installation Desktop app_user_guide.pdf"
 
-VERSION = "1.0.0"
+# Versioned with the app it describes, so a printed handout and the build it
+# was written for can be told apart. Read from package.json rather than typed
+# here, which is how it fell several versions behind.
+VERSION = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
 DATE_LABEL = "August 2026"
 RELEASES_URL = "https://github.com/NurulAqilahSaifulBahril/Installation-System/releases/latest"
 
@@ -439,8 +444,11 @@ def build_story():
     story.append(
         para(
             "It installs like a normal Windows program — there is no website "
-            "to log into and no link to remember. Once it is running, the full "
-            "manual covers the four tabs, customer records and day-to-day use."
+            "and no link to remember. The installer already knows where the "
+            "office database is, so there is nothing to set up: install it, sign "
+            "in with the username and password Nurul gives you, and you are "
+            "working. Once it is running, the full manual covers the four "
+            "workspaces, customer records and day-to-day use."
         )
     )
 
@@ -456,19 +464,28 @@ def build_story():
     )
     story.append(
         para(
-            "<b>Ask Nurul for the connection details before you begin:</b> a "
-            "server address, a database name and an access token. You enter these "
-            "once, in Step 4, and never again."
+            "<b>Ask Nurul for two things before you begin:</b> your "
+            "<b>username and password</b> for the app, and to be given access to "
+            "the download page — it is private, so the link below only opens for "
+            "a GitHub account that has been added to it."
         )
     )
 
     story.append(h3("Step 1 — Download the app"))
-    story.append(para("Go to the Installation System download page:"))
+    story.append(
+        para(
+            "Sign in to <b>GitHub</b> with the account Nurul added for you, then "
+            "go to the Installation System download page:"
+        )
+    )
     story.append(url_block(RELEASES_URL))
     story.append(Spacer(1, 11))
     story.append(
         steps(
             [
+                "If the page says <b>404 — Not Found</b>, you are either not "
+                "signed in to GitHub or your account has not been added yet. "
+                "Tell Nurul; there is nothing wrong with the link.",
                 "Scroll down to the <b>Assets</b> list.",
                 f"Click the file starting {code('Installation-System-Setup')} and "
                 "ending in <b>.exe</b> to download it. Always take the newest "
@@ -511,48 +528,49 @@ def build_story():
         para(
             "The first time you open it, the window may stay blank or white for a "
             "few seconds while it starts up. This is normal and only happens on "
-            "the first launch — later launches are faster. You should then see "
-            "the dashboard, with today's date and <b>Malaysia time</b> at the top."
+            "the first launch — later launches are faster."
         )
     )
     story.append(
         para(
-            "It opens showing <b>Demo source</b> in the top right. That is "
-            "expected — it does not know where your database is yet."
+            "You should then see the <b>Installation Operations</b> sign-in "
+            "screen. There is nothing to configure first — the connection to the "
+            "office database came with the installer."
         )
     )
 
-    story.append(h3("Step 4 — Enter the connection details"))
+    story.append(h3("Step 4 — Sign in"))
     story.append(
         para(
-            "This is the one-time setup. You need the three details from Nurul."
+            "Use the username and password Nurul gave you. Everyone has their "
+            "own — your name is what appears against the changes you make."
         )
     )
     story.append(
         steps(
             [
-                "Click <b>Set up connection</b> in the top right.",
-                "Enter the <b>Server address</b> (it starts with "
-                f"{code('https://')}), the <b>Database name</b>, and the "
-                "<b>Access token</b>. The token stays hidden as you type.",
-                "Click <b>Save and connect</b>.",
+                "Type your <b>username</b>.",
+                "Type your <b>password</b>. Click the eye icon at the end of the "
+                "box to check what you typed before you send it.",
+                "Click <b>Sign in</b>.",
             ]
         )
     )
     story.append(Spacer(1, 8))
     story.append(
         para(
-            "The list reloads by itself. When it works, the top right changes "
-            "from <b>Demo source</b> to <b>Live source</b> and you will see "
-            "customer names you recognise. <b>You are done.</b>"
+            "You land on the dashboard, with today's date and <b>Malaysia "
+            "time</b> at the top and your own name in the top right — click it "
+            "to sign out. It remembers you for about a month, so on your own PC "
+            "you will rarely have to sign in again. <b>You are done.</b>"
         )
     )
     story.append(
         para(
-            "If it does not work, a message explains what was wrong and the box "
-            "stays open so you can correct it. Usually it is a missing "
-            f"{code('https://')} at the front of the address, or a space copied "
-            "along with the token."
+            "If it says <b>Incorrect username or password</b>, try again with "
+            "the eye icon on so you can see the password. If it still refuses, "
+            "ask Nurul to reset it rather than guessing — repeated failures are "
+            "recorded."
         )
     )
     story.append(Spacer(1, 4))
@@ -564,11 +582,12 @@ def build_story():
                 "or you see customers called <b>DEMO CUSTOMER ONE / TWO / THREE</b>, "
                 "the app cannot reach the database and those names are fake "
                 "examples.",
-                "<b>Anything you type in that state will not be saved.</b> Click "
-                "the <b>Demo source</b> text to check your connection details, "
-                "then check your internet connection and reopen the app. If the "
-                "demo names are still there, contact Nurul — do not carry on "
-                "working.",
+                "<b>Anything you type in that state will not be saved.</b> "
+                "Check your internet connection, then close the app completely "
+                "and open it again. If the demo names are still there, contact "
+                "Nurul — do not carry on working. You should never have to type "
+                "connection details in yourself; if the app asks for them, "
+                "something is wrong.",
             ],
         )
     )
@@ -606,12 +625,14 @@ def build_story():
             "Things worth knowing",
             [
                 "<b>Nothing of yours is lost.</b> All your data lives in the "
-                "shared database and your connection details are stored "
-                "separately from the program, so an update only replaces the "
-                "program itself. You will not be asked to set up the connection "
-                "again.",
-                "<b>You never download the installer again.</b> Steps 1–3 "
+                "shared database, and the connection is kept separately from the "
+                "program, so an update only replaces the program itself. You "
+                "stay signed in.",
+                "<b>You never download the installer again.</b> Steps 1–4 "
                 "above are one time only.",
+                "<b>Take updates when they appear.</b> An update can also carry "
+                "a new database password. An app left un-updated for a long time "
+                "can drop to <b>Demo source</b> for that reason alone.",
                 "<b>To check your version:</b> Settings &#8594; Apps &#8594; "
                 "Installation System. The app itself does not show a version "
                 "number on screen.",
@@ -639,18 +660,34 @@ def build_story():
                     "Wait 10 seconds. If still blank, close it completely and reopen",
                 ],
                 [
+                    "<b>404 — Not Found</b> on the download page",
+                    "The page is private. Sign in to GitHub, and ask Nurul to add "
+                    "your account if it still will not open",
+                ],
+                [
+                    "<b>Incorrect username or password</b>",
+                    "Turn on the eye icon and try again. Still refused — ask "
+                    "Nurul to reset it",
+                ],
+                [
+                    "It asks you to <b>create the IT Admin account</b>",
+                    "Stop and tell Nurul. It means the app is pointed at an empty "
+                    "database — do not create anything",
+                ],
+                [
                     "A <b>Set up connection</b> button is showing",
-                    "The connection details have not been entered yet. See Step 4",
+                    "The connection that ships with the app has not taken. Tell "
+                    "Nurul — do not type details in yourself",
                 ],
                 [
                     "It says <b>Demo source</b>, or you see DEMO CUSTOMER names",
-                    "Not connected. Click <b>Demo source</b> to check the details, "
-                    "then check internet and reopen. Do not enter any data",
+                    "Not connected. Check your internet, then close the app "
+                    "completely and reopen. Do not enter any data",
                 ],
                 [
-                    "Saved the details but still on <b>Demo source</b>",
-                    "Read the message in the box — usually a missing "
-                    "<b>https://</b> or a stray space in the token",
+                    "Still on <b>Demo source</b> after reopening",
+                    "Take any update the top bar offers, then reopen. If it "
+                    "persists, contact Nurul",
                 ],
                 [
                     "Warning bar across the top",
@@ -691,11 +728,13 @@ def build_story():
                 ),
                 Spacer(1, 14),
                 para(
-                    f"<font color='#64748B' size='9'>This is version {VERSION}. "
-                    "Nothing is stored on your PC — all data lives in the "
-                    "shared database, so there is nothing to back up and nothing "
-                    "lost if your PC is replaced. To uninstall: Settings → "
-                    "Apps → Installation System → Uninstall.</font>"
+                    f"<font color='#64748B' size='9'>Written for version "
+                    f"{VERSION}. Nothing of yours is stored on your PC — all "
+                    "data lives in the shared database, so there is nothing to "
+                    "back up and nothing lost if your PC is replaced. A new PC "
+                    "just needs the installer and your sign-in. To uninstall: "
+                    "Settings → Apps → Installation System → "
+                    "Uninstall.</font>"
                 ),
             ]
         )

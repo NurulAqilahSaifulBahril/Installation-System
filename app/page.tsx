@@ -18,6 +18,7 @@ import {
   LoaderCircle,
   LogOut,
   MapPin,
+  MessageCircle,
   Moon,
   PackageCheck,
   Phone,
@@ -715,12 +716,17 @@ function formatPhoneNumber(value: string) {
   return value;
 }
 
-function phoneCallHref(value: string) {
+function phoneWhatsAppHref(value: string) {
   const digits = value.replace(/\D/g, "");
   if (!digits) return null;
-  if (digits.startsWith("60")) return `tel:+${digits}`;
-  if (digits.startsWith("0")) return `tel:+60${digits.slice(1)}`;
-  return `tel:+${digits}`;
+  // wa.me expects the full international number with no plus sign. Local
+  // Malaysian numbers ("012...") get the 60 country code swapped in.
+  const international = digits.startsWith("60")
+    ? digits
+    : digits.startsWith("0")
+      ? `60${digits.slice(1)}`
+      : digits;
+  return `https://wa.me/${international}`;
 }
 
 function normalizeSeda(status: string) {
@@ -899,11 +905,19 @@ function malaysiaTodayLabel() {
 // starts asking about them. Counted in working days, not calendar days.
 const WORKING_DAYS_BEFORE_ATTENTION = 28;
 
+// The card is a new addition to the pipeline — nobody has been chasing this
+// list before now, so switching it on for old, already-overdue customers
+// would dump a backlog on staff the day it ships. Gating it on today's date
+// rather than the payment date means it turns on cleanly for everyone at
+// once instead of per-customer.
+const ATTENTION_START_DATE = "2026-09-01";
+
 // Paid the deposit but still has no date on the calendar, four working weeks
 // on. Jobs that already have an installation date drop off this list whatever
 // state that booking is in — the card is about customers nobody has scheduled,
 // not about bookings that later slipped.
 function needsAttention(job: InstallationJob, todayIso: string) {
+  if (todayIso < ATTENTION_START_DATE) return false;
   if (job.paymentPercent < 60) return false;
   if (job.installationDate) return false;
   if (!job.secondPaymentDate) return false;
@@ -926,8 +940,8 @@ const PIPELINE_STAGES = [
   {
     value: "deposit",
     label: "Deposit",
-    note: "1st payment received",
-    hint: "The customer has made their first payment against the invoice. This is the entry stage — every job that has paid anything at all sits here.",
+    note: "1st payment, under 65%",
+    hint: "The customer has made their first payment against the invoice but is still under 65% paid. This is the entry stage — jobs leave it once the payments reach 65%.",
   },
   {
     value: "ready",
@@ -957,7 +971,7 @@ const PIPELINE_STAGES = [
     value: "attention",
     label: "Need Attention",
     note: "28 working days, no date",
-    hint: "Paid 60% or more on the 2nd payment, but still has no installation date 28 working days on. Working days exclude weekends and Malaysian public holidays.",
+    hint: "Paid 60% or more on the 2nd payment, but still has no installation date 28 working days on. Working days exclude weekends and Malaysian public holidays. Starts 1 Sept 2026.",
   },
 ] as const;
 
@@ -1008,11 +1022,17 @@ function matchesPipelineStage(
   const availability = job.customerAvailabilityStatus;
 
   switch (stage) {
-    // The customer has paid something towards the invoice. The deposit date is
-    // the reliable signal; percent is the fallback for invoices whose payment
-    // rows have no date on them.
+    // The customer has paid something towards the invoice but has not yet
+    // reached 65%. The deposit date is the reliable signal that anything was
+    // paid; percent is the fallback for invoices whose payment rows have no
+    // date on them. The 65% ceiling is what makes this a stage rather than a
+    // permanent home — a job that pays up moves on instead of sitting here
+    // alongside the later stages.
     case "deposit":
-      return Boolean(job.firstPaymentDate) || job.paymentPercent > 0;
+      return (
+        (Boolean(job.firstPaymentDate) || job.paymentPercent > 0) &&
+        job.paymentPercent < 65
+      );
 
     // Cleared to be installed: the registration is through and the money is in.
     // Deliberately not the same as "everything is arranged" — stock, a date and
@@ -1117,6 +1137,51 @@ async function readError(response: Response, fallback: string) {
     error?: string;
   } | null;
   return payload?.error || fallback;
+}
+
+const UNREACHABLE_MESSAGE = "Cannot reach the dashboard server.";
+
+/**
+ * Turn whatever fetch threw into a sentence someone can act on.
+ *
+ * fetch() rejects with a bare TypeError when no HTTP response comes back at
+ * all — the dashboard server restarted, or this window outlived it. Its
+ * message ("Failed to fetch") means nothing to the people using this app and
+ * describes the wrong layer: the database may well be fine. Anything that did
+ * come back from a route is already a written-for-humans sentence, so it is
+ * passed through. Either way the result ends in a full stop, because these get
+ * concatenated with a following sentence and browser messages carry no
+ * punctuation of their own.
+ */
+function describeRequestError(error: unknown, fallback = UNREACHABLE_MESSAGE) {
+  const message = error instanceof Error ? error.message : "";
+  if (!message || error instanceof TypeError) return fallback;
+  return /[.!?]$/.test(message) ? message : message + ".";
+}
+
+// A dropped request is the common failure here — the dashboard server restarts
+// under an open window — and it costs one round trip to survive. Only thrown
+// (network-level) failures are retried: an HTTP error is a real answer from the
+// route and belongs on screen immediately, not after several seconds of delay.
+const REQUEST_RETRIES = 2;
+const RETRY_DELAY_MS = 700;
+
+// How often to re-check a store that is already known to be offline. Long
+// enough that a server which stays down is not hammered, short enough that a
+// restart clears the read-only banner before anyone gives up and reloads.
+const RECONNECT_INTERVAL_MS = 15_000;
+
+async function fetchWithRetry(input: string, init?: RequestInit) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fetch(input, init);
+    } catch (error) {
+      if (attempt >= REQUEST_RETRIES) throw error;
+      await new Promise((resolve) =>
+        setTimeout(resolve, RETRY_DELAY_MS * (attempt + 1)),
+      );
+    }
+  }
 }
 
 /**
@@ -2077,14 +2142,16 @@ export default function DashboardPage() {
       if (!storeOnlineRef.current) {
         setNotice(
           "NOT SAVED to the shared database — this device cannot reach it. " +
-            "Your change is on this device only. Press Refresh to reconnect.",
+            "Your change is on this device only. Reconnecting…",
         );
         return;
       }
 
       void (async () => {
         try {
-          const response = await fetch("/api/ops-state", {
+          // Retrying is safe: the route merges the patch rather than replacing
+          // the row, so the same patch applied twice lands the same state.
+          const response = await fetchWithRetry("/api/ops-state", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(patch),
@@ -2097,9 +2164,9 @@ export default function DashboardPage() {
         } catch (error) {
           markStore(false);
           setNotice(
-            "NOT SAVED to the shared database: " +
-              (error instanceof Error ? error.message : "the connection failed.") +
-              " Your change is on this device only. Press Refresh to reconnect.",
+            "NOT SAVED to the shared database. " +
+              describeRequestError(error) +
+              " Your change is on this device only. Reconnecting…",
           );
         }
       })();
@@ -2121,7 +2188,11 @@ export default function DashboardPage() {
   }, []);
 
   const loadSharedState = useCallback(
-    async (seedIfMissing: boolean) => {
+    // `silent` is for the background reconnect below: it retries on a timer, so
+    // a failure there is the banner already on screen repeating itself, not
+    // news. Without it every attempt would re-raise a notice the user had just
+    // dismissed.
+    async (seedIfMissing: boolean, silent = false) => {
       const local: SharedOpsState = {
         groups: readLocalJson(GROUPS_STORAGE_KEY, []),
         deliveryRuns: readLocalJson(DELIVERY_RUNS_STORAGE_KEY, []),
@@ -2130,7 +2201,9 @@ export default function DashboardPage() {
         jobUpdates: readLocalJson(STORAGE_KEY, {}),
       };
       try {
-        const response = await fetch("/api/ops-state", { cache: "no-store" });
+        const response = await fetchWithRetry("/api/ops-state", {
+          cache: "no-store",
+        });
         if (!response.ok) {
           throw new Error(
             await readError(response, "Shared planning data is unavailable."),
@@ -2140,7 +2213,13 @@ export default function DashboardPage() {
           exists: boolean;
           state: SharedOpsState;
         };
+        const wasOffline = !storeOnlineRef.current;
         markStore(true);
+        // Clearing the notice is what actually ends the outage on screen: the
+        // red banner goes with storeOnline, but the "changes will not be saved"
+        // line it left behind would otherwise sit there contradicting a store
+        // that is now writable again.
+        if (wasOffline) setNotice(null);
         if (data.exists) {
           applySharedState(data.state);
         } else {
@@ -2158,12 +2237,12 @@ export default function DashboardPage() {
         // saving it would overwrite colleagues' newer planning with stale data.
         markStore(false);
         applySharedState(local);
-        setNotice(
-          (error instanceof Error
-            ? error.message
-            : "Shared planning data is unavailable.") +
-            " Showing this device's last copy — changes will not be saved.",
-        );
+        if (!silent) {
+          setNotice(
+            describeRequestError(error, "Shared planning data is unavailable.") +
+              " Showing this device's last copy — changes will not be saved.",
+          );
+        }
       }
     },
     [applySharedState, markStore, persistOps],
@@ -2202,6 +2281,24 @@ export default function DashboardPage() {
     document.addEventListener("visibilitychange", refresh);
     return () => document.removeEventListener("visibilitychange", refresh);
   }, [loadSharedState]);
+
+  // A dashboard-server restart drops the one request that would have loaded the
+  // shared store, and nothing else re-runs that load: the job list has its own
+  // refresh and recovers by itself, so the app settles into showing a full
+  // pipeline behind a permanent "nothing will be saved" banner until somebody
+  // notices it and presses Refresh. Keep asking quietly instead — the first
+  // answer clears both banners. Only while offline, so there is no polling in
+  // the normal case, and only while the window is visible, so a machine left
+  // open overnight is not retrying into the dark.
+  useEffect(() => {
+    if (storeOnline || loading) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void loadSharedState(false, true);
+      }
+    }, RECONNECT_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [storeOnline, loading, loadSharedState]);
 
   // Only present in the packaged Electron app (see electron/preload.cjs) —
   // absent in a plain browser tab, so this is a no-op there.
@@ -3018,7 +3115,8 @@ export default function DashboardPage() {
           <AlertTriangle size={17} />
           <span>
             Not connected to the shared database. You can look, but nothing you
-            change will be saved. Press Refresh to try again.
+            change will be saved. Trying to reconnect — this will clear by
+            itself, or press Refresh to try now.
           </span>
           <button
             type="button"
@@ -5936,14 +6034,16 @@ function TeamPlanningView({
           >
             <strong>{formatPersonName(job.customerName)}</strong>
           </span>
-          {phoneCallHref(job.customerPhone) ? (
+          {phoneWhatsAppHref(job.customerPhone) ? (
             <a
               className="phone-number"
-              href={phoneCallHref(job.customerPhone)!}
+              href={phoneWhatsAppHref(job.customerPhone)!}
+              target="_blank"
+              rel="noopener noreferrer"
               onClick={(event) => event.stopPropagation()}
-              title={`Call ${formatPersonName(job.customerName)}`}
+              title={`WhatsApp ${formatPersonName(job.customerName)}`}
             >
-              <Phone size={13} />
+              <MessageCircle size={13} />
               {formatPhoneNumber(job.customerPhone)}
             </a>
           ) : (
@@ -6934,6 +7034,18 @@ function DeliveryPlanningView({
                                 }
                                 aria-label="Contact number"
                               />
+                            ) : phoneWhatsAppHref(run.contactNumber || "") ? (
+                              <a
+                                className="run-field-readout phone-number"
+                                href={phoneWhatsAppHref(run.contactNumber || "")!}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(event) => event.stopPropagation()}
+                                title={`WhatsApp ${run.deliveryPic || "delivery PIC"}`}
+                              >
+                                <MessageCircle size={13} />
+                                {formatPhoneNumber(run.contactNumber || "")}
+                              </a>
                             ) : (
                               <span className="run-field-readout">
                                 {formatPhoneNumber(run.contactNumber || "")}
