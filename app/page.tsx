@@ -536,25 +536,59 @@ function isOutOfPlanning(job: InstallationJob) {
   );
 }
 
+// The confirmed date: the customer's own if they have one, otherwise the
+// group they were scheduled through, otherwise the date agreed on Customer
+// Scheduling — but that last one only while the customer is marked
+// Available. There is no input anywhere that sets job.installationDate
+// directly — a customer is scheduled by putting them in a group, or by
+// recording their date and availability on Customer Scheduling — so reading
+// job.installationDate alone silently ignores every customer scheduled
+// either normal way. The availability guard is what separates a booking
+// from a proposal: a Pending customer's preferred date is still just their
+// suggestion, and it stops counting the moment they go unavailable.
+function confirmedInstallationDate(
+  job: InstallationJob,
+  group: InstallationGroup | null | undefined,
+) {
+  return (
+    job.installationDate ||
+    group?.installationDate ||
+    (job.customerAvailabilityStatus === "available"
+      ? job.preferredInstallationDate
+      : null) ||
+    null
+  );
+}
+
 // A booked date that is at least a full day gone counts as installed, without
 // waiting on the source system to record the sign-off — otherwise a finished
 // job sits on the chase list forever just because nobody marked it.
 //
-// Availability is deliberately not consulted: admin cancels a customer before
-// the installation date, so a date that was allowed to pass is a date that was
-// kept. A cancellation arriving after the fact is corrected on the job itself
-// rather than by holding every finished job back waiting for a sign-off.
-//
-// Only the confirmed date counts, not preferredInstallationDate. A preferred
-// date is the customer's proposal rather than a booking, and with no
-// availability guard left a stale proposal would mark the job complete on its
-// own.
-function isAssumedComplete(job: InstallationJob, todayIso: string) {
-  return job.installationDate !== null && job.installationDate < todayIso;
+// Availability is deliberately not consulted for the job's own or the
+// group's date: admin cancels a customer before the installation date, so a
+// date that was allowed to pass is a date that was kept. A cancellation
+// arriving after the fact is corrected on the job itself rather than by
+// holding every finished job back waiting for a sign-off. (The preferred
+// date is the exception — confirmedInstallationDate only counts it while
+// the customer is Available, which is what makes it a booking at all.)
+function isAssumedComplete(
+  job: InstallationJob,
+  todayIso: string,
+  group?: InstallationGroup | null,
+) {
+  const date = confirmedInstallationDate(job, group);
+  return date !== null && date < todayIso;
 }
 
-function isCompleteInstallation(job: InstallationJob, todayIso: string) {
-  return job.scheduleStatus === "installed" || isAssumedComplete(job, todayIso);
+function isCompleteInstallation(
+  job: InstallationJob,
+  todayIso: string,
+  group?: InstallationGroup | null,
+) {
+  return (
+    job.scheduleStatus === "installed" ||
+    isAssumedComplete(job, todayIso, group)
+  );
 }
 
 // Group and delivery-run membership live outside the job record, so any
@@ -574,10 +608,11 @@ function planningGaps(job: InstallationJob, lookup: PlanningLookup): string[] {
   if (!group) gaps.push("group");
   if (!lookup.deliveryRunByJobId.get(job.id)) gaps.push("delivery run");
   if (!job.stockDetails.trim()) gaps.push("stock details");
-  // The confirmed date only — the customer's own, or the one their group
-  // carries. preferredInstallationDate appears in that column too, but
-  // labelled as a proposal, and a proposal is not a booking.
-  if (!job.installationDate && !group?.installationDate) {
+  // The confirmed date, by the one shared definition — their own, their
+  // group's, or the Customer Scheduling date of an Available customer. A
+  // Pending customer's preferred date still shows in the column labelled as
+  // a proposal, and a proposal is not a booking.
+  if (!confirmedInstallationDate(job, group)) {
     gaps.push("installation date");
   }
   return gaps;
@@ -913,13 +948,18 @@ const WORKING_DAYS_BEFORE_ATTENTION = 28;
 const ATTENTION_START_DATE = "2026-09-01";
 
 // Paid the deposit but still has no date on the calendar, four working weeks
-// on. Jobs that already have an installation date drop off this list whatever
-// state that booking is in — the card is about customers nobody has scheduled,
-// not about bookings that later slipped.
-function needsAttention(job: InstallationJob, todayIso: string) {
+// on. Jobs that already have a confirmed date — their own, their group's, or
+// an Available customer's Customer Scheduling date — drop off this list
+// whatever state that booking is in: the card is about customers nobody has
+// scheduled, not about bookings that later slipped.
+function needsAttention(
+  job: InstallationJob,
+  todayIso: string,
+  group?: InstallationGroup | null,
+) {
   if (todayIso < ATTENTION_START_DATE) return false;
   if (job.paymentPercent < 60) return false;
-  if (job.installationDate) return false;
+  if (confirmedInstallationDate(job, group)) return false;
   if (!job.secondPaymentDate) return false;
   return hasWorkingDaysElapsed(
     job.secondPaymentDate,
@@ -1017,8 +1057,9 @@ function matchesPipelineStage(
   todayIso: string,
   lookup: PlanningLookup,
 ) {
-  const installationDate = job.installationDate;
-  const installed = isCompleteInstallation(job, todayIso);
+  const group = lookup.groupByJobId.get(job.id) ?? null;
+  const installationDate = confirmedInstallationDate(job, group);
+  const installed = isCompleteInstallation(job, todayIso, group);
   const availability = job.customerAvailabilityStatus;
 
   switch (stage) {
@@ -1089,7 +1130,7 @@ function matchesPipelineStage(
       return installed;
 
     case "attention":
-      return needsAttention(job, todayIso);
+      return needsAttention(job, todayIso, group);
 
     // ALL_JOBS, and anything unrecognised, leaves the list untouched.
     default:
@@ -2608,7 +2649,7 @@ export default function DashboardPage() {
     return jobs.filter(
       (job) =>
         hasPlanningEligibility(job) &&
-        !isCompleteInstallation(job, todayIso) &&
+        !isCompleteInstallation(job, todayIso, groupByJobId.get(job.id)) &&
         !isOutOfPlanning(job) &&
         (!planningMonthFilter ||
           Boolean(job.secondPaymentDate?.startsWith(planningMonthFilter))) &&
@@ -2620,6 +2661,7 @@ export default function DashboardPage() {
   }, [
     jobs,
     groups,
+    groupByJobId,
     todayIso,
     planningPostcodeFilter,
     planningMonthFilter,
@@ -3358,7 +3400,11 @@ export default function DashboardPage() {
                         arrangedCountFor(job)
                           ? `arranged arranged-${arrangedCountFor(job)}`
                           : "",
-                        isCompleteInstallation(job, todayIso)
+                        isCompleteInstallation(
+                          job,
+                          todayIso,
+                          groupByJobId.get(job.id),
+                        )
                           ? "installation-complete"
                           : "",
                         job.customerAvailabilityStatus === "cancelled"
@@ -3439,15 +3485,17 @@ export default function DashboardPage() {
                         <strong>{job.stockDetails || "Not entered"}</strong>
                       </td>
                       {(() => {
-                        // A confirmed date wins: the customer's own, else the
-                        // group's. With neither, fall back to the preferred
-                        // date set on Customer Scheduling so the intent set
-                        // there is visible here — labelled, because a
-                        // proposed date is a weaker claim than a booked one.
-                        const confirmedDate =
-                          job.installationDate ||
-                          groupByJobId.get(job.id)?.installationDate ||
-                          null;
+                        // The shared confirmed-date rule (which counts an
+                        // Available customer's Customer Scheduling date as
+                        // booked). With no confirmed date, fall back to the
+                        // preferred date so the intent set on Customer
+                        // Scheduling is still visible here — labelled,
+                        // because a proposal from a customer who has not
+                        // confirmed availability is a weaker claim.
+                        const confirmedDate = confirmedInstallationDate(
+                          job,
+                          groupByJobId.get(job.id),
+                        );
                         const shownDate =
                           confirmedDate || job.preferredInstallationDate;
                         return (
@@ -3543,6 +3591,7 @@ export default function DashboardPage() {
           <DeliveryPlanningView
             runs={deliveryRuns}
             jobs={jobs}
+            groupByJobId={groupByJobId}
             onChange={saveDeliveryRuns}
             onUpdateJob={(job) => void saveJob(job)}
             pinnedJobIds={pinnedJobIds}
@@ -5248,7 +5297,7 @@ function WeekGroupCard({
   const linkedJobs = jobs.filter(
     (job) =>
       group.jobIds.includes(job.id) &&
-      !isCompleteInstallation(job, malaysiaToday()),
+      !isCompleteInstallation(job, malaysiaToday(), group),
   );
   const runs = deliveryRunsForGroup(group.id);
   const weekHolidays = weekDates
@@ -5414,7 +5463,7 @@ function GroupDrawer({
   const linkedJobs = jobs.filter(
     (job) =>
       group.jobIds.includes(job.id) &&
-      !isCompleteInstallation(job, malaysiaToday()),
+      !isCompleteInstallation(job, malaysiaToday(), group),
   );
 
   const weatherDays: Date[] = [];
@@ -5753,7 +5802,7 @@ function TeamPlanningView({
   const readyJobs = jobs.filter(
     (job) =>
       hasPlanningEligibility(job) &&
-      !isCompleteInstallation(job, planningTodayIso) &&
+      !isCompleteInstallation(job, planningTodayIso, groupByJobId.get(job.id)) &&
       !isOutOfPlanning(job) &&
       matchesSecondPaymentMonth(job) &&
       matchesPlanningStatus(job),
@@ -5764,7 +5813,11 @@ function TeamPlanningView({
         (job) =>
           hasPlanningEligibility(job) &&
           matchesPlanningStatus(job) &&
-          !isCompleteInstallation(job, planningTodayIso) &&
+          !isCompleteInstallation(
+            job,
+            planningTodayIso,
+            groupByJobId.get(job.id),
+          ) &&
           !isOutOfPlanning(job) &&
           matchesSecondPaymentMonth(job),
       )
@@ -5957,7 +6010,11 @@ function TeamPlanningView({
         (job) =>
           !memberIds.has(job.id) &&
           !isOutOfPlanning(job) &&
-          !isCompleteInstallation(job, planningTodayIso) &&
+          !isCompleteInstallation(
+            job,
+            planningTodayIso,
+            groupByJobId.get(job.id),
+          ) &&
           hasPlanningEligibility(job) &&
           matchesPlanningStatus(job) &&
           (!customerSearchText ||
@@ -6525,6 +6582,7 @@ const DELIVERY_RUN_STATUS_LABELS: Record<DeliveryRun["status"], string> = {
 function DeliveryPlanningView({
   runs,
   jobs,
+  groupByJobId,
   onChange,
   onUpdateJob,
   pinnedJobIds,
@@ -6532,6 +6590,7 @@ function DeliveryPlanningView({
 }: {
   runs: DeliveryRun[];
   jobs: InstallationJob[];
+  groupByJobId: Map<string, InstallationGroup>;
   onChange: (runs: DeliveryRun[]) => void;
   onUpdateJob: (job: InstallationJob) => void;
   pinnedJobIds: Set<string>;
@@ -6568,7 +6627,9 @@ function DeliveryPlanningView({
 
   async function calculateEtas(run: DeliveryRun) {
     const runJobs = jobs.filter(
-      (job) => run.jobIds.includes(job.id) && !isCompleteInstallation(job, todayIso),
+      (job) =>
+        run.jobIds.includes(job.id) &&
+        !isCompleteInstallation(job, todayIso, groupByJobId.get(job.id)),
     );
 
     if (!run.warehouseAddress?.trim()) {
@@ -6858,7 +6919,11 @@ function DeliveryPlanningView({
                     const runJobs = jobs.filter(
                       (job) =>
                         run.jobIds.includes(job.id) &&
-                        !isCompleteInstallation(job, todayIso),
+                        !isCompleteInstallation(
+                          job,
+                          todayIso,
+                          groupByJobId.get(job.id),
+                        ),
                     );
                     if (run.jobIds.length > 0 && runJobs.length === 0) {
                       return (

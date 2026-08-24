@@ -1,6 +1,6 @@
 {
     "name": "eternalgy-installation-ops",
-    "version": "1.2.9",
+    "version": "1.2.10",
     "private": true,
     "scripts": {
         "dev": "next dev --webpack -H 0.0.0.0 -p 3000",
@@ -69,7 +69,8 @@
             "allowToChangeInstallationDirectory": true,
             "createDesktopShortcut": true,
             "createStartMenuShortcut": true,
-            "artifactName": "Installation-System-Setup-${version}.${ext}"
+            "artifactName": "Installation-System-Setup-${version}.${ext}",
+            "include": "build/installer.nsh"
         },
         "publish": {
             "provider": "github",
