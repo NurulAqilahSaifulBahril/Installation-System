@@ -217,6 +217,19 @@ export default function LoginPage() {
           </p>
         </div>
 
+        {/* Inside the card, under the heading and above the first field. Its
+            day and month buttons are explicitly type="button" (see
+            SidebarCalendar) — untyped, they would submit this form. */}
+        <aside className="login-calendar" aria-label="Calendar">
+          <SidebarCalendar
+            dayDetails={dayDetails}
+            weather={weather}
+            holidays={MALAYSIA_PUBLIC_HOLIDAYS}
+            selectedDate={pickedDate}
+            onSelectDate={setPickedDate}
+          />
+        </aside>
+
         <label>
           Username
           <input
@@ -293,15 +306,6 @@ export default function LoginPage() {
         </button>
       </form>
 
-      <aside className="login-calendar" aria-label="Calendar">
-        <SidebarCalendar
-          dayDetails={dayDetails}
-          weather={weather}
-          holidays={MALAYSIA_PUBLIC_HOLIDAYS}
-          selectedDate={pickedDate}
-          onSelectDate={setPickedDate}
-        />
-      </aside>
       </div>
 
       {isDesktop && (needsConnection || connectionTrouble) && (

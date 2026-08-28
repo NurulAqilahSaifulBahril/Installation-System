@@ -11,6 +11,8 @@ type ProxyRow = {
   second_payment_date: string | null;
   ballast_details: string | null;
   foc_details: string | null;
+  battery_details: string | null;
+  package_item_description: string | null;
   panel_qty: number | null;
   panel_rating: number | null;
   pv_system_drawing: string[] | string | null;
@@ -87,9 +89,28 @@ invoice_item_details as (
       filter (
         where lower(coalesce(description, '')) like '%foc%'
           and lower(coalesce(description, '')) not like '%ballast%'
-      ) as foc_details
+      ) as foc_details,
+    string_agg(description, E'\n\n' order by sort nulls last, id)
+      filter (where lower(coalesce(description, '')) like '%battery%')
+      as battery_details
   from invoice_item
   group by linked_invoice
+),
+-- The package's own line item, marked by is_a_package rather than found by
+-- position — a package can share its invoice with any number of discount and
+-- voucher rows in any order. Some invoices carry several is_a_package rows
+-- (a later swap re-adds one instead of editing the original); the earliest
+-- by sort/id is kept so a post-sale change doesn't silently override what was
+-- originally sold. This is the primary source for package/panel/inverter/
+-- phase in rowToJob below — the linked_package/product/seda_registration
+-- joins are only a backup for the invoices where this text is itself empty.
+package_items as (
+  select distinct on (linked_invoice)
+    linked_invoice,
+    description as package_item_description
+  from invoice_item
+  where is_a_package = true and linked_invoice is not null
+  order by linked_invoice, sort nulls last, id
 ),
 -- Emails that reported an approval but that the automated SEDA_ATAP_APPROVAL
 -- matcher couldn't confidently attach to a seda_registration row (below its
@@ -126,6 +147,8 @@ select
   second_payments.second_payment_date,
   invoice_item_details.ballast_details,
   invoice_item_details.foc_details,
+  invoice_item_details.battery_details,
+  package_items.package_item_description,
   i.panel_qty,
   i.panel_rating,
   i.pv_system_drawing,
@@ -161,6 +184,7 @@ left join seda_registration s on s.bubble_id = i.linked_seda_registration
 left join first_payments on first_payments.linked_invoice = i.bubble_id
 left join second_payments on second_payments.linked_invoice = i.bubble_id
 left join invoice_item_details on invoice_item_details.linked_invoice = i.bubble_id
+left join package_items on package_items.linked_invoice = i.bubble_id
 left join requested_status
   on requested_status.normalized_name
     = trim(replace(upper(trim(coalesce(c.name, ''))), '(ATAP)', ''))
@@ -296,10 +320,75 @@ function focOnly(value: string | null) {
     .join("\n\n");
 }
 
+// Ballast/battery line items are short standalone lines ("4x Ballast
+// System"), unlike FOC notes which run to the end of their paragraph — so
+// only the matching lines themselves are kept, not the rest of the block.
+function linesMatching(value: string | null, pattern: RegExp): string {
+  if (!value) return "";
+  return value
+    .split(/\n\s*\n/)
+    .map((item) =>
+      item
+        .split(/\r?\n/)
+        .filter((line) => pattern.test(line))
+        .join("\n")
+        .trim(),
+    )
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+// Parsing of the package's own invoice_item line — the primary source for
+// package/panel/inverter/phase (see rowToJob). The package line is freeform
+// text typed by sales, e.g. "19X Jinko Tiger Neo N-type 72HL4-(V) TOPCon |
+// Bi-Facial" on its own first line, followed by "1X SAJ R6 10KW String
+// Inverter" and other lines.
+function firstPackageLine(text: string | null): string {
+  if (!text) return "";
+  return (text.split(/\r?\n/)[0] ?? "").trim();
+}
+
+function parsePanelQtyFromPackageLine(line: string): number | null {
+  const match = line.match(/^(\d+)\s*[xX]\b/);
+  return match ? Number(match[1]) : null;
+}
+
+// Matches "String Inverter"/"Hybrid Inverter" and the "Hybird Inverter"
+// typo that recurs throughout the source data (the word "Inverter" itself
+// is spelled correctly, so matching on it alone still catches it). NEP BDM
+// micro-inverter lines never say the word "inverter" at all, so they need
+// their own fallback.
+function parseInverterFromText(text: string | null): string {
+  if (!text) return "";
+  const lines = text.split(/\r?\n/);
+  const line =
+    lines.find((l) => /inverter/i.test(l)) ??
+    lines.find((l) => /\bBDM\b/i.test(l));
+  return line?.trim() ?? "";
+}
+
+// Phase shows up two ways in the source text: an inline [1P]/[3P] tag, or
+// spelled out as "single phase"/"3-phase"/"three-phase" etc. Most package
+// lines mention neither (phase is implied by the inverter model, not
+// stated) — that's an expected "Unknown", not a parsing miss.
+function parsePhaseFromText(text: string | null): InstallationJob["phase"] {
+  if (!text) return "Unknown";
+  if (/\[3P\]|3[\s-]?phase/i.test(text)) return "Three phase";
+  if (/\[1P\]|1[\s-]?phase|single[\s-]?phase/i.test(text)) return "Single phase";
+  return "Unknown";
+}
+
 function rowToJob(row: ProxyRow): InstallationJob {
   const paymentPercent = Number(row.percent_of_total_amount ?? 0);
   const sedaApproved = hasSedaApproval(row.seda_status);
   const sourceAddress = row.installation_address || row.address || "";
+
+  const packageLine = firstPackageLine(row.package_item_description);
+  const resolvedPanelQty = parsePanelQtyFromPackageLine(packageLine) ?? row.panel_qty;
+  const parsedInverter = parseInverterFromText(row.package_item_description);
+  const parsedPhase = parsePhaseFromText(row.package_item_description);
+  const ballastText = linesMatching(row.ballast_details, /ballast/i);
+  const batteryText = linesMatching(row.battery_details, /batter/i);
 
   return {
     id: row.bubble_id,
@@ -316,20 +405,21 @@ function rowToJob(row: ProxyRow): InstallationJob {
     paymentBalance: Number(row.balance_due ?? 0),
     firstPaymentDate: toDateOnly(row.first_payment_date),
     secondPaymentDate: toDateOnly(row.second_payment_date),
-    panelQuantity: row.panel_qty,
+    panelQuantity: resolvedPanelQty,
     panelRating: row.panel_rating,
     inverter:
+      parsedInverter ||
       row.inverter_name ||
       row.seda_inverter ||
       row.package_name ||
       "Not available",
-    battery: "Not available",
-    ballastDetails: row.ballast_details || "",
+    battery: batteryText || "Not available",
+    ballastDetails: ballastText,
     focDetails: focOnly(row.foc_details),
-    phase: phaseLabel(row.phase_type),
+    phase: parsedPhase !== "Unknown" ? parsedPhase : phaseLabel(row.phase_type),
     sedaStatus: row.seda_status || "Pending",
     sldUrl: textUrl(row.drawing_pdf_system) || textUrl(row.pv_system_drawing),
-    packageName: row.package_name || "Not available",
+    packageName: packageLine || row.package_name || "Not available",
     installationDate: null,
     // A job just arrived from the source system — nobody has looked at
     // availability yet. Distinct from "pending", which means someone actively
@@ -355,11 +445,17 @@ function rowToJob(row: ProxyRow): InstallationJob {
     stockDetails: "",
     deliveryContactNumber: row.phone || "",
     warehouseLocation: "",
-    panelDetails: `${row.panel_qty ?? "—"} panels${
+    panelDetails: `${resolvedPanelQty ?? "—"} panels${
       row.panel_rating ? ` × ${row.panel_rating}W` : ""
     }`,
     wiringDetails: "",
-    batteryDetails: "Not available",
+    batteryDetails: batteryText || "Not available",
+    // Owned by ops, not the source system: it is filled from the schedule
+    // sheet or typed in, so a job arriving from the invoice feed starts blank.
+    inverterBattery: "",
+    // Also ops-owned. The invoice feed has panel_qty and panel_rating, but not
+    // the brand the sheet names, so this is not derived from them.
+    powerOutput: "",
     paymentOverrideStatus: "none",
     paymentOverrideReason: "",
     teams: [],

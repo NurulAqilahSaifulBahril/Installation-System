@@ -36,6 +36,8 @@ type OperationalRow = {
   panel_details: string | null;
   wiring_details: string | null;
   battery_details: string | null;
+  inverter_battery: string | null;
+  power_output: string | null;
   payment_override_status: InstallationJob['paymentOverrideStatus'] | null;
   payment_override_reason: string | null;
   remarks: string | null;
@@ -88,6 +90,8 @@ function mergeOperations(
       panelDetails: operation.panel_details ?? job.panelDetails,
       wiringDetails: operation.wiring_details ?? '',
       batteryDetails: operation.battery_details ?? job.battery,
+      inverterBattery: operation.inverter_battery ?? job.inverterBattery,
+      powerOutput: operation.power_output ?? job.powerOutput,
       paymentOverrideStatus: operation.payment_override_status ?? 'none',
       paymentOverrideReason: operation.payment_override_reason ?? '',
       remarks: operation.remarks ?? '',
@@ -128,6 +132,8 @@ async function readOperationalRows(sourceIds: string[]) {
         '  panel_details,',
         '  wiring_details,',
         '  battery_details,',
+        '  inverter_battery,',
+        '  power_output,',
         '  payment_override_status,',
         '  payment_override_reason,',
         '  remarks,',

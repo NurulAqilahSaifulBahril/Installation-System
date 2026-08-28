@@ -39,6 +39,8 @@ const MIGRATION_SQL = [
   "alter table public.installation_jobs add column if not exists panel_details text not null default '';",
   "alter table public.installation_jobs add column if not exists wiring_details text not null default '';",
   "alter table public.installation_jobs add column if not exists battery_details text not null default '';",
+  "alter table public.installation_jobs add column if not exists inverter_battery text not null default '';",
+  "alter table public.installation_jobs add column if not exists power_output text not null default '';",
   "alter table public.installation_jobs add column if not exists remarks text not null default '';",
   "alter table public.installation_jobs add column if not exists installation_remarks text not null default '';",
   "alter table public.installation_jobs add column if not exists payment_override_status text not null default 'none';",

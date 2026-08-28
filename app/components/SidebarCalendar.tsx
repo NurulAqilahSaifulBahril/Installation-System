@@ -103,6 +103,7 @@ export default function SidebarCalendar({
     <div className="sidebar-calendar">
       <div className="sidebar-calendar-header">
         <button
+          type="button"
           className="icon-button"
           aria-label="Previous month"
           onClick={() => changeMonth(-1)}
@@ -111,6 +112,7 @@ export default function SidebarCalendar({
         </button>
         <strong>{monthName}</strong>
         <button
+          type="button"
           className="icon-button"
           aria-label="Next month"
           onClick={() => changeMonth(1)}
@@ -147,6 +149,7 @@ export default function SidebarCalendar({
           return (
             <button
               key={day}
+              type="button"
               className={className}
               aria-pressed={key === selectedDate}
               // Every day is clickable, not just booked ones. Gating on booked

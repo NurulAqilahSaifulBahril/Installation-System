@@ -159,6 +159,15 @@ export type InstallationJob = {
   panelDetails: string;
   wiringDetails: string;
   batteryDetails: string;
+  // Free text straight from ops' schedule sheet, e.g. "1 X H2-10K-LT2
+  // Hybrid Inverter + ADD ON 1 X ATS". Deliberately not parsed into model/
+  // quantity: the cell carries add-ons, ballast and FOC notes that only make
+  // sense read together, and ops edit it as prose.
+  inverterBattery: string;
+  // Column F of ops' schedule sheet — the panel count, brand and rating as
+  // one phrase, e.g. "16 Jinko 650W". Kept as written for the same reason as
+  // [inverterBattery]: some cells prefix an install date the crew needs.
+  powerOutput: string;
   paymentOverrideStatus: "none" | "pending" | "approved" | "rejected";
   paymentOverrideReason: string;
   teams: TeamAssignment[];
@@ -196,6 +205,8 @@ export type JobUpdate = Pick<
   | "panelDetails"
   | "wiringDetails"
   | "batteryDetails"
+  | "inverterBattery"
+  | "powerOutput"
   | "paymentOverrideStatus"
   | "paymentOverrideReason"
   | "teams"

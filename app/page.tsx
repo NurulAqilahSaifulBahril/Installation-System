@@ -12,6 +12,7 @@ import {
   CloudLightning,
   CloudRain,
   CloudSun,
+  Columns,
   Download,
   FileSearch,
   Filter,
@@ -297,6 +298,8 @@ const PINNED_JOBS_STORAGE_KEY = "installation-ops-pinned-jobs-v1";
 // Per-device like the pipeline's pinned jobs — a pin is how one person keeps
 // the week they are working on in view, not a decision for the whole team.
 const PINNED_WEEKS_STORAGE_KEY = "installation-ops-pinned-weeks-v1";
+const HIDDEN_CREW_COLUMNS_STORAGE_KEY =
+  "installation-ops-hidden-crew-columns-v1";
 
 function formatPersonName(name: string) {
   return name
@@ -976,6 +979,8 @@ function operationalUpdate(job: InstallationJob): JobUpdate {
     panelDetails: job.panelDetails,
     wiringDetails: job.wiringDetails,
     batteryDetails: job.batteryDetails,
+    inverterBattery: job.inverterBattery,
+    powerOutput: job.powerOutput,
     paymentOverrideStatus: job.paymentOverrideStatus,
     paymentOverrideReason: job.paymentOverrideReason,
     installationRemarks: job.installationRemarks,
@@ -1024,6 +1029,41 @@ function malaysiaTodayLabel() {
 function isPlaceholder(value: string | undefined | null): boolean {
   const trimmed = (value ?? "").trim();
   return trimmed === "" || /^[-–—]+$/.test(trimmed);
+}
+
+// The crew half of a heading band: the team label plus whichever of the three
+// roles actually have someone on them. An empty result means nothing has been
+// assigned yet — the state "Add Team" leaves a booking in — and the caller
+// suppresses the whole band rather than heading the table with a bare week and
+// no crew under it.
+// The five columns a heading band already speaks for. Hiding them is a view
+// preference, not data, so it lives in localStorage next to the pinned weeks
+// rather than in the shared ops state.
+const CREW_COLUMNS = [
+  { key: "team", label: "Team" },
+  { key: "installationTeam", label: "Installation Team" },
+  { key: "wiringTeam", label: "Wiring Team" },
+  { key: "wiringMembers", label: "Wiring Team Members" },
+  { key: "supervisor", label: "Site supervisor" },
+] as const;
+
+type CrewColumnKey = (typeof CREW_COLUMNS)[number]["key"];
+
+function crewBandLabel(group: InstallationGroup): string {
+  return [
+    // A lone dash is how the sheet writes "nobody assigned", so it reads as
+    // absent here too rather than as a crew called "-".
+    isPlaceholder(group.teamLabel) ? "" : (group.teamLabel ?? ""),
+    isPlaceholder(group.installationTeam)
+      ? ""
+      : `Install: ${group.installationTeam}`,
+    isPlaceholder(group.wiringTeam) ? "" : `Wiring: ${group.wiringTeam}`,
+    isPlaceholder(group.supervisor)
+      ? ""
+      : `Site Supervisor: ${group.supervisor}`,
+  ]
+    .filter(Boolean)
+    .join("  ·  ");
 }
 
 function weekBounds(dateStr: string): { start: string; end: string } | null {
@@ -4121,6 +4161,70 @@ function InstallationGroupsView({
     }
   }, []);
 
+  const [hiddenCrewColumns, setHiddenCrewColumns] = useState<Set<CrewColumnKey>>(
+    new Set(),
+  );
+  // Which band's column menu is open, or null. Keyed by blockKey so only one
+  // is ever open at a time.
+  const [openColumnMenu, setOpenColumnMenu] = useState<string | null>(null);
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(HIDDEN_CREW_COLUMNS_STORAGE_KEY);
+      if (saved) {
+        const keys = JSON.parse(saved) as string[];
+        const valid = new Set(CREW_COLUMNS.map((column) => column.key as string));
+        setHiddenCrewColumns(
+          new Set(keys.filter((key): key is CrewColumnKey => valid.has(key))),
+        );
+      }
+    } catch {
+      // A corrupt or unreadable entry just means every column is showing.
+    }
+  }, []);
+
+  // Clicking anywhere else closes the menu. Without this it stays open behind
+  // whatever the next click was, and every band shows its own copy.
+  useEffect(() => {
+    if (!openColumnMenu) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".schedule-band-columns")) return;
+      setOpenColumnMenu(null);
+    };
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [openColumnMenu]);
+
+  function toggleCrewColumn(key: CrewColumnKey) {
+    setHiddenCrewColumns((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      try {
+        window.localStorage.setItem(
+          HIDDEN_CREW_COLUMNS_STORAGE_KEY,
+          JSON.stringify(Array.from(next)),
+        );
+      } catch {
+        // Storage being unavailable must not stop the toggle working for the
+        // rest of this session.
+      }
+      return next;
+    });
+  }
+
+  // "Add Team" drops its new row straight into edit mode, and the crew fields
+  // it needs filling in are exactly the ones hiding takes away. So while any
+  // row is being edited the columns come back, and collapse again on Done —
+  // otherwise the first thing a hidden view does is block the next crew added.
+  const anyRowEditing = editingRowKeys.size > 0;
+  const isCrewColumnVisible = (key: CrewColumnKey) =>
+    anyRowEditing || !hiddenCrewColumns.has(key);
+  // Customer, Car, Skylift, Date & time, Inverter / Battery, Remark, Actions
+  // are always there; only the five crew columns come and go.
+  const visibleColumnCount =
+    8 + CREW_COLUMNS.filter((column) => isCrewColumnVisible(column.key)).length;
+
   function togglePinnedWeek(blockKey: string) {
     setPinnedWeekKeys((previous) => {
       const next = new Set(previous);
@@ -5101,28 +5205,46 @@ function InstallationGroupsView({
             <table>
               <colgroup>
                 <col className="col-customer" />
-                <col className="col-team" />
-                <col className="col-install" />
-                <col className="col-wiring" />
-                <col className="col-members" />
-                <col className="col-supervisor" />
+                {isCrewColumnVisible("team") && <col className="col-team" />}
+                {isCrewColumnVisible("installationTeam") && (
+                  <col className="col-install" />
+                )}
+                {isCrewColumnVisible("wiringTeam") && (
+                  <col className="col-wiring" />
+                )}
+                {isCrewColumnVisible("wiringMembers") && (
+                  <col className="col-members" />
+                )}
+                {isCrewColumnVisible("supervisor") && (
+                  <col className="col-supervisor" />
+                )}
                 <col className="col-car" />
                 <col className="col-skylift" />
                 <col className="col-datetime" />
+                <col className="col-inverter-battery" />
+                <col className="col-power-output" />
                 <col className="col-remark" />
                 <col className="col-actions" />
               </colgroup>
               <thead>
                 <tr>
                   <th>Customer</th>
-                  <th>Team</th>
-                  <th>Installation Team</th>
-                  <th>Wiring Team</th>
-                  <th>Wiring Team Members</th>
-                  <th>Site supervisor</th>
+                  {isCrewColumnVisible("team") && <th>Team</th>}
+                  {isCrewColumnVisible("installationTeam") && (
+                    <th>Installation Team</th>
+                  )}
+                  {isCrewColumnVisible("wiringTeam") && <th>Wiring Team</th>}
+                  {isCrewColumnVisible("wiringMembers") && (
+                    <th>Wiring Team Members</th>
+                  )}
+                  {isCrewColumnVisible("supervisor") && (
+                    <th>Site supervisor</th>
+                  )}
                   <th>Car</th>
                   <th>Skylift</th>
                   <th>Date &amp; time</th>
+                  <th>Inverter / Battery</th>
+                  <th>Power Output</th>
                   <th>Remark</th>
                   <th aria-label="Actions" />
                 </tr>
@@ -5134,6 +5256,12 @@ function InstallationGroupsView({
                   // under it, folded into one row.
                   const startsBlock =
                     index === 0 || scheduleRows[index - 1].blockKey !== blockKey;
+                  // Nothing assigned yet means no band: a booking "Add
+                  // Team" has just created heads the table with a week and an
+                  // empty crew line, which reads as a real section that is
+                  // simply missing its crew. It appears the moment any of the
+                  // four crew fields is filled in.
+                  const bandCrew = crewBandLabel(group);
                   const isEditing = editingRowKeys.has(rowKey);
                   const stopWhenEditing = isEditing
                     ? (event: React.MouseEvent) => event.stopPropagation()
@@ -5167,13 +5295,13 @@ function InstallationGroupsView({
                     newTeamDraft.field === "wiringTeam";
                   return (
                     <Fragment key={rowKey}>
-                    {startsBlock && (
+                    {startsBlock && bandCrew && (
                       <tr
                         className={`schedule-band${
                           pinnedWeekKeys.has(blockKey) ? " is-pinned" : ""
                         }`}
                       >
-                        <th colSpan={11} scope="colgroup">
+                        <th colSpan={visibleColumnCount} scope="colgroup">
                           <button
                             type="button"
                             className="schedule-band-pin"
@@ -5198,23 +5326,57 @@ function InstallationGroupsView({
                             Week {weekRangeLabel(group.installationDate)}
                           </span>
                           <span className="schedule-band-crew">
-                            {[
-                              group.teamLabel,
-                              // A lone dash is how the sheet writes "nobody
-                              // assigned", so it reads as absent here too
-                              // rather than as a crew called "-".
-                              isPlaceholder(group.installationTeam)
-                                ? ""
-                                : `Install: ${group.installationTeam}`,
-                              isPlaceholder(group.wiringTeam)
-                                ? ""
-                                : `Wiring: ${group.wiringTeam}`,
-                              isPlaceholder(group.supervisor)
-                                ? ""
-                                : `Site Supervisor: ${group.supervisor}`,
-                            ]
-                              .filter(Boolean)
-                              .join("  ·  ")}
+                            {bandCrew}
+                          </span>
+                          {/* The band already names the crew, so the five
+                              columns repeating it can be folded away. The
+                              control lives here rather than in the toolbar
+                              because this heading is what makes them
+                              redundant. */}
+                          <span className="schedule-band-columns">
+                            <button
+                              type="button"
+                              className="schedule-band-columns-toggle"
+                              aria-haspopup="true"
+                              aria-expanded={openColumnMenu === blockKey}
+                              title="Show or hide crew columns"
+                              aria-label="Show or hide crew columns"
+                              onClick={() =>
+                                setOpenColumnMenu(
+                                  openColumnMenu === blockKey ? null : blockKey,
+                                )
+                              }
+                            >
+                              <Columns size={14} />
+                              {hiddenCrewColumns.size > 0 && (
+                                <span className="schedule-band-columns-count">
+                                  {hiddenCrewColumns.size}
+                                </span>
+                              )}
+                            </button>
+                            {openColumnMenu === blockKey && (
+                              <div
+                                className="schedule-band-columns-menu"
+                                role="group"
+                                aria-label="Crew columns"
+                              >
+                                {CREW_COLUMNS.map((column) => (
+                                  <label key={column.key}>
+                                    <input
+                                      type="checkbox"
+                                      checked={!hiddenCrewColumns.has(column.key)}
+                                      onChange={() => toggleCrewColumn(column.key)}
+                                    />
+                                    {column.label}
+                                  </label>
+                                ))}
+                                {anyRowEditing && hiddenCrewColumns.size > 0 && (
+                                  <p className="schedule-band-columns-note">
+                                    Showing while a row is being edited.
+                                  </p>
+                                )}
+                              </div>
+                            )}
                           </span>
                         </th>
                       </tr>
@@ -5244,6 +5406,7 @@ function InstallationGroupsView({
                           </span>
                         )}
                       </td>
+                      {isCrewColumnVisible("team") && (
                       <td onClick={stopWhenEditing}>
                         {isEditing ? (
                           <input
@@ -5262,6 +5425,8 @@ function InstallationGroupsView({
                           </span>
                         )}
                       </td>
+                      )}
+                      {isCrewColumnVisible("installationTeam") && (
                       <td onClick={stopWhenEditing}>
                         {isEditing ? (
                           addingInstall ? (
@@ -5329,6 +5494,8 @@ function InstallationGroupsView({
                           </span>
                         )}
                       </td>
+                      )}
+                      {isCrewColumnVisible("wiringTeam") && (
                       <td onClick={stopWhenEditing}>
                         {isEditing ? (
                           addingWiring ? (
@@ -5396,6 +5563,8 @@ function InstallationGroupsView({
                           </span>
                         )}
                       </td>
+                      )}
+                      {isCrewColumnVisible("wiringMembers") && (
                       <td onClick={stopWhenEditing}>
                         {isEditing ? (
                           <div className="member-tag-input">
@@ -5474,6 +5643,8 @@ function InstallationGroupsView({
                           </span>
                         )}
                       </td>
+                      )}
+                      {isCrewColumnVisible("supervisor") && (
                       <td onClick={stopWhenEditing}>
                         {isEditing ? (
                           <input
@@ -5492,6 +5663,7 @@ function InstallationGroupsView({
                           </span>
                         )}
                       </td>
+                      )}
                       <td onClick={stopWhenEditing}>
                         {isEditing ? (
                           <div className="member-tag-input">
@@ -5674,6 +5846,61 @@ function InstallationGroupsView({
                           <span className="run-field-readout">
                             {formatDateOnly(group.installationDate)}
                             {startTime ? ` @ ${startTime}` : ""}
+                          </span>
+                        )}
+                      </td>
+                      <td onClick={stopWhenEditing}>
+                        {/* Column G of the ops schedule sheet, kept as the
+                            prose ops write rather than parsed into model and
+                            quantity: one cell routinely carries the inverter,
+                            an "ADD ON 1 X ATS", a ballast count and an FOC
+                            note, and they only make sense read together.
+
+                            A crew booking with no customer on it yet has no
+                            job to store this against, so it reads as empty
+                            until one is assigned. Same uncontrolled
+                            save-on-blur as the Remark cell beside it. */}
+                        {isEditing && job ? (
+                          <textarea
+                            className="schedule-remark"
+                            rows={3}
+                            defaultValue={job.inverterBattery}
+                            onBlur={(event) => {
+                              const text = event.target.value;
+                              if (text === job.inverterBattery) return;
+                              onSaveJob({ ...job, inverterBattery: text });
+                            }}
+                            placeholder="e.g. 1 X R6-10K-T2"
+                            aria-label={`Inverter and battery for ${job.customerName}`}
+                          />
+                        ) : (
+                          <span className="run-field-readout">
+                            {job?.inverterBattery.trim() || "—"}
+                          </span>
+                        )}
+                      </td>
+                      <td onClick={stopWhenEditing}>
+                        {/* Column F of the ops schedule sheet — panel count,
+                            brand and rating as one phrase ("16 Jinko 650W").
+                            The invoice feed carries a quantity and a rating but
+                            never the brand, so this is ops' text rather than
+                            anything derived from panelDetails. */}
+                        {isEditing && job ? (
+                          <textarea
+                            className="schedule-remark"
+                            rows={3}
+                            defaultValue={job.powerOutput}
+                            onBlur={(event) => {
+                              const text = event.target.value;
+                              if (text === job.powerOutput) return;
+                              onSaveJob({ ...job, powerOutput: text });
+                            }}
+                            placeholder="e.g. 16 Jinko 650W"
+                            aria-label={`Power output for ${job.customerName}`}
+                          />
+                        ) : (
+                          <span className="run-field-readout">
+                            {job?.powerOutput.trim() || "—"}
                           </span>
                         )}
                       </td>

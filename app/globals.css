@@ -2300,6 +2300,84 @@ tr.needs-reschedule-date.selected td {
   border-color: var(--band-ink);
 }
 
+/* Show/hide control for the five crew columns the band already speaks for.
+   Anchored so its menu hangs off the band without stretching the heading row. */
+.schedule-band-columns {
+  position: relative;
+  display: inline-flex;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
+.schedule-band-columns-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--band-ink);
+  cursor: pointer;
+}
+
+.schedule-band-columns-toggle:hover {
+  border-color: var(--band-ink);
+}
+
+.schedule-band-columns-toggle:focus-visible {
+  outline: 2px solid var(--band-ink);
+  outline-offset: 1px;
+}
+
+/* How many are folded away, so a narrowed table is never a mystery. */
+.schedule-band-columns-count {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.schedule-band-columns-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 190px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.schedule-band-columns-menu label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.schedule-band-columns-menu input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.schedule-band-columns-note {
+  margin: 2px 0 0;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--muted);
+}
+
 .schedule-band-week {
   margin-right: 14px;
   color: var(--ink);
@@ -2409,17 +2487,19 @@ tr.needs-reschedule-date.selected td {
    most room, the short coded ones the least. */
 .unified-team-table col.col-customer { width: 11%; }
 .unified-team-table col.col-team { width: 5%; }
-.unified-team-table col.col-install { width: 9%; }
-.unified-team-table col.col-wiring { width: 10%; }
-.unified-team-table col.col-members { width: 11%; }
-.unified-team-table col.col-supervisor { width: 9%; }
-.unified-team-table col.col-car { width: 9%; }
-.unified-team-table col.col-skylift { width: 10%; }
-.unified-team-table col.col-datetime { width: 8%; }
-.unified-team-table col.col-remark { width: 10%; }
+.unified-team-table col.col-install { width: 8%; }
+.unified-team-table col.col-wiring { width: 8%; }
+.unified-team-table col.col-members { width: 9%; }
+.unified-team-table col.col-supervisor { width: 8%; }
+.unified-team-table col.col-car { width: 7%; }
+.unified-team-table col.col-skylift { width: 7%; }
+.unified-team-table col.col-datetime { width: 7%; }
+.unified-team-table col.col-inverter-battery { width: 10%; }
+.unified-team-table col.col-power-output { width: 8%; }
+.unified-team-table col.col-remark { width: 7%; }
 /* Wide enough for a stacked "Remove" spelled out — at 5% the button's own
    minimum width pushed the whole table into a sideways scroll. */
-.unified-team-table col.col-actions { width: 8%; }
+.unified-team-table col.col-actions { width: 5%; }
 
 /* Stock delivery, shaped like the Installation groups schedule above: it
    borrows .unified-team-table for the header, band and field sizing, and
@@ -4552,24 +4632,19 @@ a.phone-number:hover {
 /* Sign-in form and calendar side by side, stacking on a narrow window so the
    form is never pushed below the fold on a phone. */
 .login-panels {
+  width: 100%;
   display: flex;
-  align-items: flex-start;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
   gap: 20px;
-  flex-wrap: wrap;
 }
 
-/* Deliberately just a surface to sit on, matching the sidebar the calendar
-   lives in on the dashboard. The calendar keeps its own panel chrome so the
-   two screens render it identically rather than nearly so. */
 .login-calendar {
   width: 100%;
-  max-width: 320px;
-  padding: 18px 14px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
 }
 
 .login-card {
