@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 const ALLOWED_KEYS: (keyof OpsState)[] = [
   "groups",
   "deliveryRuns",
+  "warehouses",
   "teamResources",
   "teamWeekAssignments",
   "jobUpdates",
@@ -37,6 +38,7 @@ export async function GET() {
 const KEY_LABELS: Record<string, string> = {
   groups: "installation groups",
   deliveryRuns: "delivery runs",
+  warehouses: "warehouses",
   teamResources: "teams",
   teamWeekAssignments: "team week assignments",
   jobUpdates: "job updates",

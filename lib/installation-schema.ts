@@ -22,6 +22,10 @@ const MIGRATION_SQL = [
   'alter table public.installation_jobs add column if not exists installation_date date;',
   "alter table public.installation_jobs add column if not exists customer_availability_status text not null default 'pending';",
   'alter table public.installation_jobs add column if not exists preferred_installation_date date;',
+  'alter table public.installation_jobs add column if not exists second_preferred_installation_date date;',
+  // text, not time: the app carries clocks as plain "HH:mm" strings everywhere
+  // else, and a real time column round-trips through the proxy as a timestamp.
+  "alter table public.installation_jobs add column if not exists preferred_installation_time text;",
   "alter table public.installation_jobs add column if not exists availability_remarks text not null default '';",
   "alter table public.installation_jobs add column if not exists installation_approval_status text not null default 'pending_approval_date';",
   "alter table public.installation_jobs add column if not exists schedule_status text not null default 'ready_to_schedule';",
@@ -36,6 +40,7 @@ const MIGRATION_SQL = [
   "alter table public.installation_jobs add column if not exists wiring_details text not null default '';",
   "alter table public.installation_jobs add column if not exists battery_details text not null default '';",
   "alter table public.installation_jobs add column if not exists remarks text not null default '';",
+  "alter table public.installation_jobs add column if not exists installation_remarks text not null default '';",
   "alter table public.installation_jobs add column if not exists payment_override_status text not null default 'none';",
   "alter table public.installation_jobs add column if not exists payment_override_reason text not null default '';",
   'alter table public.installation_jobs add column if not exists created_at timestamptz not null default now();',

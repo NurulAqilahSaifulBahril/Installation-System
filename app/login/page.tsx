@@ -1,6 +1,14 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import SidebarCalendar from "@/app/components/SidebarCalendar";
+import type { CalendarDayDetail } from "@/lib/types";
+import {
+  DEFAULT_WEATHER_COORDINATES,
+  MALAYSIA_PUBLIC_HOLIDAYS,
+  fetchDailyWeather,
+  type DailyWeather,
+} from "@/lib/calendar-weather";
 import {
   Database,
   Eye,
@@ -38,6 +46,35 @@ export default function LoginPage() {
   const [needsConnection, setNeedsConnection] = useState(false);
   const [connectionTrouble, setConnectionTrouble] = useState(false);
   const [showConnection, setShowConnection] = useState(false);
+
+  const [weather, setWeather] = useState<Record<string, DailyWeather>>({});
+  const [pickedDate, setPickedDate] = useState("");
+  // The schedule shown here comes from /api/public/calendar, which serves it
+  // without a session. That is deliberate, and it means the crews, customer
+  // names and times below are readable by anyone who can open this page.
+  // Failing quietly to an empty calendar is correct: the sign-in form must
+  // still work when the database is unreachable.
+  const [dayDetails, setDayDetails] = useState<
+    Record<string, CalendarDayDetail>
+  >({});
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchDailyWeather([DEFAULT_WEATHER_COORDINATES]).then((next) => {
+      if (!cancelled) setWeather(next);
+    });
+    void fetch("/api/public/calendar")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload) => {
+        if (!cancelled && payload?.dayDetails) setDayDetails(payload.dayDetails);
+      })
+      .catch(() => {
+        // Already empty; nothing to undo.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [connectionSaved, setConnectionSaved] = useState(false);
   const [connectionBusy, setConnectionBusy] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -165,6 +202,7 @@ export default function LoginPage() {
 
   return (
     <div className="login-layout">
+      <div className="login-panels">
       <form className="login-card" onSubmit={handleSubmit}>
         <div className="login-brand">
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -254,6 +292,17 @@ export default function LoginPage() {
               : "Sign in"}
         </button>
       </form>
+
+      <aside className="login-calendar" aria-label="Calendar">
+        <SidebarCalendar
+          dayDetails={dayDetails}
+          weather={weather}
+          holidays={MALAYSIA_PUBLIC_HOLIDAYS}
+          selectedDate={pickedDate}
+          onSelectDate={setPickedDate}
+        />
+      </aside>
+      </div>
 
       {isDesktop && (needsConnection || connectionTrouble) && (
         <div className="login-card login-connection">

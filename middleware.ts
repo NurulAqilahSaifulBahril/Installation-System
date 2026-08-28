@@ -13,6 +13,10 @@ export function middleware(request: NextRequest) {
   const isPublic =
     pathname === "/login" ||
     pathname.startsWith("/api/auth/") ||
+    // The sign-in screen's calendar. Everything under /api/public/ is readable
+    // by anyone who can reach the app, so nothing may be added here without
+    // deciding that its contents are safe to publish — see the route itself.
+    pathname.startsWith("/api/public/") ||
     pathname.startsWith("/_next/") ||
     pathname === "/favicon.ico" ||
     /\.(png|jpg|jpeg|svg|gif|ico|webp)$/.test(pathname);

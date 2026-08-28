@@ -2,6 +2,11 @@
   --bg: #f7f7f5;
   --surface: #ffffff;
   --surface-soft: #f2f2ef;
+  /* The week band on the Installation groups schedule. Warm enough to read as
+     brown against the near-neutral surfaces, light enough to keep the black
+     heading text on it at full contrast. */
+  --band: #e8d9be;
+  --band-ink: #5c4a2e;
   --ink: #252523;
   --muted: #6f6f69;
   --line: #deded9;
@@ -20,6 +25,10 @@
   color-scheme: dark;
   --bg: #171715;
   --surface: #20201e;
+  /* Same hue, dropped to a depth that sits above the dark surfaces without
+     washing out the light text on it. */
+  --band: #3d3327;
+  --band-ink: #cbbb9c;
   --surface-soft: #292927;
   --ink: #f1f1ed;
   --muted: #aaa9a2;
@@ -708,6 +717,15 @@ textarea:focus {
 .filters input {
   height: 38px;
   padding: 0 10px;
+}
+
+.second-payment-month-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .dashboard-tabs {
@@ -1518,9 +1536,13 @@ td span {
 
 .planning-heading-actions {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 8px;
-  flex-shrink: 0;
+  /* Was flex-shrink: 0 — fine when this held one button, but it now carries
+     the search and period filters too, and refusing to shrink pushed the
+     heading wider than the panel. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .planning-heading h2,
@@ -1801,6 +1823,82 @@ td span {
   background: #453923;
 }
 
+/* A customer who is rescheduling but has no replacement date yet. Deliberately
+   a stronger yellow than the --amber-soft used for Pending directly above:
+   these two states sit in the same table and must not read as each other, so
+   this one is saturated enough to scan for and carries its own left bar.
+
+   Unlike the status tints, this applies to rows inside the town groups too —
+   those carry no status colour at all, and a reschedule stays in its town
+   group rather than pinning to the top. */
+tr.needs-reschedule-date td {
+  background: #fdf0b8;
+}
+
+tr.needs-reschedule-date td:first-child {
+  box-shadow: inset 3px 0 0 #d9a516;
+}
+
+tr.needs-reschedule-date:hover td,
+tr.needs-reschedule-date.selected td {
+  background: #f8e594;
+}
+
+:root[data-theme="dark"] tr.needs-reschedule-date td {
+  background: #4b3d10;
+}
+
+:root[data-theme="dark"] tr.needs-reschedule-date:hover td,
+:root[data-theme="dark"] tr.needs-reschedule-date.selected td {
+  background: #5c4a13;
+}
+
+/* The pinned block's own status tint is more specific than the rule above, so
+   a pinned reschedule row would otherwise keep its status colour. A customer
+   already in an installation group pins regardless of availability, so this is
+   reachable: they are committed work that has just lost its date. */
+.team-planning-pinned-row.needs-reschedule-date td {
+  background: #fdf0b8;
+}
+
+.team-planning-pinned-row.needs-reschedule-date:hover td,
+.team-planning-pinned-row.needs-reschedule-date.selected td {
+  background: #f8e594;
+}
+
+:root[data-theme="dark"] .team-planning-pinned-row.needs-reschedule-date td {
+  background: #4b3d10;
+}
+
+:root[data-theme="dark"] .team-planning-pinned-row.needs-reschedule-date:hover td,
+:root[data-theme="dark"] .team-planning-pinned-row.needs-reschedule-date.selected td {
+  background: #5c4a13;
+}
+
+/* The original date and its replacement, stacked in one cell. */
+.preferred-date-pair {
+  display: grid;
+  gap: 6px;
+}
+
+.preferred-date-second {
+  display: grid;
+  gap: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.preferred-date-readout-second {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--amber);
+}
+
 .team-planning-add-customer-toggle {
   margin-top: 8px;
 }
@@ -1932,7 +2030,7 @@ td span {
 .member-tag-input:has(input[placeholder="Add stock item"]) {
   display: flex;
   align-items: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
 }
@@ -1942,6 +2040,9 @@ td span {
   display: none;
 }
 
+/* Tags keep to a single scrollable line. Letting them wrap in a column this
+   narrow stacked three lines into every row; the add field below them is the
+   only part that needs its own line. */
 .member-tag-input:has(input[placeholder="Add stock item"]) .member-tag-list {
   flex-wrap: nowrap;
   overflow-x: auto;
@@ -1953,93 +2054,62 @@ td span {
 }
 
 .member-tag-input:has(input[placeholder="Add stock item"]) .member-tag-add {
-  flex: 0 0 auto;
+  flex: 1 1 100%;
+  min-width: 0;
 }
 
-/* Rows stay on one line: nothing wraps, long values ellipsize instead. */
-.delivery-run-customers td {
-  padding: 8px 10px;
-  white-space: nowrap;
+/* Date + time share one column, side by side while there is room and stacked
+   once there is not, rather than forcing the column wider. */
+.delivery-date-pair {
+  flex-wrap: wrap;
+}
+
+.planning-panel .delivery-date-pair input[type="date"],
+.planning-panel .delivery-date-pair input[type="time"] {
+  flex: 1 1 80px;
+  width: auto;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.run-route-note {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: normal;
+}
+
+.run-route-note.failed {
+  color: var(--red);
+}
+
+/* The depot list under the Stock delivery table. Its rows are plain editable
+   fields rather than the click-to-edit treatment the runs use: there are only
+   three columns and nothing here is worth guarding behind a mode. */
+.warehouse-section {
+  margin-top: 26px;
+}
+
+.warehouse-table td {
   vertical-align: middle;
 }
 
-.delivery-run-customers td:first-child,
-.delivery-run-customers td:nth-child(2) {
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Higher specificity than the generic ".planning-panel td input/select" rule
-   (width: 100%, max-width: 210px) further down, which would otherwise win and
-   stretch every one of these cells out to ~140-210px each — the accumulated
-   difference across 5+ columns is what forced this table into sideways
-   scrolling even on a wide screen. */
-.planning-panel .delivery-date-pair input[type="time"] {
-  width: 85px;
-  min-width: 0;
-  max-width: none;
-}
-
-.planning-panel .delivery-date-pair input[type="date"] {
-  width: 105px;
-  min-width: 0;
-  max-width: none;
-}
-
-/* Run name / warehouse / PIC / contact: the column header already names the
-   field, so these cells hold just the input — no repeated label text. */
-.planning-panel .run-field-cell input {
-  height: 34px;
-  width: 108px;
-  min-width: 0;
-  max-width: none;
-  padding: 0 10px;
-  font-size: 13px;
-}
-
-/* Warehouse address + "Calculate ETAs", above each run's table. The address is
-   the departure point every ETA in the run counts up from, so it sits with the
-   run rather than inside the per-customer rows. */
-.run-route-bar {
-  display: flex;
-  align-items: flex-end;
-  flex-wrap: wrap;
-  gap: 10px;
-  padding: 12px 18px;
-  background: var(--surface-soft);
-  border-bottom: 1px solid var(--line);
-}
-
-.run-route-address {
-  display: grid;
-  gap: 5px;
-  flex: 1 1 380px;
-  min-width: 240px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-/* Beats the ".planning-panel td input" max-width — this one is a full street
-   address and needs the whole bar, not a 108px column cell. */
-.planning-panel .run-route-address input {
+.planning-panel .warehouse-table input {
   width: 100%;
   min-width: 0;
   max-width: none;
   min-height: 34px;
   padding: 0 10px;
   font-size: 13px;
-  font-weight: 400;
 }
 
-.run-route-note {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.run-route-note.failed {
-  color: var(--red);
+/* A full street address needs the room the two short columns do not. */
+.warehouse-table th:nth-child(3),
+.warehouse-table td.warehouse-address-cell {
+  width: 55%;
 }
 
 /* Committed assignment date stacked above the picker for the next one. */
@@ -2096,10 +2166,327 @@ td span {
   min-width: 0;
 }
 
-/* Nine columns became seven when Contact and Base location were dropped, so
-   the table no longer needs to force as wide a scroll. */
+/* Customer name in the schedule table — reads as a link because it opens the
+   customer's job panel, unlike every other cell which edits in place. */
+.link-button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--green);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+/* One skylift booking per block: name on its own line, then the two dates.
+   Stacked rather than laid out in a row so the column never has to be as wide
+   as name + two date pickers side by side. */
+.skylift-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.skylift-entry {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px;
+  align-items: center;
+}
+
+.skylift-entry input[name="skylift-name"] {
+  grid-column: 1 / -1;
+}
+
+.skylift-dates {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.schedule-datetime {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* Ten columns now (customer, team, two crews, members, supervisor, car,
+   skylift, date, actions). The floor is what the narrowest useful reading of
+   those needs; above it the table simply fills the wide shell, so on a normal
+   desktop there is no sideways scroll at all. */
 .unified-team-table table {
-  min-width: 1040px;
+  min-width: 100%;
+  table-layout: fixed;
+}
+
+/* Headers wrap rather than forcing a column as wide as "Wiring Team Members"
+   set on one line. Scoped to thead so the week band below keeps its own fill.
+   No tint behind them: the underline alone separates the header from the rows,
+   which keeps the eye on the values rather than on a grey stripe. */
+.unified-team-table thead th {
+  white-space: normal;
+  vertical-align: bottom;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 2px solid var(--ink);
+}
+
+/* The week band: one crew, one week, one supervisor — the schedule sheet's
+   red week bar and cyan crew bar folded into a single row. Sticky headers sit
+   at 0, so this rides just under them rather than behind them. */
+.unified-team-table tbody tr.schedule-band th {
+  position: sticky;
+  top: 38px;
+  z-index: 1;
+  padding: 9px 13px;
+  vertical-align: middle;
+  text-align: left;
+  background: var(--band);
+  border-top: 2px solid var(--ink);
+  border-bottom: 1px solid var(--line);
+  white-space: normal;
+}
+
+/* Rows tint on hover; the band is not a row you act on, so it holds its fill. */
+.unified-team-table tbody tr.schedule-band:hover th {
+  background: var(--band);
+}
+
+/* A pinned week keeps the same fill — it has floated to the top, which is the
+   real signal — and takes a heavier left edge so it still reads as pinned once
+   it is sitting up there among other bands. */
+.unified-team-table tbody tr.schedule-band.is-pinned th {
+  box-shadow: inset 4px 0 0 var(--band-ink);
+}
+
+.schedule-band-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 8px;
+  padding: 0;
+  vertical-align: middle;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--band-ink);
+  cursor: pointer;
+}
+
+.schedule-band-pin:hover {
+  border-color: var(--band-ink);
+}
+
+.schedule-band-pin:focus-visible {
+  outline: 2px solid var(--band-ink);
+  outline-offset: 1px;
+}
+
+/* Filled once pinned, so the button states differ by more than icon shape. */
+.schedule-band.is-pinned .schedule-band-pin {
+  background: var(--surface);
+  border-color: var(--band-ink);
+}
+
+.schedule-band-week {
+  margin-right: 14px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* Not var(--muted): that grey is tuned for the page's near-white surfaces and
+   drops to about 3.6:1 on the brown band, which is under the 4.5:1 needed at
+   this size. A warm dark brown keeps it subordinate to the week label while
+   staying properly legible. */
+.schedule-band-crew {
+  color: var(--band-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* A cell with nothing in it yet reads as waiting for input rather than as a
+   value someone chose. */
+.unified-team-table .run-field-readout.is-empty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* Done above, Remove below — the Actions column is too narrow to carry them
+   side by side once Remove is spelled out rather than an icon. */
+.row-actions.is-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+}
+
+.row-actions.is-stacked .button {
+  width: 100%;
+  min-width: 0;
+  justify-content: center;
+  padding-inline: 6px;
+  font-size: 11px;
+}
+
+/* Sits in the page heading beside Add Team. Wraps as a unit on a narrow
+   window so the button never gets pushed off the row on its own. */
+/* Date and time as one slot, side by side, so the column reads as a single
+   value rather than two stacked fields. */
+.preferred-date-slot {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.preferred-date-slot input[type="time"] {
+  max-width: 104px;
+}
+
+.schedule-filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.schedule-search input {
+  min-width: 190px;
+}
+
+.schedule-filters label {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.schedule-filters select {
+  min-width: 132px;
+}
+
+/* Long values — member lists, car lists, customer names — wrap inside their
+   column instead of pushing the table wider than the screen. */
+.unified-team-table td .run-field-readout,
+.unified-team-table td .link-button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Inputs and selects inherit the column width instead of their intrinsic size,
+   which is what actually keeps an open edit row from widening the table. */
+.unified-team-table td input,
+.unified-team-table td select,
+.unified-team-table td textarea {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* The remark box is the one multi-line field in the row. Resizing is limited
+   to the vertical axis so dragging it cannot widen its column. */
+.unified-team-table td textarea.schedule-remark {
+  padding: 6px 8px;
+  resize: vertical;
+}
+
+/* Proportions tuned to the content: the two free-text list columns get the
+   most room, the short coded ones the least. */
+.unified-team-table col.col-customer { width: 11%; }
+.unified-team-table col.col-team { width: 5%; }
+.unified-team-table col.col-install { width: 9%; }
+.unified-team-table col.col-wiring { width: 10%; }
+.unified-team-table col.col-members { width: 11%; }
+.unified-team-table col.col-supervisor { width: 9%; }
+.unified-team-table col.col-car { width: 9%; }
+.unified-team-table col.col-skylift { width: 10%; }
+.unified-team-table col.col-datetime { width: 8%; }
+.unified-team-table col.col-remark { width: 10%; }
+/* Wide enough for a stacked "Remove" spelled out — at 5% the button's own
+   minimum width pushed the whole table into a sideways scroll. */
+.unified-team-table col.col-actions { width: 8%; }
+
+/* Stock delivery, shaped like the Installation groups schedule above: it
+   borrows .unified-team-table for the header, band and field sizing, and
+   only its own column widths and band contents live here. Five columns
+   instead of twelve — the run's own fields moved into the band. */
+.delivery-schedule-table col.col-customer { width: 24%; }
+.delivery-schedule-table col.col-location { width: 14%; }
+.delivery-schedule-table col.col-stock { width: 27%; }
+.delivery-schedule-table col.col-eta { width: 27%; }
+.delivery-schedule-table col.col-pin { width: 8%; }
+
+/* Unlike the week band, this one IS a control: clicking it opens the run for
+   editing, the same gesture as clicking one of its customer rows. */
+.delivery-schedule-table tbody tr.delivery-band {
+  cursor: pointer;
+}
+
+.delivery-schedule-table tbody tr.delivery-band.is-editing th {
+  background: var(--surface-soft);
+}
+
+/* The run's fields while it is open. They wrap freely: this is a band across
+   the full table width, so there is room for all seven on one or two lines
+   without any of them squeezing a column. */
+.delivery-band-fields {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.delivery-band-fields > label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.delivery-band-fields > label input,
+.delivery-band-fields > label select {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  min-height: 34px;
+  padding: 0 8px;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.delivery-band-fields > label input[type="date"] { width: 140px; }
+.delivery-band-fields > label input[type="time"] { width: 100px; }
+.delivery-band-fields > label input:not([type="date"]):not([type="time"]),
+.delivery-band-fields > label select { width: 150px; }
+
+/* Pushed to the far end of the band so the fields read as one group and the
+   controls as another, rather than the buttons sitting mid-sentence. */
+.delivery-band-actions {
+  margin-left: auto;
+  align-self: flex-end;
+}
+
+.delivery-schedule-table .run-route-note {
+  display: block;
+  margin-top: 6px;
 }
 
 .row-actions {
@@ -2947,6 +3334,25 @@ td span {
   padding: 16px;
 }
 
+/* Stops whose installation is already done. Stock delivery lists them rather
+   than hiding them, so they carry a quiet marker instead — enough to read
+   apart from the stops still to come without becoming a second status column.
+   It has to hang off the customer cell by name: the first cell of a run's
+   opening row is the rowSpan'd run name, which belongs to the run and not to
+   any one stop. */
+/* On the name itself, not on the cell: "td strong" is display:block, so a
+   ::before on the cell opens its own line box and the tick lands on a line
+   above the customer instead of in front of them. */
+.delivery-schedule-table tbody tr.run-stop-complete .run-stop-customer strong::before {
+  content: "✓ ";
+  color: var(--green);
+  font-weight: 700;
+}
+
+.delivery-schedule-table tbody tr.run-stop-complete .run-stop-customer {
+  color: var(--muted);
+}
+
 .run-no-customers {
   color: var(--muted);
   font-size: 13px;
@@ -3737,6 +4143,12 @@ a.phone-number:hover {
   color: var(--green);
 }
 
+/* Set only by rows whose value is a list — return visits — so the line breaks
+   survive instead of collapsing into one run-on line. */
+.spec-row.is-multiline dd {
+  white-space: pre-line;
+}
+
 .spec-table-wrap {
   overflow-x: auto;
 }
@@ -3921,7 +4333,11 @@ a.phone-number:hover {
   --tech-accent: #0b6fb8;
   --tech-grid: rgba(11, 111, 184, 0.16);
   position: fixed;
-  z-index: 60;
+  /* Now that the card is portalled to <body> it competes in the root stacking
+     context, where the workspace's own layers (up to 500) would otherwise sit
+     over it. Kept below the slide-over calendar panel (1900) and the modal and
+     drawer backdrops (2000/2100), which must still cover it. */
+  z-index: 1500;
   width: 292px;
   padding: 0;
   color: var(--ink);
@@ -3991,16 +4407,6 @@ a.phone-number:hover {
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-}
-
-.calendar-hover-team {
-  display: block;
-  padding-left: 7px;
-  /* Each crew ticked off against the accent rule, so the block reads as a
-     list of committed resources at a glance. */
-  border-left: 2px solid var(--tech-accent);
-  font-size: 11.5px;
-  line-height: 1.55;
 }
 
 .calendar-hover-conditions {
@@ -4093,6 +4499,39 @@ a.phone-number:hover {
   white-space: nowrap;
 }
 
+/* Marks a day the crew is returning to a site rather than installing it for
+   the first time. Only return trips carry one, so it stays rare enough to
+   read as a flag instead of noise. */
+/* One crew's block inside the day card: who they are, then their customers in
+   clock order. Spaced apart so two crews on one day never read as one list. */
+.calendar-hover-crew + .calendar-hover-crew {
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.calendar-hover-crewhead {
+  padding: 2px 0 3px;
+  color: var(--ink);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+
+.calendar-hover-visit {
+  margin-left: 5px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--surface-soft);
+  font-size: 9px;
+  font-style: normal;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
 .calendar-hover-time {
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
   font-size: 11px;
@@ -4108,6 +4547,29 @@ a.phone-number:hover {
   place-items: center;
   padding: 24px;
   background: var(--surface-soft);
+}
+
+/* Sign-in form and calendar side by side, stacking on a narrow window so the
+   form is never pushed below the fold on a phone. */
+.login-panels {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+/* Deliberately just a surface to sit on, matching the sidebar the calendar
+   lives in on the dashboard. The calendar keeps its own panel chrome so the
+   two screens render it identically rather than nearly so. */
+.login-calendar {
+  width: 100%;
+  max-width: 320px;
+  padding: 18px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
 }
 
 .login-card {

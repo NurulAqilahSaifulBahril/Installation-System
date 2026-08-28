@@ -4,6 +4,7 @@ import { queryProxy } from '@/lib/proxy-db';
 export type OpsState = {
   groups: unknown[];
   deliveryRuns: unknown[];
+  warehouses: unknown[];
   teamResources: unknown[];
   teamWeekAssignments: unknown[];
   jobUpdates: Record<string, unknown>;
@@ -12,6 +13,7 @@ export type OpsState = {
 export const EMPTY_OPS_STATE: OpsState = {
   groups: [],
   deliveryRuns: [],
+  warehouses: [],
   teamResources: [],
   teamWeekAssignments: [],
   jobUpdates: {},

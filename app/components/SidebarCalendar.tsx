@@ -2,6 +2,7 @@
 
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import type { CalendarDayDetail } from "@/lib/types";
 import WeatherGlyph from "@/app/components/WeatherGlyph";
 
@@ -93,8 +94,8 @@ export default function SidebarCalendar({
   // A day with no bookings still has a card — it carries the weather and any
   // public holiday — so these fall back to empty rather than gating the card.
   const hoveredDetail = hover ? dayDetails[hover.key] : null;
-  const teams = hoveredDetail?.teams ?? [];
   const customers = hoveredDetail?.customers ?? [];
+  const crews = hoveredDetail?.crews ?? [];
   const dayWeather = hover ? weather[hover.key] : undefined;
   const dayHoliday = hover ? holidays[hover.key] : undefined;
 
@@ -165,7 +166,14 @@ export default function SidebarCalendar({
         })}
       </div>
 
-      {hover && (
+      {/* Portalled to <body>. The sidebar is position: sticky, which always
+          opens a stacking context, so a card left inside it can never rise
+          above the workspace whatever z-index it is given — the sidebar's
+          own context is what gets ordered, and it precedes <main> in the
+          DOM. In the root context its z-index decides the outcome. `hover`
+          is null until a day is pointed at, so this never runs on the
+          server. */}
+      {hover && createPortal(
         <div
           className="calendar-hover-card"
           role="tooltip"
@@ -208,7 +216,7 @@ export default function SidebarCalendar({
                 // empty row, which reads as a broken lookup rather than a
                 // date that is simply too far away to forecast.
                 <span className="calendar-hover-noforecast">
-                  No forecast — about 2 weeks ahead only
+                  No forecast — about 2 weeks ahead, 3 months back
                 </span>
               )}
               {dayHoliday && (
@@ -216,17 +224,6 @@ export default function SidebarCalendar({
               )}
             </div>
           </div>
-
-          {teams.length > 0 && (
-            <div className="calendar-hover-section">
-              <span className="calendar-hover-label">Crew</span>
-              {teams.map((team) => (
-                <span className="calendar-hover-team" key={team}>
-                  {team}
-                </span>
-              ))}
-            </div>
-          )}
 
           {customers.length > 0 && (
           <div className="calendar-hover-section">
@@ -237,23 +234,53 @@ export default function SidebarCalendar({
                 <span>Stock</span>
                 <span>Install</span>
               </div>
-              {customers.map((customer) => (
-                <div className="calendar-hover-row" key={customer.id}>
-                  <span className="calendar-hover-name">{customer.name}</span>
-                  {/* An em dash, not a blank: the column reads as "no time
-                      recorded" rather than as a rendering gap. */}
-                  <span className="calendar-hover-time">
-                    {customer.stockDelivery || "—"}
-                  </span>
-                  <span className="calendar-hover-time">
-                    {customer.installTime || "—"}
-                  </span>
-                </div>
-              ))}
+              {crews.map((crew) => {
+                // "Team 1 · AR17 · Eternalgy Team Jamar", skipping whichever
+                // parts are unset so a partly-filled crew never renders as a
+                // row of stray separators.
+                const heading = [
+                  crew.teamLabel,
+                  crew.installationTeam,
+                  crew.wiringTeam,
+                ]
+                  .map((part) => part.trim())
+                  .filter((part) => part && !/^[-–—]+$/.test(part))
+                  .join(" · ");
+                return (
+                  <div className="calendar-hover-crew" key={crew.key}>
+                    {heading && (
+                      <div className="calendar-hover-crewhead">{heading}</div>
+                    )}
+                    {crew.customers.map((customer) => (
+                      <div className="calendar-hover-row" key={customer.id}>
+                        <span className="calendar-hover-name">
+                          {customer.name}
+                          {/* Only a return trip carries a kind, so a normal
+                              installation day shows the name on its own. */}
+                          {customer.visitKind && (
+                            <em className="calendar-hover-visit">
+                              {customer.visitKind}
+                            </em>
+                          )}
+                        </span>
+                        {/* An em dash, not a blank: the column reads as "no
+                            time recorded" rather than as a rendering gap. */}
+                        <span className="calendar-hover-time">
+                          {customer.stockDelivery || "—"}
+                        </span>
+                        <span className="calendar-hover-time">
+                          {customer.installTime || "—"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
             </div>
           </div>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

@@ -1,5 +1,4 @@
 import { toDateOnly } from "@/lib/dates";
-import { queryProxy } from "@/lib/proxy-db";
 import type { InstallationJob } from "@/lib/types";
 
 type ProxyRow = {
@@ -30,6 +29,8 @@ type ProxyRow = {
   installation_address: string | null;
   drawing_pdf_system: string[] | string | null;
   updated_at: string | null;
+  requested_seda_status: string | null;
+  invoice_date: string | null;
 };
 
 type ProxyResponse = {
@@ -37,11 +38,14 @@ type ProxyResponse = {
   error?: string;
 };
 
-// A backstop against an unbounded payload, not a business rule — the pipeline
-// filter below is what decides which jobs belong. Reaching this limit means
-// rows are being dropped, so fetchEligibleSourceJobs reports it instead of
-// truncating silently.
-const SOURCE_ROW_LIMIT = 5000;
+// A backstop against an unbounded payload, not a business rule. Now that every
+// non-deleted invoice is in scope, this has to sit clear of the whole table
+// (8,025 rows as of this writing, ~6 MB and under 2s over the proxy) — the
+// order is `updated_at desc`, so a limit that bites would drop the
+// longest-untouched jobs, which are exactly the ones still awaiting
+// installation. Reaching it means rows are being dropped, so
+// fetchEligibleSourceJobs reports it instead of truncating silently.
+const SOURCE_ROW_LIMIT = 20000;
 
 export type SourceJobsResult = {
   jobs: InstallationJob[];
@@ -86,10 +90,35 @@ invoice_item_details as (
       ) as foc_details
   from invoice_item
   group by linked_invoice
+),
+-- Emails that reported an approval but that the automated SEDA_ATAP_APPROVAL
+-- matcher couldn't confidently attach to a seda_registration row (below its
+-- confidence threshold) sit here as still-pending, needing-review tasks. The
+-- customer name is the only link back to an invoice, so it's normalised the
+-- same way on both sides of the join below (case, whitespace, the "(ATAP)"
+-- suffix some customer records carry and the task rows never do).
+requested_status as (
+  select distinct on (normalized_name)
+    normalized_name,
+    payload ->> 'status' as requested_seda_status
+  from (
+    select
+      trim(replace(upper(trim(coalesce(customer_name, ''))), '(ATAP)', ''))
+        as normalized_name,
+      payload,
+      created_at
+    from seda_tasks
+    where status = 'PENDING'
+      and requires_manual_review = true
+      and coalesce(customer_name, '') <> ''
+      and payload ->> 'status' is not null
+  ) parsed
+  order by normalized_name, created_at desc
 )
 select
   i.bubble_id,
   i.invoice_number,
+  i.invoice_date,
   i.total_amount,
   i.balance_due,
   i.percent_of_total_amount,
@@ -114,7 +143,8 @@ select
   s.phase_type,
   s.inverter as seda_inverter,
   s.installation_address,
-  s.drawing_pdf_system
+  s.drawing_pdf_system,
+  requested_status.requested_seda_status
 from invoice i
 left join customer c on c.customer_id = i.linked_customer
 -- linked_agent is inconsistent in the source data: most invoices store the
@@ -131,21 +161,15 @@ left join seda_registration s on s.bubble_id = i.linked_seda_registration
 left join first_payments on first_payments.linked_invoice = i.bubble_id
 left join second_payments on second_payments.linked_invoice = i.bubble_id
 left join invoice_item_details on invoice_item_details.linked_invoice = i.bubble_id
+left join requested_status
+  on requested_status.normalized_name
+    = trim(replace(upper(trim(coalesce(c.name, ''))), '(ATAP)', ''))
+-- Every live invoice belongs in the installation system, whatever it has
+-- been paid. Payment is a gate on *scheduling*, not on visibility: anything
+-- under the threshold arrives with scheduleStatus 'pending_approval' and the
+-- below-threshold remark, so it is present and searchable while still being
+-- blocked from being planned. Deletion is the only exclusion.
 where coalesce(i.is_deleted, false) = false
-  and (
-    -- An invoice with no payment at all is an unsent quote, not an
-    -- installation candidate. Filtering on the pipeline itself (rather than
-    -- taking the N most recently touched invoices) is what keeps older jobs
-    -- that are still awaiting installation from silently falling off the
-    -- dashboard once newer rows arrive.
-    coalesce(i.percent_of_total_amount, 0) > 0
-    -- ...unless operations have already acted on it. A payment override can
-    -- legitimately put a zero-payment invoice into the pipeline, and dropping
-    -- it here would discard work someone already did. installation_jobs lives
-    -- in the app's own operational database, not this read-only source one,
-    -- so the id list is fetched separately and passed in rather than joined.
-    or i.bubble_id = any($1::text[])
-  )
 order by i.updated_at desc nulls last
 limit ${SOURCE_ROW_LIMIT}
 `;
@@ -179,6 +203,84 @@ function hasSedaApproval(status: string | null): boolean {
   return ["approved", "complete", "completed", "success"].some((word) =>
     normalized.includes(word),
   );
+}
+
+function normalizeCustomerName(name: string | null): string {
+  return (name ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/\(ATAP\)/g, "")
+    .trim();
+}
+
+// A pending SEDA task's requested status is only trustworthy once it's tied
+// to one specific invoice. Matching is by customer name alone (the task queue
+// has nothing better to join on), and the same name can legitimately cover
+// more than one invoice — a genuine duplicate/re-created record, not just a
+// coincidence. Among those, the one still awaiting SEDA submission is the one
+// that has actually put down a deposit; a zero-payment duplicate can't be
+// the invoice a real approval email is about, so it's left untouched.
+function applyRequestedSedaStatusOverrides(rows: ProxyRow[]): ProxyRow[] {
+  const byName = new Map<string, ProxyRow[]>();
+  for (const row of rows) {
+    const key = normalizeCustomerName(row.customer_name);
+    if (!key) continue;
+    const group = byName.get(key);
+    if (group) group.push(row);
+    else byName.set(key, [row]);
+  }
+
+  const overrideIds = new Set<string>();
+  for (const group of byName.values()) {
+    const requestedStatus = group.find(
+      (row) => row.requested_seda_status,
+    )?.requested_seda_status;
+    if (!requestedStatus || !hasSedaApproval(requestedStatus)) continue;
+
+    const pending = group.filter(
+      (row) => (row.seda_status ?? "").trim().toLowerCase() === "pending",
+    );
+
+    let winner: ProxyRow | null = null;
+    for (const candidate of pending) {
+      const candidatePercent = Number(candidate.percent_of_total_amount ?? 0);
+      const winnerPercent = Number(winner?.percent_of_total_amount ?? -1);
+      if (candidatePercent > winnerPercent) winner = candidate;
+    }
+
+    if (winner && Number(winner.percent_of_total_amount ?? 0) > 0) {
+      overrideIds.add(winner.bubble_id);
+    }
+  }
+
+  if (!overrideIds.size) return rows;
+  return rows.map((row) =>
+    overrideIds.has(row.bubble_id) ? { ...row, seda_status: "Approved" } : row,
+  );
+}
+
+// The seda_tasks pipeline (applyRequestedSedaStatusOverrides above) only has
+// email history from when it went live — it has nothing to say about older
+// invoices. For those, a paid-up deposit stands in for the missing paper
+// trail: an invoice from before the automation existed that has already
+// reached 60% payment has, in practice, cleared SEDA by now regardless of
+// what the registration link shows (stale "Pending"/"Submitted", or no
+// linked registration row at all). Below 60%, or on or after the cutoff, the
+// real registration status (or the "Pending" rowToJob defaults a missing one
+// to) still applies unchanged.
+const PRE_AUTOMATION_CUTOFF = "2026-07-01";
+
+function isBeforePreAutomationCutoff(invoiceDate: string | null): boolean {
+  return Boolean(invoiceDate) && invoiceDate! < PRE_AUTOMATION_CUTOFF;
+}
+
+function applyPreAutomationPaymentAssumption(rows: ProxyRow[]): ProxyRow[] {
+  return rows.map((row) => {
+    if (hasSedaApproval(row.seda_status)) return row;
+    if (!isBeforePreAutomationCutoff(row.invoice_date)) return row;
+    if (Number(row.percent_of_total_amount ?? 0) < 60) return row;
+    return { ...row, seda_status: "Approved" };
+  });
 }
 
 function focOnly(value: string | null) {
@@ -234,6 +336,8 @@ function rowToJob(row: ProxyRow): InstallationJob {
     // reached out and is waiting on the customer to confirm.
     customerAvailabilityStatus: "not_set",
     preferredInstallationDate: null,
+    secondPreferredInstallationDate: null,
+    preferredInstallationTime: null,
     availabilityRemarks: "",
     installationApprovalStatus: sedaApproved
       ? "pending_approval_date"
@@ -265,6 +369,7 @@ function rowToJob(row: ProxyRow): InstallationJob {
         : sedaApproved
           ? ""
           : "Pending SEDA Approval",
+    installationRemarks: "",
     sourceUpdatedAt: row.updated_at || undefined,
   };
 }
@@ -292,22 +397,6 @@ export async function fetchEligibleSourceJobs(): Promise<SourceJobsResult> {
     );
   }
 
-  // Invoices operations already have an installation_jobs record for (e.g. a
-  // payment override) stay in the pipeline even at zero payment. That table
-  // lives in the ops database, not this read-only source one, so its ids are
-  // fetched over the other connection and handed to the source query as a
-  // parameter. A failure here just means that carve-out doesn't apply for
-  // this load — it must not take down the whole source fetch.
-  let overrideInvoiceIds: string[] = [];
-  try {
-    const rows = await queryProxy<{ source_invoice_id: string }>(
-      "select source_invoice_id from public.installation_jobs",
-    );
-    overrideInvoiceIds = rows.map((row) => row.source_invoice_id);
-  } catch {
-    overrideInvoiceIds = [];
-  }
-
   const response = await fetch(proxyUrl, {
     method: "POST",
     headers: {
@@ -317,7 +406,7 @@ export async function fetchEligibleSourceJobs(): Promise<SourceJobsResult> {
     body: JSON.stringify({
       db_name: database,
       sql: INSTALLATION_SOURCE_QUERY,
-      params: [overrideInvoiceIds],
+      params: [],
     }),
     cache: "no-store",
     signal: AbortSignal.timeout(20_000),
@@ -329,8 +418,11 @@ export async function fetchEligibleSourceJobs(): Promise<SourceJobsResult> {
   }
 
   const rows = payload.rows ?? [];
+  const patchedRows = applyPreAutomationPaymentAssumption(
+    applyRequestedSedaStatusOverrides(rows),
+  );
   return {
-    jobs: rows.map(rowToJob),
+    jobs: patchedRows.map(rowToJob),
     truncated: rows.length >= SOURCE_ROW_LIMIT,
   };
 }

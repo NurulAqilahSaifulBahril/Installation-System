@@ -21,6 +21,8 @@ type OperationalRow = {
   installation_date: string | null;
   customer_availability_status: InstallationJob['customerAvailabilityStatus'] | null;
   preferred_installation_date: string | null;
+  second_preferred_installation_date: string | null;
+  preferred_installation_time: string | null;
   availability_remarks: string | null;
   schedule_status: InstallationJob['scheduleStatus'];
   installation_approval_status: InstallationJob['installationApprovalStatus'];
@@ -37,6 +39,7 @@ type OperationalRow = {
   payment_override_status: InstallationJob['paymentOverrideStatus'] | null;
   payment_override_reason: string | null;
   remarks: string | null;
+  installation_remarks: string | null;
 };
 
 type TeamRow = {
@@ -67,6 +70,10 @@ function mergeOperations(
       customerAvailabilityStatus:
         operation.customer_availability_status ?? 'not_set',
       preferredInstallationDate: toDateOnly(operation.preferred_installation_date),
+      preferredInstallationTime: operation.preferred_installation_time || null,
+      secondPreferredInstallationDate: toDateOnly(
+        operation.second_preferred_installation_date,
+      ),
       availabilityRemarks: operation.availability_remarks ?? '',
       scheduleStatus: operation.schedule_status,
       installationApprovalStatus: operation.installation_approval_status,
@@ -84,6 +91,7 @@ function mergeOperations(
       paymentOverrideStatus: operation.payment_override_status ?? 'none',
       paymentOverrideReason: operation.payment_override_reason ?? '',
       remarks: operation.remarks ?? '',
+      installationRemarks: operation.installation_remarks ?? '',
       teams: operation.teams.map((team) => ({
         id: team.id,
         role: team.role,
@@ -105,6 +113,8 @@ async function readOperationalRows(sourceIds: string[]) {
         '  installation_date,',
         '  customer_availability_status,',
         '  preferred_installation_date,',
+        '  preferred_installation_time,',
+        '  second_preferred_installation_date,',
         '  availability_remarks,',
         '  schedule_status,',
         '  installation_approval_status,',
@@ -120,7 +130,8 @@ async function readOperationalRows(sourceIds: string[]) {
         '  battery_details,',
         '  payment_override_status,',
         '  payment_override_reason,',
-        '  remarks',
+        '  remarks,',
+        '  installation_remarks',
         'from public.installation_jobs',
         'where source_invoice_id = any($1::text[])',
         'order by updated_at desc nulls last, source_invoice_id asc',

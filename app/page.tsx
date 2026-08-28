@@ -37,6 +37,7 @@ import {
   Zap,
 } from "lucide-react";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -48,9 +49,15 @@ import type {
   CalendarDayDetail,
   InstallationJob,
   JobUpdate,
+  JobVisit,
   TeamAssignment,
 } from "@/lib/types";
 import type { UpdateStatus } from "@/lib/electron-desktop";
+import {
+  MALAYSIA_PUBLIC_HOLIDAYS,
+  fetchDailyWeather,
+} from "@/lib/calendar-weather";
+import { buildCalendarDayDetails } from "@/lib/calendar-day-details";
 import { ROUTE_METHOD_LABELS } from "@/lib/routing";
 import SidebarCalendar from "@/app/components/SidebarCalendar";
 import GroupMultiSelect from "@/app/components/GroupMultiSelect";
@@ -71,6 +78,15 @@ type JobsResponse = {
 
 type DashboardView = "pipeline" | "groups" | "teams" | "delivery";
 
+// A skylift booked for the crew — either a single day (until empty) or a
+// from/until range. Kept per group so each day's row shows only the machine
+// actually on site that day.
+type SkyliftBooking = {
+  name: string;
+  from: string;
+  until?: string;
+};
+
 type InstallationGroup = {
   id: string;
   name: string;
@@ -81,6 +97,21 @@ type InstallationGroup = {
   installationTeam: string;
   wiringTeam: string;
   supervisor: string;
+  // The sheet's slot label for the crew — "Team 3". Separate from the crew
+  // names because the same label carries different crews across weeks.
+  teamLabel?: string;
+  // That week's wiring crew members, as the sheet lists them.
+  wiringMembers?: string[];
+  // Vehicles the crew takes out — more than one is normal ("Van + Myvi").
+  cars?: string[];
+  skylifts?: SkyliftBooking[];
+  // Only ever the starting note for a crew booking that has nobody on it yet —
+  // "Add Team" makes such a row, and there is no customer to hang a remark on
+  // until one is assigned. Remarks belong to customers, so the first customer
+  // added to this booking starts from this text and owns their copy from the
+  // first edit onwards. Optional: bookings made before the column existed, and
+  // every booking whose note was typed against a customer, have no value here.
+  remark?: string;
 };
 
 type DeliveryRun = {
@@ -102,6 +133,17 @@ type DeliveryRun = {
   installationGroupId: string;
   status: "pending_stock" | "ready" | "in_transit" | "delivered";
   jobIds: string[];
+};
+
+// The warehouses a delivery run can depart from, kept as their own list below
+// the Stock delivery table rather than retyped into every run. A run stores
+// the warehouse *name*; the address behind that name is looked up here, which
+// is what the ETA route geocodes.
+type Warehouse = {
+  id: string;
+  name: string;
+  city: string;
+  address: string;
 };
 
 // The roles a team can be given in Installation groups. Rendered by all three
@@ -184,9 +226,7 @@ function groupHasSchedulingReadyMember(
 ) {
   return jobs.some(
     (job) =>
-      group.jobIds.includes(job.id) &&
-      (job.customerAvailabilityStatus === "available" ||
-        job.customerAvailabilityStatus === "pending"),
+      group.jobIds.includes(job.id) && isSchedulingInPlay(job),
   );
 }
 
@@ -246,12 +286,17 @@ function formatAssignmentStamp(value: string) {
 const STORAGE_KEY = "installation-ops-updates-v1";
 const GROUPS_STORAGE_KEY = "installation-ops-groups-v1";
 const DELIVERY_RUNS_STORAGE_KEY = "installation-ops-delivery-runs-v1";
+const WAREHOUSES_STORAGE_KEY = "installation-ops-warehouses-v1";
 const TEAMS_STORAGE_KEY = "installation-ops-team-resources-v1";
 const TEAM_WEEKS_STORAGE_KEY = "installation-ops-team-weeks-v1";
 const TEAM_SUGGESTIONS_STORAGE_KEY = "installation-ops-team-suggestions-v1";
 const THEME_STORAGE_KEY = "installation-ops-theme";
 const SIDEBAR_STORAGE_KEY = "installation-ops-sidebar";
 const PINNED_JOBS_STORAGE_KEY = "installation-ops-pinned-jobs-v1";
+// Week bands the user has pinned to the top of the Installation groups table.
+// Per-device like the pipeline's pinned jobs — a pin is how one person keeps
+// the week they are working on in view, not a decision for the whole team.
+const PINNED_WEEKS_STORAGE_KEY = "installation-ops-pinned-weeks-v1";
 
 function formatPersonName(name: string) {
   return name
@@ -294,27 +339,6 @@ function staffingLabel(staffing: "full" | "partial" | "none") {
   return "Unassigned";
 }
 
-// Standard Malaysia federal public holidays. Islamic and Hindu calendar
-// dates (Raya, Wesak, Awal Muharram, Maulidur Rasul, Deepavali) are
-// estimates and should be checked against the official government
-// gazette closer to the date. State-specific holidays are not included.
-const MALAYSIA_PUBLIC_HOLIDAYS: Record<string, string> = {
-  "2026-01-01": "New Year's Day",
-  "2026-02-17": "Chinese New Year",
-  "2026-02-18": "Chinese New Year (2nd day)",
-  "2026-03-21": "Hari Raya Puasa",
-  "2026-03-22": "Hari Raya Puasa (2nd day)",
-  "2026-05-01": "Labour Day",
-  "2026-05-27": "Hari Raya Haji",
-  "2026-05-31": "Wesak Day",
-  "2026-06-01": "Agong's Birthday",
-  "2026-06-16": "Awal Muharram",
-  "2026-08-25": "Prophet Muhammad's Birthday",
-  "2026-08-31": "National Day",
-  "2026-09-16": "Malaysia Day",
-  "2026-11-08": "Deepavali",
-  "2026-12-25": "Christmas Day",
-};
 
 function holidayForDate(dateStr: string): string | null {
   return MALAYSIA_PUBLIC_HOLIDAYS[dateStr] || null;
@@ -523,9 +547,33 @@ const availabilityLabels: Record<
   not_set: "Not set",
   pending: "Pending confirmation",
   available: "Available",
+  reschedule: "Reschedule",
   unavailable: "Not available",
   cancelled: "Cancellation",
 };
+
+// Customer Scheduling's definition of "in play": the customer is still active
+// work. Available and Pending are the two settled cases; Reschedule joins them
+// because a customer who has moved off their date is still coming, they just
+// have not agreed the new one yet. Named rather than repeated inline so the
+// three places that ask this question cannot drift apart.
+function isSchedulingInPlay(job: InstallationJob) {
+  return (
+    job.customerAvailabilityStatus === "available" ||
+    job.customerAvailabilityStatus === "pending" ||
+    job.customerAvailabilityStatus === "reschedule"
+  );
+}
+
+// A customer who is rescheduling but has no replacement date yet. The whole
+// point of the status is to get that date agreed, so Customer Scheduling marks
+// these rows until one is.
+function needsRescheduleDate(job: InstallationJob) {
+  return (
+    job.customerAvailabilityStatus === "reschedule" &&
+    !job.secondPreferredInstallationDate
+  );
+}
 
 // Both statuses take the customer out of planning: they drop out of the
 // suggestion lists and are removed from any installation group.
@@ -571,13 +619,32 @@ function confirmedInstallationDate(
 // holding every finished job back waiting for a sign-off. (The preferred
 // date is the exception — confirmedInstallationDate only counts it while
 // the customer is Available, which is what makes it a booking at all.)
+// How long after its booked day a job is taken to be finished. Three days
+// rather than one: an install that ran late, or slipped to the next morning,
+// should not be filed as done while the crew may still be on site.
+const DAYS_BEFORE_ASSUMED_COMPLETE = 3;
+
+// Plain "YYYY-MM-DD" plus n days, read back field by field. Not via
+// toISOString, which would return UTC and slip a day at UTC+8 — the same trap
+// lib/dates.ts documents.
+function addDays(dateStr: string, days: number): string | null {
+  const date = new Date(`${dateStr.slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return null;
+  date.setDate(date.getDate() + days);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")}`;
+}
+
 function isAssumedComplete(
   job: InstallationJob,
   todayIso: string,
   group?: InstallationGroup | null,
 ) {
   const date = confirmedInstallationDate(job, group);
-  return date !== null && date < todayIso;
+  if (!date) return false;
+  const settled = addDays(date, DAYS_BEFORE_ASSUMED_COMPLETE);
+  return settled !== null && todayIso >= settled;
 }
 
 function isCompleteInstallation(
@@ -891,8 +958,11 @@ function buildLocationSuggestions(
 function operationalUpdate(job: InstallationJob): JobUpdate {
   return {
     installationDate: job.installationDate,
+    visits: job.visits,
     customerAvailabilityStatus: job.customerAvailabilityStatus,
     preferredInstallationDate: job.preferredInstallationDate,
+    secondPreferredInstallationDate: job.secondPreferredInstallationDate,
+    preferredInstallationTime: job.preferredInstallationTime,
     availabilityRemarks: job.availabilityRemarks,
     installationApprovalStatus: job.installationApprovalStatus,
     scheduleStatus: job.scheduleStatus,
@@ -908,6 +978,7 @@ function operationalUpdate(job: InstallationJob): JobUpdate {
     batteryDetails: job.batteryDetails,
     paymentOverrideStatus: job.paymentOverrideStatus,
     paymentOverrideReason: job.paymentOverrideReason,
+    installationRemarks: job.installationRemarks,
     teams: job.teams,
     remarks: job.remarks,
   };
@@ -936,9 +1007,56 @@ function malaysiaTodayLabel() {
   }).format(new Date());
 }
 
+/**
+ * The Monday-to-Saturday week a date falls in, as the schedule sheet counts
+ * weeks ("INSTALLATION ~ Week : 24/8 ~ 29/8/2026").
+ *
+ * Built by stepping a local Date rather than by arithmetic on the string, and
+ * read back field by field rather than through toISOString — the same reason
+ * lib/dates.ts gives: this app runs at UTC+8, so a UTC round trip on a
+ * zone-less date lands on the previous day.
+ *
+ * A Sunday belongs to the week that just ended, not the one about to start,
+ * which keeps a Sunday call-out attached to the crew block it follows.
+ */
+// The schedule sheet writes an unfilled crew or supervisor cell as a lone
+// dash rather than leaving it blank, so both spellings mean "not assigned".
+function isPlaceholder(value: string | undefined | null): boolean {
+  const trimmed = (value ?? "").trim();
+  return trimmed === "" || /^[-–—]+$/.test(trimmed);
+}
+
+function weekBounds(dateStr: string): { start: string; end: string } | null {
+  const date = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return null;
+  const local = (value: Date) =>
+    `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(
+      value.getDate(),
+    ).padStart(2, "0")}`;
+  const monday = new Date(date);
+  monday.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+  const saturday = new Date(monday);
+  saturday.setDate(monday.getDate() + 5);
+  return { start: local(monday), end: local(saturday) };
+}
+
+// "24 Aug – 29 Aug 2026". The year is stated once, at the end, because a week
+// that straddles December would otherwise read as though it spanned one.
+function weekRangeLabel(dateStr: string): string {
+  const bounds = weekBounds(dateStr);
+  if (!bounds) return "Unscheduled";
+  const part = (value: string) =>
+    new Intl.DateTimeFormat("en-MY", {
+      day: "numeric",
+      month: "short",
+    }).format(new Date(`${value}T00:00:00`));
+  const year = bounds.end.slice(0, 4);
+  return `${part(bounds.start)} – ${part(bounds.end)} ${year}`;
+}
+
 // How long a paid-up customer may sit with nothing booked before the dashboard
 // starts asking about them. Counted in working days, not calendar days.
-const WORKING_DAYS_BEFORE_ATTENTION = 28;
+const DAYS_BEFORE_ATTENTION = 28;
 
 // The card is a new addition to the pipeline — nobody has been chasing this
 // list before now, so switching it on for old, already-overdue customers
@@ -958,14 +1076,15 @@ function needsAttention(
   group?: InstallationGroup | null,
 ) {
   if (todayIso < ATTENTION_START_DATE) return false;
-  if (job.paymentPercent < 60) return false;
+  // Still nothing on the calendar is what makes this a chase list rather than
+  // a list of ageing invoices: without it every long-since-installed job whose
+  // payment is old enough would sit here too.
   if (confirmedInstallationDate(job, group)) return false;
   if (!job.secondPaymentDate) return false;
-  return hasWorkingDaysElapsed(
-    job.secondPaymentDate,
-    todayIso,
-    WORKING_DAYS_BEFORE_ATTENTION,
-  );
+  // Calendar days now, not working days — the rule is simply "28 days since
+  // the second payment".
+  const due = addDays(job.secondPaymentDate, DAYS_BEFORE_ATTENTION);
+  return due !== null && todayIso >= due;
 }
 
 // The unfiltered view. It heads the status dropdown and is where the page
@@ -980,47 +1099,49 @@ const PIPELINE_STAGES = [
   {
     value: "deposit",
     label: "Deposit",
-    note: "1st payment, under 65%",
-    hint: "The customer has made their first payment against the invoice but is still under 65% paid. This is the entry stage — jobs leave it once the payments reach 65%.",
+    note: "Any payment made",
+    hint: "The customer has paid something towards the invoice but is still under 60%, and nothing further has happened yet. Each job sits in exactly one stage — the most advanced one it qualifies for.",
   },
   {
     value: "ready",
     label: "Ready to Install",
-    note: "SEDA approved, paid 60%+",
-    hint: "SEDA registration approved and 60% or more of the invoice paid. Stock, a date and a crew are the stages that follow, not conditions for this one.",
+    note: "Paid 60%+",
+    hint: "60% or more of the invoice is paid, and no date or availability has been recorded yet — the job is cleared and waiting to be scheduled.",
   },
   {
     value: "scheduled",
     label: "Scheduled Installation",
-    note: "Fully arranged",
-    hint: "All five arrangement columns are filled: assigned teams, location/group, delivery run, stock details and a confirmed installation date. A job with a date but no crew, no run or no stock line is not counted — it stays under the earlier stages until it is fully arranged. Customers who have gone unavailable or cancelled are not counted either.",
+    note: "Availability or date recorded",
+    hint: "The customer's availability is recorded or an installation date exists, and nothing marks the job as held up or finished.",
   },
   {
     value: "pending_complete",
     label: "Pending Complete Installation",
-    note: "Booked, not finished",
-    hint: "Booked but not finished: the customer cancelled or went unavailable while the date is still ahead, or it is installation day and the stock is still not delivered. Once the date itself passes the job counts as Complete Installation instead.",
+    note: "Pending / reschedule noted",
+    hint: "The customer's notes or status mention pending or reschedule — something is holding the job up. Clears once the note is resolved or the booked date passes.",
   },
   {
     value: "complete",
     label: "Complete Installation",
-    note: "Installation done",
-    hint: "Marked installed in the source system, or assumed complete once the confirmed installation date is at least a day past — whatever the availability says, since a cancellation is expected to arrive before the date rather than after it.",
+    note: "Date passed 3+ days ago",
+    hint: "Marked installed in the source system, or the installation date is at least 3 days behind us — enough margin for a job that ran a day or two late.",
   },
   {
     value: "attention",
     label: "Need Attention",
-    note: "28 working days, no date",
-    hint: "Paid 60% or more on the 2nd payment, but still has no installation date 28 working days on. Working days exclude weekends and Malaysian public holidays. Starts 1 Sept 2026.",
+    note: "28 days, no date",
+    hint: "The 2nd payment was 28 or more days ago and there is still no installation date. Starts 1 Sept 2026.",
   },
 ] as const;
 
 type StageValue = (typeof PIPELINE_STAGES)[number]["value"];
 
-// Team planning offers the same stages, minus the ones its own guards make
-// unreachable: it only ever lists work still to be planned, so a stage meaning
-// "already installed" could never return a row and would read as a broken filter.
-const UNPLANNABLE_STAGES: StageValue[] = ["complete"];
+// Customer Scheduling offers every stage. "Complete Installation" used to be
+// held back because the page's own guards dropped installed jobs before the
+// filter ran, so the option could only ever return nothing — selecting it now
+// admits them instead. Kept as a list rather than deleted so a future stage
+// that genuinely cannot apply here has somewhere to go.
+const UNPLANNABLE_STAGES: StageValue[] = [];
 
 const PLANNING_STAGES = PIPELINE_STAGES.filter(
   (stage) => !UNPLANNABLE_STAGES.includes(stage.value),
@@ -1051,91 +1172,82 @@ const stageAccents: Partial<Record<StageValue, "amber" | "red">> = {
 // cleared, everything ready, a date on the calendar, the date gone by with no
 // sign-off, then done. A job can sit in more than one of these at once — they
 // are lenses on the same list, not exclusive buckets.
+/**
+ * Which single stage a job is at.
+ *
+ * Tested most-advanced-first, and the first match wins: the six stages are a
+ * pipeline, not six independent questions, so every job sits in exactly one
+ * and the summary cards add up to the customer count. Order matters more than
+ * the individual tests — a job paid 70% with a date three days past is
+ * Complete, even though it also satisfies Ready and Deposit.
+ */
+function pipelineStageOf(
+  job: InstallationJob,
+  todayIso: string,
+  lookup: PlanningLookup,
+): StageValue | null {
+  const group = lookup.groupByJobId.get(job.id) ?? null;
+
+  // Done: its booked day is at least three days behind us, or the source
+  // system has said so outright.
+  if (isCompleteInstallation(job, todayIso, group)) return "complete";
+
+  // Booked but held up. Read off the words rather than a status code, because
+  // that is where the reason lives — "Pending batt", "to reschedule",
+  // "PENDING JOB".
+  const notes = [
+    job.availabilityRemarks,
+    job.remarks,
+    job.installationRemarks,
+    job.customerAvailabilityStatus,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  if (/pending|reschedul/i.test(notes)) return "pending_complete";
+
+  // Paid up long enough ago with still nothing on the calendar.
+  if (needsAttention(job, todayIso, group)) return "attention";
+
+  // Somebody has either agreed a date or recorded where the customer stands.
+  if (
+    confirmedInstallationDate(job, group) ||
+    (job.customerAvailabilityStatus &&
+      job.customerAvailabilityStatus !== "not_set")
+  ) {
+    return "scheduled";
+  }
+
+  if (job.paymentPercent >= 60) return "ready";
+  if (job.paymentPercent > 0) return "deposit";
+  return null;
+}
+
+// The write side of the row-remark read a few lines above its editor: a return
+// trip keeps its note on that visit, everyone else on the customer record.
+// Mirrors that read exactly, so what is typed lands where it is read back from.
+function withRowRemark(
+  job: InstallationJob,
+  visit: JobVisit | undefined,
+  text: string,
+): InstallationJob {
+  if (!visit) return { ...job, installationRemarks: text };
+  return {
+    ...job,
+    visits: (job.visits ?? []).map((item) =>
+      item.date === visit.date ? { ...item, notes: text } : item,
+    ),
+  };
+}
+
 function matchesPipelineStage(
   job: InstallationJob,
   stage: string,
   todayIso: string,
   lookup: PlanningLookup,
 ) {
-  const group = lookup.groupByJobId.get(job.id) ?? null;
-  const installationDate = confirmedInstallationDate(job, group);
-  const installed = isCompleteInstallation(job, todayIso, group);
-  const availability = job.customerAvailabilityStatus;
-
-  switch (stage) {
-    // The customer has paid something towards the invoice but has not yet
-    // reached 65%. The deposit date is the reliable signal that anything was
-    // paid; percent is the fallback for invoices whose payment rows have no
-    // date on them. The 65% ceiling is what makes this a stage rather than a
-    // permanent home — a job that pays up moves on instead of sitting here
-    // alongside the later stages.
-    case "deposit":
-      return (
-        (Boolean(job.firstPaymentDate) || job.paymentPercent > 0) &&
-        job.paymentPercent < 65
-      );
-
-    // Cleared to be installed: the registration is through and the money is in.
-    // Deliberately not the same as "everything is arranged" — stock, a date and
-    // a crew are the next stages, not preconditions for this one.
-    //
-    // A finished job still satisfies both conditions forever, so it has to be
-    // excluded explicitly or it never leaves this stage — the same guard
-    // "scheduled" and "pending_complete" already carry.
-    case "ready":
-      return (
-        !installed &&
-        normalizeSeda(job.sedaStatus) === "Approved" &&
-        job.paymentPercent >= 60
-      );
-
-    // Fully arranged: all five arrangement columns on Customer details are
-    // filled — teams, location/group, delivery run, stock details and a
-    // confirmed installation date. A date on its own is not enough, because
-    // the crew, the stock and the run are what make that date real.
-    //
-    // Half-planned jobs therefore do not appear here. They stay visible under
-    // the earlier stages, where the blank columns and each field's own remarks
-    // and status show what is still outstanding.
-    case "scheduled":
-      return (
-        !installed &&
-        isFullyPlanned(job, lookup) &&
-        (availability === "available" ||
-          availability === "pending" ||
-          availability === "not_set")
-      );
-
-    // Booked but not finished — the chase list. Three ways in: the customer
-    // pulled out, the date came and went with no sign-off, or it is
-    // installation day and the stock still is not delivered (the crew would
-    // arrive with nothing to fit).
-    //
-    // Undelivered stock deliberately does NOT count before the day itself. A
-    // job booked next week whose stock has not shipped yet is a normal
-    // Scheduled Installation, not an unfinished one; flagging it early filled
-    // this list with healthy bookings and double-counted them under both
-    // cards at once.
-    case "pending_complete":
-      return (
-        installationDate !== null &&
-        !installed &&
-        (isOutOfPlanning(job) ||
-          installationDate < todayIso ||
-          (installationDate === todayIso &&
-            job.deliveryStatus !== "delivered"))
-      );
-
-    case "complete":
-      return installed;
-
-    case "attention":
-      return needsAttention(job, todayIso, group);
-
-    // ALL_JOBS, and anything unrecognised, leaves the list untouched.
-    default:
-      return true;
-  }
+  // ALL_JOBS, and anything unrecognised, leaves the list untouched.
+  if (!PIPELINE_STAGES.some((item) => item.value === stage)) return true;
+  return pipelineStageOf(job, todayIso, lookup) === stage;
 }
 
 function applyJobUpdates(
@@ -1159,6 +1271,7 @@ function applyJobUpdates(
 type SharedOpsState = {
   groups: InstallationGroup[];
   deliveryRuns: DeliveryRun[];
+  warehouses: Warehouse[];
   teamResources: TeamResource[];
   teamWeekAssignments: TeamWeekAssignment[];
   jobUpdates: Record<string, JobUpdate>;
@@ -1328,47 +1441,10 @@ function useCalendarWeather(
     }
 
     async function loadWeather() {
-      const forecasts = await Promise.all(
-        Array.from(locations.values()).map(async ({ latitude, longitude }) => {
-          try {
-            const query = new URLSearchParams({
-              latitude: String(latitude),
-              longitude: String(longitude),
-              daily: "weather_code,precipitation_probability_max",
-              timezone: "Asia/Kuala_Lumpur",
-              forecast_days: "16",
-            });
-            const response = await fetch(
-              `https://api.open-meteo.com/v1/forecast?${query}`,
-            );
-            if (!response.ok) return null;
-            return (await response.json()) as {
-              daily?: {
-                time?: string[];
-                weather_code?: number[];
-                precipitation_probability_max?: number[];
-              };
-            };
-          } catch {
-            return null;
-          }
-        }),
-      );
-      const next: Record<
-        string,
-        { rainProbability: number; weatherCode: number }
-      > = {};
-      forecasts.forEach((forecast) => {
-        forecast?.daily?.time?.forEach((date, index) => {
-          const rainProbability =
-            forecast.daily?.precipitation_probability_max?.[index] ?? 0;
-          const weatherCode = forecast.daily?.weather_code?.[index] ?? 0;
-          const current = next[date];
-          if (!current || rainProbability > current.rainProbability) {
-            next[date] = { rainProbability, weatherCode };
-          }
-        });
-      });
+      // Worst-case merge across locations and the null handling both live
+      // in lib/calendar-weather, so the sign-in calendar and this one
+      // cannot drift apart on what a date's weather is.
+      const next = await fetchDailyWeather(Array.from(locations.values()));
       if (!cancelled) setCalendarWeather(next);
     }
 
@@ -1407,12 +1483,17 @@ function calendarCustomersForDate(
 ): InstallationJob[] {
   return jobs.filter((job) => {
     const customerDate = job.installationDate || job.preferredInstallationDate;
-    return (
-      customerDate === dateStr &&
-      groups.some((group) => group.jobIds.includes(job.id))
-    );
+    // A site worked on across several days — wiring split over three trips, a
+    // return for one part, an O&M callback — is one job with one
+    // installationDate, so matching that alone would show the crew on the last
+    // day only and leave the earlier trips off the calendar entirely.
+    const onThisDay =
+      customerDate === dateStr ||
+      (job.visits ?? []).some((visit) => visit.date === dateStr);
+    return onThisDay && groups.some((group) => group.jobIds.includes(job.id));
   });
 }
+
 
 // One month's worth of day cells — customer names, install/wiring team,
 // delivery run, weather risk, and public holidays — shared by the
@@ -1793,6 +1874,27 @@ function JobDetail({
                 label="Preferred date"
                 value={job.preferredInstallationDate || "Not provided"}
               />
+              {/* Only sites the crew returns to have these, so the row is
+                  absent — not empty — on an ordinary single-day job. */}
+              {(job.visits?.length ?? 0) > 0 && (
+                <SpecRow
+                  label="Return visits"
+                  value={job
+                    .visits!.slice()
+                    .sort((a, b) => a.date.localeCompare(b.date))
+                    .map((visit) =>
+                      [
+                        formatDateOnly(visit.date),
+                        visit.time,
+                        visit.kind,
+                      ]
+                        .filter(Boolean)
+                        .join(" · "),
+                    )
+                    .join("\n")}
+                  multiline
+                />
+              )}
               <SpecRow
                 label="Customer availability"
                 value={availabilityLabels[job.customerAvailabilityStatus]}
@@ -2056,13 +2158,22 @@ function SpecRow({
   label,
   value,
   emphasis = false,
+  // Opt-in, because every other row is a single value and collapsing its
+  // whitespace is the right default. Only set it where the value is a list
+  // whose line breaks carry meaning.
+  multiline = false,
 }: {
   label: string;
   value: string;
   emphasis?: boolean;
+  multiline?: boolean;
 }) {
   return (
-    <div className={`spec-row${emphasis ? " emphasis" : ""}`}>
+    <div
+      className={`spec-row${emphasis ? " emphasis" : ""}${
+        multiline ? " is-multiline" : ""
+      }`}
+    >
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
@@ -2107,6 +2218,7 @@ export default function DashboardPage() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [groups, setGroups] = useState<InstallationGroup[]>([]);
   const [deliveryRuns, setDeliveryRuns] = useState<DeliveryRun[]>([]);
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [teamResources, setTeamResources] =
     useState<TeamResource[]>(defaultTeamResources);
   const [teamWeekAssignments, setTeamWeekAssignments] = useState<
@@ -2218,6 +2330,8 @@ export default function DashboardPage() {
   const applySharedState = useCallback((state: SharedOpsState) => {
     setGroups(state.groups);
     setDeliveryRuns(state.deliveryRuns);
+    // Older saved states predate the warehouse list, so it can be absent.
+    setWarehouses(state.warehouses ?? []);
     setTeamResources(
       state.teamResources.length ? state.teamResources : defaultTeamResources,
     );
@@ -2237,6 +2351,7 @@ export default function DashboardPage() {
       const local: SharedOpsState = {
         groups: readLocalJson(GROUPS_STORAGE_KEY, []),
         deliveryRuns: readLocalJson(DELIVERY_RUNS_STORAGE_KEY, []),
+        warehouses: readLocalJson(WAREHOUSES_STORAGE_KEY, []),
         teamResources: readLocalJson(TEAMS_STORAGE_KEY, defaultTeamResources),
         teamWeekAssignments: readLocalJson(TEAM_WEEKS_STORAGE_KEY, []),
         jobUpdates: readLocalJson(STORAGE_KEY, {}),
@@ -2504,63 +2619,12 @@ export default function DashboardPage() {
   //
   // Keyed by date rather than built per month, so paging the calendar needs no
   // recomputation and the memo does not depend on which month is on screen.
-  const calendarDayDetails = useMemo(() => {
-    const assignmentsByGroup = new Map<string, TeamWeekAssignment[]>();
-    teamWeekAssignments.forEach((assignment) => {
-      const list = assignmentsByGroup.get(assignment.installationGroupId) ?? [];
-      list.push(assignment);
-      assignmentsByGroup.set(assignment.installationGroupId, list);
-    });
-
-    const teamById = new Map(teamResources.map((team) => [team.id, team]));
-    const details: Record<string, CalendarDayDetail> = {};
-    const dayFor = (key: string) =>
-      (details[key] ??= { teams: [], customers: [] });
-
-    // Crews are keyed off the date they are booked for, not off their group's
-    // customers. A crew is committed to that day whether or not anyone in the
-    // group has been pencilled in yet — reaching them through the customer
-    // list would hide a real booking behind an unset customer date.
-    teamWeekAssignments.forEach((assignment) => {
-      const key = assignment.startDate.slice(0, 10);
-      const team = teamById.get(assignment.teamId);
-      if (!key || !team) return;
-      const label = `${team.name}, ${teamRoleLabel(team.role)}`;
-      const day = dayFor(key);
-      if (!day.teams.includes(label)) day.teams.push(label);
-    });
-
-    jobs.forEach((job) => {
-      // Same rule the calendar's own day markers use, so a marked day and its
-      // card never disagree about who is installing that day.
-      const key = job.installationDate || job.preferredInstallationDate;
-      if (!key) return;
-
-      const group = groupByJobId.get(job.id);
-      // The crew's start time stands in as the installation time — the schema
-      // carries no per-customer clock. Only this customer's own group counts,
-      // and only a booking on this day: another group's crew being out today
-      // says nothing about when this customer is worked on. Earliest wins when
-      // both an installation and a wiring crew are booked.
-      const startTimes = (group ? (assignmentsByGroup.get(group.id) ?? []) : [])
-        .filter((assignment) => assignment.startDate.slice(0, 10) === key)
-        .map((assignment) => timeOfDay(assignment.startDate))
-        .filter((time): time is string => Boolean(time))
-        .sort();
-
-      dayFor(key).customers.push({
-        id: job.id,
-        name: formatPersonName(job.customerName),
-        stockDelivery: job.arrivalTime || null,
-        installTime: startTimes[0] ?? null,
-      });
-    });
-
-    Object.values(details).forEach((day) =>
-      day.customers.sort((a, b) => a.name.localeCompare(b.name)),
-    );
-    return details;
-  }, [jobs, groupByJobId, teamWeekAssignments, teamResources]);
+  // Built by lib/calendar-day-details so the sign-in screen's calendar and
+  // this one cannot disagree about a day.
+  const calendarDayDetails = useMemo(
+    () => buildCalendarDayDetails(jobs, groups, teamWeekAssignments),
+    [jobs, groups, teamWeekAssignments],
+  );
 
   // The pipeline narrowed by every filter except the status one: search, state
   // and 2nd payment month. Deliberately excludes status — that is the per-card
@@ -2646,10 +2710,13 @@ export default function DashboardPage() {
     // counted here: they stay listed on Customer Scheduling so their
     // availability and dates remain editable, so the cards have to describe
     // the same pool the table below shows.
+    // Completed installs stay in the counting pool so the Complete
+    // Installation card shows its real number instead of a nought that only
+    // fills in once clicked. Every other stage carries its own !installed
+    // guard, so admitting them here cannot inflate any other card.
     return jobs.filter(
       (job) =>
         hasPlanningEligibility(job) &&
-        !isCompleteInstallation(job, todayIso, groupByJobId.get(job.id)) &&
         !isOutOfPlanning(job) &&
         (!planningMonthFilter ||
           Boolean(job.secondPaymentDate?.startsWith(planningMonthFilter))) &&
@@ -2857,6 +2924,12 @@ export default function DashboardPage() {
     setDeliveryRuns(next);
     window.localStorage.setItem(DELIVERY_RUNS_STORAGE_KEY, JSON.stringify(next));
     persistOps({ deliveryRuns: next });
+  }
+
+  function saveWarehouses(next: Warehouse[]) {
+    setWarehouses(next);
+    window.localStorage.setItem(WAREHOUSES_STORAGE_KEY, JSON.stringify(next));
+    persistOps({ warehouses: next });
   }
 
   function saveTeamResources(next: TeamResource[]) {
@@ -3076,7 +3149,9 @@ export default function DashboardPage() {
 
       <main
         className={`app-shell${
-          view === "teams" || view === "delivery" ? " app-shell-wide" : ""
+          view === "teams" || view === "delivery" || view === "groups"
+            ? " app-shell-wide"
+            : ""
         }`}
       >
       <header className="topbar">
@@ -3274,14 +3349,16 @@ export default function DashboardPage() {
                   </option>
                 ))}
               </select>
-              <input
-                aria-label="Filter by 2nd payment month"
-                type="month"
-                value={secondPaymentMonthFilter}
-                onChange={(event) =>
-                  setSecondPaymentMonthFilter(event.target.value)
-                }
-              />
+              <label className="second-payment-month-filter">
+                <span>2nd payment month</span>
+                <input
+                  type="month"
+                  value={secondPaymentMonthFilter}
+                  onChange={(event) =>
+                    setSecondPaymentMonthFilter(event.target.value)
+                  }
+                />
+              </label>
               {secondPaymentMonthFilter && (
                 <button
                   className="icon-button"
@@ -3550,6 +3627,7 @@ export default function DashboardPage() {
             weekAssignments={teamWeekAssignments}
             deliveryRuns={deliveryRuns}
             onOpenJob={setSelectedId}
+            onSaveJob={saveJob}
             onGroupsChange={saveGroups}
             onTeamsChange={saveTeamResources}
             onWeekAssignmentsChange={saveTeamWeekAssignments}
@@ -3571,6 +3649,7 @@ export default function DashboardPage() {
         {view === "teams" && (
           <TeamPlanningView
             groups={groups}
+            weekAssignments={teamWeekAssignments}
             deliveryRuns={deliveryRuns}
             jobs={jobs}
             planningFilter={planningFilter}
@@ -3592,6 +3671,8 @@ export default function DashboardPage() {
             runs={deliveryRuns}
             jobs={jobs}
             groupByJobId={groupByJobId}
+            warehouses={warehouses}
+            onChangeWarehouses={saveWarehouses}
             onChange={saveDeliveryRuns}
             onUpdateJob={(job) => void saveJob(job)}
             pinnedJobIds={pinnedJobIds}
@@ -3855,6 +3936,7 @@ export default function DashboardPage() {
                 weekAssignments={teamWeekAssignments}
                 deliveryRuns={deliveryRuns}
                 onOpenJob={setSelectedId}
+                onSaveJob={saveJob}
                 onGroupsChange={saveGroups}
                 onTeamsChange={saveTeamResources}
                 onWeekAssignmentsChange={saveTeamWeekAssignments}
@@ -3946,6 +4028,7 @@ function InstallationGroupsView({
   weekAssignments,
   deliveryRuns,
   onOpenJob,
+  onSaveJob,
   onGroupsChange,
   onTeamsChange,
   onWeekAssignmentsChange,
@@ -3963,6 +4046,7 @@ function InstallationGroupsView({
   weekAssignments: TeamWeekAssignment[];
   deliveryRuns: DeliveryRun[];
   onOpenJob: (id: string) => void;
+  onSaveJob: (job: InstallationJob) => void;
   onGroupsChange: (groups: InstallationGroup[]) => void;
   onTeamsChange: (teams: TeamResource[]) => void;
   onWeekAssignmentsChange: (assignments: TeamWeekAssignment[]) => void;
@@ -4010,6 +4094,437 @@ function InstallationGroupsView({
   // Team management rows start read-only; clicking one toggles just that team
   // into editable fields, the same way a delivery run's row works.
   const [editingTeamIds, setEditingTeamIds] = useState<Set<string>>(new Set());
+
+  // --- Customer schedule table: one row per scheduled customer, shaped like
+  // the crew's planning sheet. The team fields live on the group, so editing
+  // any one customer's row updates every customer that crew installs that day
+  // — the same way one sheet block covers all its rows.
+  const [editingRowKeys, setEditingRowKeys] = useState<Set<string>>(new Set());
+  // Groups added from this table in this session, newest first. Only affects
+  // ordering — nothing about them is stored differently.
+  const [newRowGroupIds, setNewRowGroupIds] = useState<string[]>([]);
+  // Empty means "every month" / "every year" — the table opens showing
+  // everything rather than silently hiding work behind a default period.
+  const [monthFilter, setMonthFilter] = useState("");
+  const [yearFilter, setYearFilter] = useState("");
+  const [customerQuery, setCustomerQuery] = useState("");
+
+  // Read on mount rather than in the initialiser: this component renders on
+  // the server too, where localStorage does not exist.
+  const [pinnedWeekKeys, setPinnedWeekKeys] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(PINNED_WEEKS_STORAGE_KEY);
+      if (saved) setPinnedWeekKeys(new Set(JSON.parse(saved) as string[]));
+    } catch {
+      // A corrupt or unreadable entry just means nothing is pinned.
+    }
+  }, []);
+
+  function togglePinnedWeek(blockKey: string) {
+    setPinnedWeekKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(blockKey)) next.delete(blockKey);
+      else next.add(blockKey);
+      try {
+        window.localStorage.setItem(
+          PINNED_WEEKS_STORAGE_KEY,
+          JSON.stringify(Array.from(next)),
+        );
+      } catch {
+        // Storage being unavailable must not stop the pin from working for
+        // the rest of this session.
+      }
+      return next;
+    });
+  }
+
+  // Offered years come from the data, so the dropdown never lists a year with
+  // nothing in it, and a row added for next year appears in it straight away.
+  const availableYears = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          groups
+            .map((group) => group.installationDate?.slice(0, 4))
+            .filter((year): year is string => Boolean(year)),
+        ),
+      ).sort(),
+    [groups],
+  );
+
+  const MONTH_OPTIONS = useMemo(
+    () =>
+      Array.from({ length: 12 }, (_, index) => ({
+        value: String(index + 1).padStart(2, "0"),
+        label: new Intl.DateTimeFormat("en-MY", { month: "long" }).format(
+          new Date(2000, index, 1),
+        ),
+      })),
+    [],
+  );
+  const [groupMemberDraft, setGroupMemberDraft] = useState<
+    Record<string, string>
+  >({});
+  const [groupCarDraft, setGroupCarDraft] = useState<Record<string, string>>(
+    {},
+  );
+  // Which row/field is mid-way through typing a brand-new team name after
+  // picking "+ Add new…" in its dropdown.
+  const [newTeamDraft, setNewTeamDraft] = useState<{
+    rowKey: string;
+    field: "installationTeam" | "wiringTeam";
+    value: string;
+  } | null>(null);
+
+  const scheduleRows = useMemo(() => {
+    const jobById = new Map(jobs.map((job) => [job.id, job]));
+    return groups
+      .filter((group) => group.installationDate)
+      .filter(
+        (group) =>
+          (!yearFilter || group.installationDate.slice(0, 4) === yearFilter) &&
+          (!monthFilter || group.installationDate.slice(5, 7) === monthFilter),
+      )
+      .flatMap((group) =>
+        // A crew booked for a week before anyone is assigned to it still gets
+        // a row — otherwise a team added here would vanish the moment it was
+        // created, with nothing on screen to fill in.
+        (group.jobIds.length ? group.jobIds : [""]).map((jobId) => ({
+          rowKey: `${group.id}|${jobId}`,
+          group,
+          job: jobId ? (jobById.get(jobId) ?? null) : null,
+          jobId,
+          // What a heading band covers: one crew, working one week, under one
+          // supervisor. Any of those changing starts a new band.
+          blockKey: [
+            weekBounds(group.installationDate)?.start ?? "",
+            group.teamLabel ?? "",
+            group.installationTeam,
+            group.wiringTeam,
+            group.supervisor,
+          ].join("|"),
+        })),
+      )
+      // Applied after the rows are built, not to the groups, because the name
+      // being searched for lives on the customer rather than on the crew. A
+      // crew row with nobody on it can never match a name, so it drops out
+      // while a search is running.
+      .filter((row) => {
+        const query = customerQuery.trim().toLowerCase();
+        if (!query) return true;
+        return (row.job?.customerName ?? "").toLowerCase().includes(query);
+      })
+      // Crew first, date within it: every row a given crew works sits together
+      // in the order they go out, which is how the schedule sheet itself is
+      // laid out. Rows with no team label sort last rather than first, so a
+      // blank does not head the table.
+      .sort((a, b) => {
+        const label = (row: typeof a) => row.group.teamLabel?.trim() ?? "";
+        const unlabelled = (row: typeof a) => (label(row) ? 0 : 1);
+        // Rows added in this session sit at the very top, newest first, so a
+        // team you just added is in front of you rather than sorted away into
+        // the middle of the table while you are still filling it in. They take
+        // their natural place on the next load.
+        const pinned = (row: typeof a) => {
+          const at = newRowGroupIds.indexOf(row.group.id);
+          return at === -1 ? Number.MAX_SAFE_INTEGER : at;
+        };
+        // A pinned week band and everything under it float above the rest,
+        // keeping the week being worked on in view. Rows added this session
+        // still come first — those are mid-edit and need to be reachable.
+        const pinnedWeek = (row: typeof a) =>
+          pinnedWeekKeys.has(row.blockKey) ? 0 : 1;
+        const weekStart = (row: typeof a) =>
+          weekBounds(row.group.installationDate)?.start ?? "";
+        return (
+          pinned(a) - pinned(b) ||
+          pinnedWeek(a) - pinnedWeek(b) ||
+          unlabelled(a) - unlabelled(b) ||
+          // Week is the outer grouping, exactly as the schedule sheet lays it
+          // out: one week bar, every team's block underneath it. So the whole
+          // of the current week sits at the top of the table, whichever team
+          // each block belongs to, and older weeks follow. Newest first, so
+          // b before a.
+          weekStart(b).localeCompare(weekStart(a)) ||
+          // Numeric-aware so "Team 10" follows "Team 9" instead of "Team 1".
+          label(a).localeCompare(label(b), undefined, { numeric: true }) ||
+          a.group.installationTeam.localeCompare(b.group.installationTeam) ||
+          a.group.wiringTeam.localeCompare(b.group.wiringTeam) ||
+          // Days inside a week still read forwards, Monday to Saturday,
+          // because that is the order the crew works them.
+          a.group.installationDate.localeCompare(b.group.installationDate) ||
+          groupStartTime(a.group.id).localeCompare(groupStartTime(b.group.id)) ||
+          (a.job?.customerName ?? "").localeCompare(b.job?.customerName ?? "")
+        );
+      });
+  }, [
+    groups,
+    jobs,
+    weekAssignments,
+    newRowGroupIds,
+    monthFilter,
+    yearFilter,
+    customerQuery,
+    pinnedWeekKeys,
+  ]);
+
+  // Dropdown options: the registered teams plus any name already written on a
+  // group, so a value imported from the sheet is always present in its own
+  // dropdown even if nobody registered it as a team.
+  const installationTeamNames = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...teams
+            .filter((team) => !isWiringRole(team.role))
+            .map((team) => team.name),
+          ...groups.map((group) => group.installationTeam).filter(Boolean),
+        ]),
+      ).sort(),
+    [teams, groups],
+  );
+  const wiringTeamNames = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...teams
+            .filter((team) => isWiringRole(team.role))
+            .map((team) => team.name),
+          ...groups.map((group) => group.wiringTeam).filter(Boolean),
+        ]),
+      ).sort(),
+    [teams, groups],
+  );
+  const memberSuggestions = useMemo(
+    () =>
+      Array.from(
+        new Set(groups.flatMap((group) => group.wiringMembers ?? [])),
+      ).sort(),
+    [groups],
+  );
+  const carSuggestions = useMemo(
+    () => Array.from(new Set(groups.flatMap((group) => group.cars ?? []))).sort(),
+    [groups],
+  );
+
+  function updateGroupFields(
+    groupId: string,
+    patch: Partial<InstallationGroup>,
+  ) {
+    onGroupsChange(
+      groups.map((group) =>
+        group.id === groupId ? { ...group, ...patch } : group,
+      ),
+    );
+  }
+
+  // A blank crew row, dated today so it lands in the current week rather than
+  // being filtered out for having no date at all. Everything else is left
+  // empty for the user to fill in, and the row opens in edit mode.
+  function addTeamRow() {
+    const today = malaysiaToday();
+    const group: InstallationGroup = {
+      id: crypto.randomUUID(),
+      name: `New team · ${today}`,
+      area: "",
+      installationDate: today,
+      installationEndDate: today,
+      jobIds: [],
+      installationTeam: "",
+      wiringTeam: "",
+      supervisor: "",
+      teamLabel: "",
+      wiringMembers: [],
+      cars: [],
+      remark: "",
+    };
+    onGroupsChange([...groups, group]);
+    setNewRowGroupIds((previous) => [group.id, ...previous]);
+    setEditingRowKeys((previous) => new Set(previous).add(`${group.id}|`));
+  }
+
+  /**
+   * Remove one row from the schedule.
+   *
+   * Deliberately two different actions behind one button, because a row means
+   * two different things:
+   *
+   * - A row with a customer is that customer's place on a crew's booking, so
+   *   removing it takes them off that booking and leaves the crew, its members
+   *   and the other customers alone. The customer keeps their installation
+   *   date; they are only unassigned from this crew.
+   * - A row with no customer IS the crew booking, so removing it deletes the
+   *   booking outright.
+   *
+   * Removing the last customer therefore leaves the crew behind as an empty
+   * row rather than silently discarding the week's crew, car and skylift. A
+   * second Remove on that row clears it.
+   */
+  function removeScheduleRow(group: InstallationGroup, jobId: string) {
+    if (jobId) {
+      onGroupsChange(
+        groups.map((item) =>
+          item.id === group.id
+            ? { ...item, jobIds: item.jobIds.filter((id) => id !== jobId) }
+            : item,
+        ),
+      );
+      setEditingRowKeys((previous) => {
+        const next = new Set(previous);
+        next.delete(`${group.id}|${jobId}`);
+        return next;
+      });
+      return;
+    }
+    removeTeamRow(group.id);
+  }
+
+  // Its week assignment goes too, or the calendar would keep reading a start
+  // time for a crew that no longer exists.
+  function removeTeamRow(groupId: string) {
+    onGroupsChange(groups.filter((group) => group.id !== groupId));
+    onWeekAssignmentsChange(
+      weekAssignments.filter((item) => item.installationGroupId !== groupId),
+    );
+    setNewRowGroupIds((previous) => previous.filter((id) => id !== groupId));
+    setEditingRowKeys((previous) => {
+      const next = new Set(previous);
+      next.delete(`${groupId}|`);
+      return next;
+    });
+  }
+
+  function toggleRowEdit(rowKey: string) {
+    setEditingRowKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  }
+
+  function groupStartTime(groupId: string): string {
+    const assignment = weekAssignments.find(
+      (item) => item.installationGroupId === groupId,
+    );
+    return assignment?.startDate?.split("T")[1]?.slice(0, 5) ?? "";
+  }
+
+  // Date and time edits go to two places on purpose: the date is the group's
+  // own field, but the clock lives on the week assignment (the calendar reads
+  // it from there). A group that never got an assignment gets one created so
+  // its time is not silently dropped.
+  function setGroupSchedule(
+    group: InstallationGroup,
+    date: string,
+    time: string,
+  ) {
+    const nextDate = date || group.installationDate;
+    if (date) {
+      updateGroupFields(group.id, {
+        installationDate: date,
+        installationEndDate: date,
+      });
+    }
+    const nextTime = time || groupStartTime(group.id) || "09:00";
+    const stamp = `${nextDate}T${nextTime}`;
+    const existing = weekAssignments.find(
+      (item) => item.installationGroupId === group.id,
+    );
+    if (existing) {
+      onWeekAssignmentsChange(
+        weekAssignments.map((item) =>
+          item.id === existing.id ? { ...item, startDate: stamp } : item,
+        ),
+      );
+    } else {
+      const team =
+        teams.find(
+          (item) =>
+            item.name === group.installationTeam && !isWiringRole(item.role),
+        ) ?? teams.find((item) => item.name === group.installationTeam);
+      onWeekAssignmentsChange([
+        ...weekAssignments,
+        {
+          id: crypto.randomUUID(),
+          teamId: team?.id ?? "",
+          startDate: stamp,
+          installationGroupId: group.id,
+        },
+      ]);
+    }
+  }
+
+  function addGroupListItem(
+    group: InstallationGroup,
+    key: "wiringMembers" | "cars",
+    value: string,
+  ) {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const current = group[key] ?? [];
+    if (current.includes(trimmed)) return;
+    updateGroupFields(group.id, { [key]: [...current, trimmed] });
+  }
+
+  function removeGroupListItem(
+    group: InstallationGroup,
+    key: "wiringMembers" | "cars",
+    value: string,
+  ) {
+    updateGroupFields(group.id, {
+      [key]: (group[key] ?? []).filter((item) => item !== value),
+    });
+  }
+
+  // Choosing "+ Add new…" registers the name as a real team so it appears in
+  // every other row's dropdown from then on, not just this one's.
+  function commitNewTeam(
+    group: InstallationGroup,
+    field: "installationTeam" | "wiringTeam",
+    name: string,
+  ) {
+    const trimmed = name.trim();
+    if (trimmed) {
+      if (!teams.some((team) => team.name === trimmed)) {
+        onTeamsChange([
+          ...teams,
+          {
+            id: crypto.randomUUID(),
+            name: trimmed,
+            role:
+              field === "installationTeam"
+                ? "installer_ar17"
+                : "wiring_eternalgy",
+            baseLocation: "",
+            contact: "",
+            members: [],
+          },
+        ]);
+      }
+      updateGroupFields(group.id, { [field]: trimmed });
+    }
+    setNewTeamDraft(null);
+  }
+
+  function updateSkylift(
+    group: InstallationGroup,
+    index: number,
+    patch: Partial<SkyliftBooking>,
+  ) {
+    const list = [...(group.skylifts ?? [])];
+    list[index] = { ...list[index], ...patch };
+    updateGroupFields(group.id, { skylifts: list });
+  }
+
+  function skyliftLabel(entry: SkyliftBooking) {
+    const from = entry.from ? formatDateOnly(entry.from) : "";
+    const until = entry.until ? ` – ${formatDateOnly(entry.until)}` : "";
+    return [entry.name, from ? `${from}${until}` : ""]
+      .filter(Boolean)
+      .join(" · ");
+  }
 
   function toggleTeamEdit(teamId: string) {
     const wasEditing = editingTeamIds.has(teamId);
@@ -4417,8 +4932,7 @@ function InstallationGroupsView({
     (job) =>
       !assignedJobIds.has(job.id) &&
       !isCompleteInstallation(job, todayIso) &&
-      (job.customerAvailabilityStatus === "available" ||
-        job.customerAvailabilityStatus === "pending"),
+      isSchedulingInPlay(job),
   );
   const liveGroupSuggestions = useMemo(
     () => buildLocationSuggestions(ungroupedSchedulingReadyJobs, jobs),
@@ -4507,17 +5021,64 @@ function InstallationGroupsView({
             <p>Customers grouped by location and installation date.</p>
           </div>
           <div className="planning-heading-actions">
-            {/* The way back into an existing group: Schedule & assign holds
-                the week cards whose drawer edits dates, teams and customers. */}
-            {onOpenSchedule && (
-              <button className="button secondary" onClick={onOpenSchedule}>
-                <CalendarDays size={16} />
-                Schedule &amp; assign
-              </button>
-            )}
-            <button className="button primary" onClick={onCreate}>
+            <div className="schedule-filters">
+              <label className="schedule-search">
+                <span>Customer</span>
+                <input
+                  type="search"
+                  value={customerQuery}
+                  onChange={(event) => setCustomerQuery(event.target.value)}
+                  placeholder="Search name"
+                  aria-label="Search customer name"
+                />
+              </label>
+              <label>
+                <span>Month</span>
+                <select
+                  value={monthFilter}
+                  onChange={(event) => setMonthFilter(event.target.value)}
+                  aria-label="Filter by month"
+                >
+                  <option value="">All months</option>
+                  {MONTH_OPTIONS.map((month) => (
+                    <option key={month.value} value={month.value}>
+                      {month.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Year</span>
+                <select
+                  value={yearFilter}
+                  onChange={(event) => setYearFilter(event.target.value)}
+                  aria-label="Filter by year"
+                >
+                  <option value="">All years</option>
+                  {availableYears.map((year) => (
+                    <option key={year} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {(monthFilter || yearFilter || customerQuery) && (
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => {
+                    setMonthFilter("");
+                    setYearFilter("");
+                    setCustomerQuery("");
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <button className="button primary" onClick={addTeamRow}>
               <Plus size={16} />
-              Create group
+              Add Team
             </button>
           </div>
         </div>
@@ -4527,102 +5088,311 @@ function InstallationGroupsView({
         <section className="unified-team-management">
           <div className="group-header">
             <div>
-              <h3>Team management</h3>
-              <p>Manage each team, its members, and weekly locations in one row.</p>
+              <h3>Installation teams</h3>
+              <p>
+                One row per scheduled customer — team, crews, members, car and
+                skylift, the way the schedule sheet lays them out. Grouped by
+                week, newest first, then by team and crew. Team fields are
+                shared by every customer under the same crew and day.
+              </p>
             </div>
-          </div>
-          <div className="team-create-row">
-            <button
-              className="button primary"
-              onClick={addBlankTeamResource}
-            >
-              Add team
-            </button>
           </div>
           <div className="table-wrap unified-team-table">
             <table>
+              <colgroup>
+                <col className="col-customer" />
+                <col className="col-team" />
+                <col className="col-install" />
+                <col className="col-wiring" />
+                <col className="col-members" />
+                <col className="col-supervisor" />
+                <col className="col-car" />
+                <col className="col-skylift" />
+                <col className="col-datetime" />
+                <col className="col-remark" />
+                <col className="col-actions" />
+              </colgroup>
               <thead>
                 <tr>
+                  <th>Customer</th>
                   <th>Team</th>
-                  <th>Role</th>
-                  <th>Members</th>
+                  <th>Installation Team</th>
+                  <th>Wiring Team</th>
+                  <th>Wiring Team Members</th>
                   <th>Site supervisor</th>
+                  <th>Car</th>
+                  <th>Skylift</th>
                   <th>Date &amp; time</th>
-                  <th>Customer Group</th>
+                  <th>Remark</th>
                   <th aria-label="Actions" />
                 </tr>
               </thead>
               <tbody>
-                {orderedTeams.map((team) => {
-                  const rowDraft = getRowAssignmentDraft(team.id);
-                  const teamAssignments = assignmentsForTeam(team.id);
-                  const isEditing = editingTeamIds.has(team.id);
+                {scheduleRows.map(({ rowKey, group, job, jobId, blockKey }, index) => {
+                  // A band whenever the crew, the week or the supervisor
+                  // changes — the sheet's red week bar and the cyan crew bar
+                  // under it, folded into one row.
+                  const startsBlock =
+                    index === 0 || scheduleRows[index - 1].blockKey !== blockKey;
+                  const isEditing = editingRowKeys.has(rowKey);
                   const stopWhenEditing = isEditing
                     ? (event: React.MouseEvent) => event.stopPropagation()
                     : undefined;
-                  const members = team.members ?? [];
-                  // "Add" moves the draft date onto the assignments and clears
-                  // the draft, so a pinned row has a date even though its draft
-                  // is empty. Read the committed dates first and fall back to
-                  // the draft, or the Date & time column reads "Not set" for a
-                  // row that plainly has one.
-                  const assignedDateLabel = Array.from(
-                    new Set(
-                      teamAssignments
-                        .map(({ assignment }) => assignment.startDate)
-                        .filter(Boolean),
-                    ),
-                  )
-                    .sort()
-                    .map((startDate) => formatAssignmentStamp(startDate))
-                    .join("; ");
+                  const wiringMembers = group.wiringMembers ?? [];
+                  const cars = group.cars ?? [];
+                  const skylifts = group.skylifts ?? [];
+                  const startTime = groupStartTime(group.id);
+                  // Null on the customer's primary installation day; the
+                  // return trip itself on any later day the crew goes back.
+                  const rowVisit = job?.visits?.find(
+                    (visit) => visit.date === group.installationDate,
+                  );
+                  const ownRemark =
+                    (rowVisit ? rowVisit.notes : job?.installationRemarks) ?? "";
+                  // No customer on the row: the booking's own note is all
+                  // there is. A return trip: its own note and never the
+                  // booking's, because it is about that day's visit. Otherwise
+                  // the customer's note, falling back to the one the booking
+                  // was created with until they are given their own.
+                  const rowRemark = !job
+                    ? (group.remark ?? "")
+                    : rowVisit
+                      ? ownRemark
+                      : ownRemark || (group.remark ?? "");
+                  const addingInstall =
+                    newTeamDraft?.rowKey === rowKey &&
+                    newTeamDraft.field === "installationTeam";
+                  const addingWiring =
+                    newTeamDraft?.rowKey === rowKey &&
+                    newTeamDraft.field === "wiringTeam";
                   return (
+                    <Fragment key={rowKey}>
+                    {startsBlock && (
+                      <tr
+                        className={`schedule-band${
+                          pinnedWeekKeys.has(blockKey) ? " is-pinned" : ""
+                        }`}
+                      >
+                        <th colSpan={11} scope="colgroup">
+                          <button
+                            type="button"
+                            className="schedule-band-pin"
+                            aria-pressed={pinnedWeekKeys.has(blockKey)}
+                            aria-label={`${
+                              pinnedWeekKeys.has(blockKey) ? "Unpin" : "Pin"
+                            } week ${weekRangeLabel(group.installationDate)}`}
+                            title={
+                              pinnedWeekKeys.has(blockKey)
+                                ? "Unpin this week"
+                                : "Pin this week to the top"
+                            }
+                            onClick={() => togglePinnedWeek(blockKey)}
+                          >
+                            {pinnedWeekKeys.has(blockKey) ? (
+                              <PinOff size={14} />
+                            ) : (
+                              <Pin size={14} />
+                            )}
+                          </button>
+                          <span className="schedule-band-week">
+                            Week {weekRangeLabel(group.installationDate)}
+                          </span>
+                          <span className="schedule-band-crew">
+                            {[
+                              group.teamLabel,
+                              // A lone dash is how the sheet writes "nobody
+                              // assigned", so it reads as absent here too
+                              // rather than as a crew called "-".
+                              isPlaceholder(group.installationTeam)
+                                ? ""
+                                : `Install: ${group.installationTeam}`,
+                              isPlaceholder(group.wiringTeam)
+                                ? ""
+                                : `Wiring: ${group.wiringTeam}`,
+                              isPlaceholder(group.supervisor)
+                                ? ""
+                                : `Site Supervisor: ${group.supervisor}`,
+                            ]
+                              .filter(Boolean)
+                              .join("  ·  ")}
+                          </span>
+                        </th>
+                      </tr>
+                    )}
                     <tr
-                      key={team.id}
-                      className={[
-                        teamAssignments.length > 0 ? "team-row-assigned" : "",
-                        isEditing ? "selected" : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" ")}
-                      onClick={() => toggleTeamEdit(team.id)}
+                      className={isEditing ? "selected" : ""}
+                      onClick={() => toggleRowEdit(rowKey)}
                     >
                       <td onClick={stopWhenEditing}>
-                        {isEditing ? (
-                          <input
-                            value={team.name}
-                            onChange={(event) =>
-                              updateTeam(team.id, { name: event.target.value })
-                            }
-                            aria-label={`Edit ${team.name} name`}
-                          />
+                        {job ? (
+                          <button
+                            type="button"
+                            className="link-button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onOpenJob(jobId);
+                            }}
+                          >
+                            {formatPersonName(job.customerName)}
+                          </button>
                         ) : (
-                          <span className="run-field-readout">
-                            {team.name || "Unnamed team"}
+                          // Either a crew booked before anyone was assigned to
+                          // it, or a customer that has since dropped out of the
+                          // pipeline — neither is a link to anywhere.
+                          <span className="run-field-readout is-empty">
+                            {jobId ? "Customer not in pipeline" : "No customer yet"}
                           </span>
                         )}
                       </td>
                       <td onClick={stopWhenEditing}>
                         {isEditing ? (
-                          <select
-                            value={team.role}
+                          <input
+                            value={group.teamLabel ?? ""}
                             onChange={(event) =>
-                              updateTeam(team.id, {
-                                role: event.target.value as TeamResource["role"],
+                              updateGroupFields(group.id, {
+                                teamLabel: event.target.value,
                               })
                             }
-                            aria-label={`${team.name} role`}
-                          >
-                            {TEAM_ROLES.map((item) => (
-                              <option key={item.value} value={item.value}>
-                                {item.label}
-                              </option>
-                            ))}
-                          </select>
+                            placeholder="Team 1"
+                            aria-label="Team label"
+                          />
                         ) : (
                           <span className="run-field-readout">
-                            {TEAM_ROLES.find((item) => item.value === team.role)
-                              ?.label ?? team.role}
+                            {group.teamLabel || "—"}
+                          </span>
+                        )}
+                      </td>
+                      <td onClick={stopWhenEditing}>
+                        {isEditing ? (
+                          addingInstall ? (
+                            <input
+                              autoFocus
+                              value={newTeamDraft.value}
+                              onChange={(event) =>
+                                setNewTeamDraft({
+                                  rowKey,
+                                  field: "installationTeam",
+                                  value: event.target.value,
+                                })
+                              }
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  commitNewTeam(
+                                    group,
+                                    "installationTeam",
+                                    newTeamDraft.value,
+                                  );
+                                }
+                                if (event.key === "Escape") setNewTeamDraft(null);
+                              }}
+                              onBlur={() =>
+                                commitNewTeam(
+                                  group,
+                                  "installationTeam",
+                                  newTeamDraft.value,
+                                )
+                              }
+                              placeholder="New installation team"
+                              aria-label="New installation team name"
+                            />
+                          ) : (
+                            <select
+                              value={group.installationTeam}
+                              onChange={(event) => {
+                                if (event.target.value === "__add__") {
+                                  setNewTeamDraft({
+                                    rowKey,
+                                    field: "installationTeam",
+                                    value: "",
+                                  });
+                                  return;
+                                }
+                                updateGroupFields(group.id, {
+                                  installationTeam: event.target.value,
+                                });
+                              }}
+                              aria-label="Installation team"
+                            >
+                              <option value="">Not set</option>
+                              {installationTeamNames.map((name) => (
+                                <option key={name} value={name}>
+                                  {name}
+                                </option>
+                              ))}
+                              <option value="__add__">+ Add new…</option>
+                            </select>
+                          )
+                        ) : (
+                          <span className="run-field-readout">
+                            {group.installationTeam || "Not set"}
+                          </span>
+                        )}
+                      </td>
+                      <td onClick={stopWhenEditing}>
+                        {isEditing ? (
+                          addingWiring ? (
+                            <input
+                              autoFocus
+                              value={newTeamDraft.value}
+                              onChange={(event) =>
+                                setNewTeamDraft({
+                                  rowKey,
+                                  field: "wiringTeam",
+                                  value: event.target.value,
+                                })
+                              }
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  commitNewTeam(
+                                    group,
+                                    "wiringTeam",
+                                    newTeamDraft.value,
+                                  );
+                                }
+                                if (event.key === "Escape") setNewTeamDraft(null);
+                              }}
+                              onBlur={() =>
+                                commitNewTeam(
+                                  group,
+                                  "wiringTeam",
+                                  newTeamDraft.value,
+                                )
+                              }
+                              placeholder="New wiring team"
+                              aria-label="New wiring team name"
+                            />
+                          ) : (
+                            <select
+                              value={group.wiringTeam}
+                              onChange={(event) => {
+                                if (event.target.value === "__add__") {
+                                  setNewTeamDraft({
+                                    rowKey,
+                                    field: "wiringTeam",
+                                    value: "",
+                                  });
+                                  return;
+                                }
+                                updateGroupFields(group.id, {
+                                  wiringTeam: event.target.value,
+                                });
+                              }}
+                              aria-label="Wiring team"
+                            >
+                              <option value="">Not set</option>
+                              {wiringTeamNames.map((name) => (
+                                <option key={name} value={name}>
+                                  {name}
+                                </option>
+                              ))}
+                              <option value="__add__">+ Add new…</option>
+                            </select>
+                          )
+                        ) : (
+                          <span className="run-field-readout">
+                            {group.wiringTeam || "Not set"}
                           </span>
                         )}
                       </td>
@@ -4630,13 +5400,19 @@ function InstallationGroupsView({
                         {isEditing ? (
                           <div className="member-tag-input">
                             <div className="member-tag-list">
-                              {members.map((member) => (
+                              {wiringMembers.map((member) => (
                                 <span className="member-tag" key={member}>
                                   {member}
                                   <button
                                     type="button"
                                     aria-label={`Remove ${member}`}
-                                    onClick={() => removeMemberTag(team.id, member)}
+                                    onClick={() =>
+                                      removeGroupListItem(
+                                        group,
+                                        "wiringMembers",
+                                        member,
+                                      )
+                                    }
                                   >
                                     <X size={12} />
                                   </button>
@@ -4645,27 +5421,46 @@ function InstallationGroupsView({
                             </div>
                             <div className="member-tag-add">
                               <input
-                                value={memberDraft[team.id] ?? ""}
+                                list="wiring-member-options"
+                                value={groupMemberDraft[group.id] ?? ""}
                                 onChange={(event) =>
-                                  setMemberDraft((prev) => ({
+                                  setGroupMemberDraft((prev) => ({
                                     ...prev,
-                                    [team.id]: event.target.value,
+                                    [group.id]: event.target.value,
                                   }))
                                 }
                                 onKeyDown={(event) => {
                                   if (event.key === "Enter") {
                                     event.preventDefault();
-                                    addMemberTag(team.id);
+                                    addGroupListItem(
+                                      group,
+                                      "wiringMembers",
+                                      groupMemberDraft[group.id] ?? "",
+                                    );
+                                    setGroupMemberDraft((prev) => ({
+                                      ...prev,
+                                      [group.id]: "",
+                                    }));
                                   }
                                 }}
-                                placeholder="Add member name"
-                                aria-label={`Add member to ${team.name}`}
+                                placeholder="Add member"
+                                aria-label="Add wiring team member"
                               />
                               <button
                                 type="button"
                                 className="icon-button"
-                                aria-label={`Add member to ${team.name}`}
-                                onClick={() => addMemberTag(team.id)}
+                                aria-label="Add wiring team member"
+                                onClick={() => {
+                                  addGroupListItem(
+                                    group,
+                                    "wiringMembers",
+                                    groupMemberDraft[group.id] ?? "",
+                                  );
+                                  setGroupMemberDraft((prev) => ({
+                                    ...prev,
+                                    [group.id]: "",
+                                  }));
+                                }}
                               >
                                 <Plus size={14} />
                               </button>
@@ -4673,183 +5468,306 @@ function InstallationGroupsView({
                           </div>
                         ) : (
                           <span className="run-field-readout">
-                            {members.length > 0
-                              ? members.join(", ")
-                              : "No members"}
+                            {wiringMembers.length > 0
+                              ? wiringMembers.join(", ")
+                              : "—"}
                           </span>
                         )}
                       </td>
                       <td onClick={stopWhenEditing}>
                         {isEditing ? (
                           <input
-                            value={team.siteSupervisor ?? ""}
+                            value={group.supervisor}
                             onChange={(event) =>
-                              updateTeam(team.id, {
-                                siteSupervisor: event.target.value,
+                              updateGroupFields(group.id, {
+                                supervisor: event.target.value,
                               })
                             }
                             placeholder="Supervisor name"
-                            aria-label={`${team.name} site supervisor`}
+                            aria-label="Site supervisor"
                           />
                         ) : (
                           <span className="run-field-readout">
-                            {team.siteSupervisor || "Not assigned"}
+                            {group.supervisor || "Not assigned"}
                           </span>
                         )}
                       </td>
                       <td onClick={stopWhenEditing}>
                         {isEditing ? (
-                          // The committed date is seeded into the input on
-                          // open, so the box itself states when the team is
-                          // going out — no separate line above restating it.
-                          <input
-                            type="datetime-local"
-                            value={rowDraft.startDate}
-                            onChange={(event) =>
-                              updateRowAssignmentDraft(team.id, {
-                                startDate: event.target.value,
-                              })
-                            }
-                            aria-label={`${team.name} assignment date and time`}
-                          />
+                          <div className="member-tag-input">
+                            <div className="member-tag-list">
+                              {cars.map((car) => (
+                                <span className="member-tag" key={car}>
+                                  {car}
+                                  <button
+                                    type="button"
+                                    aria-label={`Remove ${car}`}
+                                    onClick={() =>
+                                      removeGroupListItem(group, "cars", car)
+                                    }
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                            <div className="member-tag-add">
+                              <input
+                                list="car-options"
+                                value={groupCarDraft[group.id] ?? ""}
+                                onChange={(event) =>
+                                  setGroupCarDraft((prev) => ({
+                                    ...prev,
+                                    [group.id]: event.target.value,
+                                  }))
+                                }
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") {
+                                    event.preventDefault();
+                                    addGroupListItem(
+                                      group,
+                                      "cars",
+                                      groupCarDraft[group.id] ?? "",
+                                    );
+                                    setGroupCarDraft((prev) => ({
+                                      ...prev,
+                                      [group.id]: "",
+                                    }));
+                                  }
+                                }}
+                                placeholder="Add car"
+                                aria-label="Add car"
+                              />
+                              <button
+                                type="button"
+                                className="icon-button"
+                                aria-label="Add car"
+                                onClick={() => {
+                                  addGroupListItem(
+                                    group,
+                                    "cars",
+                                    groupCarDraft[group.id] ?? "",
+                                  );
+                                  setGroupCarDraft((prev) => ({
+                                    ...prev,
+                                    [group.id]: "",
+                                  }));
+                                }}
+                              >
+                                <Plus size={14} />
+                              </button>
+                            </div>
+                          </div>
                         ) : (
                           <span className="run-field-readout">
-                            {assignedDateLabel ||
-                              formatAssignmentStamp(rowDraft.startDate)}
+                            {cars.length > 0 ? cars.join(", ") : "—"}
                           </span>
                         )}
                       </td>
                       <td onClick={stopWhenEditing}>
-                        {!isEditing ? (
-                          <span className="run-field-readout">
-                            {teamAssignments.length > 0
-                              ? teamAssignments
-                                  .map(({ assignment, group }) => {
-                                    const customers = groupCustomerNames(group);
-                                    return `${group?.name || "Group removed"}${
-                                      assignment.startDate
-                                        ? ` · ${formatAssignmentStamp(assignment.startDate)}`
-                                        : ""
-                                    }${
-                                      customers.length
-                                        ? ` — ${customers.join(", ")}`
-                                        : ""
-                                    }`;
-                                  })
-                                  .join("; ")
-                              : "No groups assigned"}
-                          </span>
-                        ) : (
-                          // The assigned group is seeded into the picker on
-                          // open and reads out of its own box, so there is no
-                          // chip list above it. Clearing goes through Unpin in
-                          // the actions column, which releases the assignment
-                          // back into these fields.
-                          <div className="row-actions">
-                          <GroupMultiSelect
-                            single
-                            emptyLabel="No customer groups yet"
-                            ariaLabel={`${team.name} assigned installation group`}
-                            selectedIds={rowDraft.installationGroupIds}
-                            onChange={(installationGroupIds) =>
-                              updateRowAssignmentDraft(team.id, {
-                                installationGroupIds,
-                              })
-                            }
-                            sections={[
-                              {
-                                label: "Existing groups",
-                                // A group put back by removing its chip has to
-                                // stay selectable even if it no longer holds an
-                                // Available/Pending customer, otherwise the
-                                // picker would show a selection it cannot name.
-                                // Groups another team is committed to are listed
-                                // too, carrying that crew's name in the label.
-                                options: groups
-                                  .filter(
-                                    (group) =>
-                                      rowDraft.installationGroupIds.includes(
-                                        group.id,
-                                      ) ||
-                                      availabilityReadyGroups.some(
-                                        (ready) => ready.id === group.id,
+                        {isEditing ? (
+                          <div className="skylift-editor">
+                            {skylifts.map((entry, index) => (
+                              <div className="skylift-entry" key={index}>
+                                <input
+                                  name="skylift-name"
+                                  value={entry.name}
+                                  onChange={(event) =>
+                                    updateSkylift(group, index, {
+                                      name: event.target.value,
+                                    })
+                                  }
+                                  placeholder="Operator / plate"
+                                  aria-label="Skylift name"
+                                />
+                                <div className="skylift-dates">
+                                  <input
+                                    type="date"
+                                    value={entry.from}
+                                    onChange={(event) =>
+                                      updateSkylift(group, index, {
+                                        from: event.target.value,
+                                      })
+                                    }
+                                    aria-label="Skylift from date"
+                                  />
+                                  <input
+                                    type="date"
+                                    value={entry.until ?? ""}
+                                    onChange={(event) =>
+                                      updateSkylift(group, index, {
+                                        until: event.target.value || undefined,
+                                      })
+                                    }
+                                    aria-label="Skylift until date (optional)"
+                                    title="Leave empty for a single-day booking"
+                                  />
+                                </div>
+                                <button
+                                  type="button"
+                                  className="icon-button"
+                                  aria-label="Remove skylift"
+                                  onClick={() =>
+                                    updateGroupFields(group.id, {
+                                      skylifts: skylifts.filter(
+                                        (_, i) => i !== index,
                                       ),
-                                  )
-                                  .map((group) => ({
-                                    id: group.id,
-                                    label:
-                                      groupOptionLabel(group) +
-                                      heldByLabel(group.id, team.id),
-                                  })),
-                              },
-                              {
-                                label: "Available customers not yet grouped",
-                                options: liveGroupSuggestions.map(
-                                  (suggestion) => ({
-                                    id: suggestion.id,
-                                    label:
-                                      suggestionOptionLabel(suggestion) +
-                                      heldByLabel(suggestion.id, team.id),
-                                  }),
-                                ),
-                              },
-                            ]}
-                          />
-                          <button
-                            className="button primary"
-                            onClick={() => addRowWeekAssignment(team.id)}
-                            // Exactly one: zero is nothing to commit, and more
-                            // than one only happens on a row assigned before
-                            // the one-group rule — that has to be narrowed to
-                            // a choice here rather than silently truncated.
-                            disabled={
-                              !rowDraft.startDate ||
-                              rowDraft.installationGroupIds.length !== 1
-                            }
-                          >
-                            {teamAssignments.length > 0 ? "Replace" : "Add"}
-                          </button>
+                                    })
+                                  }
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+                            ))}
+                            <button
+                              type="button"
+                              className="button secondary"
+                              onClick={() =>
+                                updateGroupFields(group.id, {
+                                  skylifts: [
+                                    ...skylifts,
+                                    {
+                                      name: "",
+                                      from: group.installationDate,
+                                    },
+                                  ],
+                                })
+                              }
+                            >
+                              <Plus size={14} />
+                              Add skylift
+                            </button>
                           </div>
+                        ) : (
+                          <span className="run-field-readout">
+                            {skylifts.length > 0
+                              ? skylifts.map(skyliftLabel).join("; ")
+                              : "—"}
+                          </span>
+                        )}
+                      </td>
+                      <td onClick={stopWhenEditing}>
+                        {isEditing ? (
+                          <div className="schedule-datetime">
+                            <input
+                              type="date"
+                              value={group.installationDate}
+                              onChange={(event) =>
+                                setGroupSchedule(
+                                  group,
+                                  event.target.value,
+                                  startTime,
+                                )
+                              }
+                              aria-label="Installation date"
+                            />
+                            <input
+                              type="time"
+                              value={startTime}
+                              onChange={(event) =>
+                                setGroupSchedule(group, "", event.target.value)
+                              }
+                              aria-label="Installation time"
+                            />
+                          </div>
+                        ) : (
+                          <span className="run-field-readout">
+                            {formatDateOnly(group.installationDate)}
+                            {startTime ? ` @ ${startTime}` : ""}
+                          </span>
+                        )}
+                      </td>
+                      <td onClick={stopWhenEditing}>
+                        {/* The sheet's site notes, which belong to the
+                            customer. A customer worked over several days has a
+                            note per day, and the app already keeps the return
+                            trips as visits, so the row reads the visit's note
+                            on a return day and the customer's own note on the
+                            primary day — editing writes back to whichever is
+                            showing.
+
+                            A crew booking with nobody on it yet (what "Add
+                            Team" creates) has no customer to write against, so
+                            it holds the note itself until one is assigned.
+
+                            Uncontrolled and saved on blur, the way Customer
+                            Scheduling edits its own remarks — each keystroke
+                            would otherwise be a round trip. */}
+                        {isEditing ? (
+                          <textarea
+                            className="schedule-remark"
+                            rows={3}
+                            defaultValue={rowRemark}
+                            onBlur={(event) => {
+                              const text = event.target.value;
+                              if (!job) {
+                                updateGroupFields(group.id, { remark: text });
+                                return;
+                              }
+                              onSaveJob(withRowRemark(job, rowVisit, text));
+                            }}
+                            placeholder={
+                              job
+                                ? "Site notes for this customer"
+                                : "Notes for this crew booking"
+                            }
+                            aria-label={
+                              job
+                                ? `Remark for ${job.customerName}`
+                                : "Remark for this crew booking"
+                            }
+                          />
+                        ) : (
+                          <span className="run-field-readout">
+                            {rowRemark.trim() || "—"}
+                          </span>
                         )}
                       </td>
                       <td onClick={stopWhenEditing}>
                         {isEditing && (
-                          <div className="row-actions">
-                            {/* Every cell stops the click from reaching the row
-                                while editing — otherwise a stray click inside a
-                                field would collapse the row mid-edit — so this
-                                is the way back to read view, not a dead pixel
-                                hunt. */}
+                          <div className="row-actions is-stacked">
                             <button
                               className="button primary"
-                              aria-label={`Finish editing ${team.name}`}
-                              onClick={() => toggleTeamEdit(team.id)}
+                              aria-label="Finish editing row"
+                              onClick={() => toggleRowEdit(rowKey)}
                             >
                               Done
                             </button>
-                            {/* Releases the team's assignments back into its
-                                edit row — it does not delete the team. Also
-                                the way a group is cleared now that the fields
-                                hold the assignment and no chip carries an X.
-                                Icon-only, so the label lives on aria-label and
-                                the title tooltip rather than in the button. */}
                             <button
                               className="button secondary"
-                              aria-label={`Unpin ${team.name} assignments for editing`}
-                              title={`Unpin ${team.name} assignments for editing`}
-                              disabled={teamAssignments.length === 0}
-                              onClick={() => unpinTeamAssignments(team.id)}
+                              aria-label={
+                                job
+                                  ? `Remove ${job.customerName} from this booking`
+                                  : "Remove this team row"
+                              }
+                              title={
+                                job
+                                  ? "Take this customer off this crew's booking"
+                                  : "Remove this team row"
+                              }
+                              onClick={() => removeScheduleRow(group, jobId)}
                             >
-                              <PinOff size={14} />
+                              Remove
                             </button>
                           </div>
                         )}
                       </td>
                     </tr>
+                    </Fragment>
                   );
                 })}
               </tbody>
             </table>
+            <datalist id="wiring-member-options">
+              {memberSuggestions.map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+            <datalist id="car-options">
+              {carSuggestions.map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
           </div>
         </section>
       )}
@@ -5688,6 +6606,7 @@ function GroupDrawer({
 
 function TeamPlanningView({
   groups,
+  weekAssignments,
   deliveryRuns,
   jobs,
   planningFilter,
@@ -5703,6 +6622,7 @@ function TeamPlanningView({
   onTogglePin,
 }: {
   groups: InstallationGroup[];
+  weekAssignments: TeamWeekAssignment[];
   deliveryRuns: DeliveryRun[];
   jobs: InstallationJob[];
   planningFilter: string;
@@ -5799,25 +6719,39 @@ function TeamPlanningView({
     );
   }
 
+  // The table itself still leads with work still to be planned — a finished
+  // install is only listed when Complete Installation is the stage being
+  // asked for, so the default view does not fill up with history.
+  const showingCompleted = planningFilter === "complete";
   const readyJobs = jobs.filter(
     (job) =>
       hasPlanningEligibility(job) &&
-      !isCompleteInstallation(job, planningTodayIso, groupByJobId.get(job.id)) &&
+      (showingCompleted ||
+        !isCompleteInstallation(
+          job,
+          planningTodayIso,
+          groupByJobId.get(job.id),
+        )) &&
       !isOutOfPlanning(job) &&
       matchesSecondPaymentMonth(job) &&
       matchesPlanningStatus(job),
   );
+  // Every customer the table is allowed to show. The location groups filter
+  // their members through this, so it has to admit finished installs on the
+  // same terms readyJobs does — otherwise selecting Complete Installation
+  // fills the stage card with a number but empties the list under it.
   const filteredPlanningJobIds = new Set(
     jobs
       .filter(
         (job) =>
           hasPlanningEligibility(job) &&
           matchesPlanningStatus(job) &&
-          !isCompleteInstallation(
-            job,
-            planningTodayIso,
-            groupByJobId.get(job.id),
-          ) &&
+          (showingCompleted ||
+            !isCompleteInstallation(
+              job,
+              planningTodayIso,
+              groupByJobId.get(job.id),
+            )) &&
           !isOutOfPlanning(job) &&
           matchesSecondPaymentMonth(job),
       )
@@ -6146,11 +7080,11 @@ function TeamPlanningView({
                 });
               }}
             >
-              <option value="not_set">Not set</option>
-              <option value="pending">Pending confirmation</option>
-              <option value="available">Available</option>
-              <option value="unavailable">Not available</option>
-              <option value="cancelled">Cancellation</option>
+              {Object.entries(availabilityLabels).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
             </select>
           ) : (
             <span className="run-field-readout">
@@ -6159,22 +7093,72 @@ function TeamPlanningView({
           )}
         </td>
         <td>
+          {/* A rescheduling customer keeps the date that fell through and gains
+              a second one for the replacement, so the move stays legible. Every
+              other status has the one date, and the second input is not even
+              rendered — there is nothing to reschedule from. */}
           {isEditing ? (
-            <input
-              type="date"
-              value={job.preferredInstallationDate ?? ""}
-              onClick={(event) => event.stopPropagation()}
-              aria-label={`Preferred installation date for ${job.customerName}`}
-              onChange={(event) =>
-                onUpdateJob({
-                  ...job,
-                  preferredInstallationDate: event.target.value || null,
-                })
-              }
-            />
+            <div className="preferred-date-pair">
+              <div className="preferred-date-slot">
+                <input
+                  type="date"
+                  value={job.preferredInstallationDate ?? ""}
+                  onClick={(event) => event.stopPropagation()}
+                  aria-label={`Preferred installation date for ${job.customerName}`}
+                  onChange={(event) =>
+                    onUpdateJob({
+                      ...job,
+                      preferredInstallationDate: event.target.value || null,
+                    })
+                  }
+                />
+                {/* The clock lives with its own date rather than in a column of
+                    its own — one slot, one place to read and edit it. */}
+                <input
+                  type="time"
+                  value={job.preferredInstallationTime ?? ""}
+                  onClick={(event) => event.stopPropagation()}
+                  aria-label={`Preferred installation time for ${job.customerName}`}
+                  onChange={(event) =>
+                    onUpdateJob({
+                      ...job,
+                      preferredInstallationTime: event.target.value || null,
+                    })
+                  }
+                />
+              </div>
+              {job.customerAvailabilityStatus === "reschedule" && (
+                <label className="preferred-date-second">
+                  <span>New date</span>
+                  <input
+                    type="date"
+                    value={job.secondPreferredInstallationDate ?? ""}
+                    onClick={(event) => event.stopPropagation()}
+                    aria-label={`New installation date for ${job.customerName}`}
+                    onChange={(event) =>
+                      onUpdateJob({
+                        ...job,
+                        secondPreferredInstallationDate:
+                          event.target.value || null,
+                      })
+                    }
+                  />
+                </label>
+              )}
+            </div>
           ) : (
             <span className="run-field-readout">
               {formatDateOnly(job.preferredInstallationDate)}
+              {job.preferredInstallationDate && job.preferredInstallationTime
+                ? ` @ ${job.preferredInstallationTime}`
+                : ""}
+              {job.customerAvailabilityStatus === "reschedule" && (
+                <span className="preferred-date-readout-second">
+                  {job.secondPreferredInstallationDate
+                    ? `→ ${formatDateOnly(job.secondPreferredInstallationDate)}`
+                    : "→ new date needed"}
+                </span>
+              )}
             </span>
           )}
         </td>
@@ -6214,6 +7198,21 @@ function TeamPlanningView({
         </div>
         <div className="planning-filters">
           <label className="range-control">
+            Customer name
+            <input
+              type="search"
+              placeholder="e.g. Tan Wei Ming"
+              value={customerNameFilter}
+              onChange={(event) => {
+                onCustomerNameFilterChange(event.target.value);
+                setAddingToSuggestionId(null);
+                setMapFocusGroupId(null);
+                setHighlightedMapGroupId(null);
+                setHighlightedMapCustomerId(null);
+              }}
+            />
+          </label>
+          <label className="range-control">
             Planning status
             <select
               value={planningFilter}
@@ -6234,21 +7233,6 @@ function TeamPlanningView({
                 </option>
               ))}
             </select>
-          </label>
-          <label className="range-control">
-            Customer name
-            <input
-              type="search"
-              placeholder="e.g. Tan Wei Ming"
-              value={customerNameFilter}
-              onChange={(event) => {
-                onCustomerNameFilterChange(event.target.value);
-                setAddingToSuggestionId(null);
-                setMapFocusGroupId(null);
-                setHighlightedMapGroupId(null);
-                setHighlightedMapCustomerId(null);
-              }}
-            />
           </label>
           <label className="range-control">
             Postcode
@@ -6358,7 +7342,7 @@ function TeamPlanningView({
                       group
                         ? "status-grouped"
                         : `status-${job.customerAvailabilityStatus}`
-                    }`}
+                    }${needsRescheduleDate(job) ? " needs-reschedule-date" : ""}`}
                     onMouseEnter={() => {
                       setHighlightedMapGroupId(suggestion.id);
                       setHighlightedMapCustomerId(job.id);
@@ -6417,6 +7401,11 @@ function TeamPlanningView({
                   return (
                     <tr
                       key={job.id}
+                      className={
+                        needsRescheduleDate(job)
+                          ? "needs-reschedule-date"
+                          : undefined
+                      }
                       onMouseEnter={() => {
                         setHighlightedMapGroupId(suggestion.id);
                         setHighlightedMapCustomerId(job.id);
@@ -6583,6 +7572,8 @@ function DeliveryPlanningView({
   runs,
   jobs,
   groupByJobId,
+  warehouses,
+  onChangeWarehouses,
   onChange,
   onUpdateJob,
   pinnedJobIds,
@@ -6591,6 +7582,8 @@ function DeliveryPlanningView({
   runs: DeliveryRun[];
   jobs: InstallationJob[];
   groupByJobId: Map<string, InstallationGroup>;
+  warehouses: Warehouse[];
+  onChangeWarehouses: (warehouses: Warehouse[]) => void;
   onChange: (runs: DeliveryRun[]) => void;
   onUpdateJob: (job: InstallationJob) => void;
   pinnedJobIds: Set<string>;
@@ -6603,10 +7596,21 @@ function DeliveryPlanningView({
   // run in or out of this set — independent of every other run's state.
   const [editingRunIds, setEditingRunIds] = useState<Set<string>>(new Set());
   const [etaFeedback, setEtaFeedback] = useState<Record<string, EtaFeedback>>({});
+  // Same three filters Installation groups carries, over the same kind of
+  // data: 25 imported August runs turned this into a log, and a log needs a
+  // way to ask for one month or one customer. Empty means "everything" —
+  // the table opens showing all of it rather than hiding work behind a
+  // default period.
+  const [monthFilter, setMonthFilter] = useState("");
+  const [yearFilter, setYearFilter] = useState("");
+  const [customerQuery, setCustomerQuery] = useState("");
 
   // Creates a blank run and drops it straight into edit mode — the row-level
   // equivalent of the old "Create delivery run" popup. Customers are linked
   // to it afterward from Customer details, same as any existing run.
+  //
+  // Prepended, not appended: a new run is the one being worked on, and at the
+  // bottom of 25 imported August runs it would open off-screen.
   function createRun() {
     const id = crypto.randomUUID();
     const nextRun: DeliveryRun = {
@@ -6621,24 +7625,39 @@ function DeliveryPlanningView({
       status: "pending_stock",
       jobIds: [],
     };
-    onChange([...runs, nextRun]);
+    onChange([nextRun, ...runs]);
     setEditingRunIds((prev) => new Set(prev).add(id));
   }
 
   async function calculateEtas(run: DeliveryRun) {
+    // Finished stops are listed in the table but not routed to: an arrival
+    // time for a delivery that already happened is noise, and putting one
+    // back on the map would move the whole chain behind it.
     const runJobs = jobs.filter(
       (job) =>
         run.jobIds.includes(job.id) &&
         !isCompleteInstallation(job, todayIso, groupByJobId.get(job.id)),
     );
+    const linkedCount = run.jobIds.length;
 
-    if (!run.warehouseAddress?.trim()) {
+    // The address is no longer typed into the run — it is looked up from the
+    // warehouse table below by the name the run has selected. Runs saved
+    // before that table existed still carry their own address, so that is
+    // kept as the fallback rather than breaking their ETAs.
+    const warehouseAddress =
+      warehouses.find((item) => item.name === run.warehouse)?.address?.trim() ||
+      run.warehouseAddress?.trim() ||
+      "";
+
+    if (!warehouseAddress) {
       setEtaFeedback((prev) => ({
         ...prev,
         [run.id]: {
           busy: false,
           failed: true,
-          message: "Enter the warehouse address first.",
+          message: run.warehouse
+            ? `No address saved for "${run.warehouse}". Add it in the Warehouses table below.`
+            : "Pick a warehouse for this run first.",
         },
       }));
       return;
@@ -6649,7 +7668,12 @@ function DeliveryPlanningView({
         [run.id]: {
           busy: false,
           failed: true,
-          message: "This run has no customers to route to.",
+          // Distinguishes an empty run from one whose stops are all done —
+          // the second still shows its customers, so "no customers" alone
+          // would read as a bug.
+          message: linkedCount
+            ? "Every customer on this run has completed installation, so there is nothing left to route."
+            : "This run has no customers to route to.",
         },
       }));
       return;
@@ -6662,7 +7686,7 @@ function DeliveryPlanningView({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          warehouseAddress: run.warehouseAddress,
+          warehouseAddress,
           deliveryDate: run.deliveryDate,
           departureTime: run.departureTime || "09:00",
           // Array order is the delivery order the chain is built from.
@@ -6780,60 +7804,196 @@ function DeliveryPlanningView({
     });
   }
 
-  if (runs.length === 0) {
-    return (
-      <div className="planning-panel">
-        <div className="planning-heading">
-          <div>
-            <h2>Stock delivery</h2>
-            <p>Group customer materials into warehouse delivery routes.</p>
-          </div>
-          <button className="button primary" onClick={createRun}>
-            <Truck size={16} />
-            Create delivery run
-          </button>
-        </div>
-        <section className="planning-group">
-          <div className="table-wrap">
-            <table className="delivery-run-customers">
-              <thead>
-                <tr>
-                  <th>Run name</th>
-                  <th>Status</th>
-                  <th>Delivery date &amp; departure</th>
-                  <th>Warehouse</th>
-                  <th>Delivery PIC</th>
-                  <th>Contact number</th>
-                  <th>Customer</th>
-                  <th>Location</th>
-                  <th>Stock details</th>
-                  <th>ETA</th>
-                  <th aria-label="Pin"></th>
-                  <th aria-label="Actions"></th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr className="delivery-run-placeholder-row">
-                  <td>—</td>
-                  <td>—</td>
-                  <td>—</td>
-                  <td>—</td>
-                  <td>—</td>
-                  <td>—</td>
-                  <td>—</td>
-                  <td>—</td>
-                  <td>—</td>
-                  <td>—</td>
-                  <td></td>
-                  <td></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </div>
+  function createWarehouse() {
+    onChangeWarehouses([
+      ...warehouses,
+      { id: crypto.randomUUID(), name: "", city: "", address: "" },
+    ]);
+  }
+
+  function updateWarehouse(id: string, update: Partial<Warehouse>) {
+    onChangeWarehouses(
+      warehouses.map((item) => (item.id === id ? { ...item, ...update } : item)),
     );
   }
+
+  // Renaming a warehouse carries every run that departs from it, so a run
+  // never silently loses the address its ETAs are counted from.
+  function renameWarehouse(id: string, name: string) {
+    const previous = warehouses.find((item) => item.id === id)?.name ?? "";
+    updateWarehouse(id, { name });
+    if (previous && previous !== name) {
+      onChange(
+        runs.map((run) =>
+          run.warehouse === previous ? { ...run, warehouse: name } : run,
+        ),
+      );
+    }
+  }
+
+  function removeWarehouse(id: string) {
+    onChangeWarehouses(warehouses.filter((item) => item.id !== id));
+  }
+
+  // The Warehouse column is a pick from the table below. A run saved before
+  // that table existed can name a warehouse that is not in it (yet), so its
+  // own value is offered too rather than being silently reset to blank.
+  function warehouseOptions(current: string) {
+    const names = warehouses.map((item) => item.name).filter(Boolean);
+    return current && !names.includes(current) ? [current, ...names] : names;
+  }
+
+  const warehouseTable = (
+    <section className="planning-group warehouse-section">
+      <div className="planning-heading">
+        <div>
+          <h2>Warehouses</h2>
+          <p>
+            The depots delivery runs leave from. A run picks one by name, and
+            the address saved here is what its ETAs are measured from.
+          </p>
+        </div>
+        <button className="button primary" onClick={createWarehouse}>
+          <Plus size={16} />
+          Add warehouse
+        </button>
+      </div>
+      <div className="table-wrap">
+        <table className="warehouse-table">
+          <thead>
+            <tr>
+              <th>Warehouse name</th>
+              <th>City</th>
+              <th>Address</th>
+              <th aria-label="Actions"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {warehouses.length === 0 ? (
+              <tr className="delivery-run-placeholder-row">
+                <td>&mdash;</td>
+                <td>&mdash;</td>
+                <td>&mdash;</td>
+                <td></td>
+              </tr>
+            ) : (
+              warehouses.map((warehouse) => (
+                <tr key={warehouse.id}>
+                  <td>
+                    <input
+                      value={warehouse.name}
+                      onChange={(event) =>
+                        renameWarehouse(warehouse.id, event.target.value)
+                      }
+                      placeholder="e.g. Ulu Tiram depot"
+                      aria-label="Warehouse name"
+                    />
+                  </td>
+                  <td>
+                    <input
+                      value={warehouse.city}
+                      onChange={(event) =>
+                        updateWarehouse(warehouse.id, { city: event.target.value })
+                      }
+                      placeholder="e.g. Johor Bahru"
+                      aria-label="Warehouse city"
+                    />
+                  </td>
+                  <td className="warehouse-address-cell">
+                    <input
+                      value={warehouse.address}
+                      onChange={(event) =>
+                        updateWarehouse(warehouse.id, { address: event.target.value })
+                      }
+                      placeholder="e.g. 15 Jalan Kenanga 1/6, Taman Desa Cemerlang, 81800 Ulu Tiram, Johor"
+                      aria-label="Warehouse address"
+                    />
+                  </td>
+                  <td>
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className="button secondary"
+                        aria-label={`Remove warehouse ${warehouse.name || "unnamed"}`}
+                        onClick={() => removeWarehouse(warehouse.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+
+
+  // --- Run schedule table: one row per customer, with each run's own fields
+  // carried by a band above its rows rather than by six columns spanned down
+  // them. Same shape as Installation groups, for the same reason — the run
+  // fields belong to the run, not to any one stop, and repeating them as
+  // columns is what made this table too wide to read.
+  const MONTH_OPTIONS = useMemo(
+    () =>
+      Array.from({ length: 12 }, (_, index) => ({
+        value: String(index + 1).padStart(2, "0"),
+        label: new Intl.DateTimeFormat("en-GB", { month: "long" }).format(
+          new Date(2020, index, 1),
+        ),
+      })),
+    [],
+  );
+
+  const availableYears = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          runs
+            .map((run) => run.deliveryDate?.slice(0, 4))
+            .filter((year): year is string => Boolean(year)),
+        ),
+      ).sort((a, b) => b.localeCompare(a)),
+    [runs],
+  );
+
+  const query = customerQuery.trim().toLowerCase();
+
+  // A run survives the period filters; its stops survive the name search.
+  // A run whose every stop is filtered out drops away with them, so a name
+  // search returns the runs that carry that customer rather than a page of
+  // empty bands.
+  const visibleRuns = runs
+    .map((run) => {
+      const runJobs = jobs.filter((job) => run.jobIds.includes(job.id));
+      const matching = query
+        ? runJobs.filter(
+            (job) =>
+              job.customerName.toLowerCase().includes(query) ||
+              job.invoiceNumber.toLowerCase().includes(query),
+          )
+        : runJobs;
+      return { run, runJobs: matching };
+    })
+    .filter(({ run, runJobs }) => {
+      // A run that is open for editing always shows, whatever the filters
+      // say. It is the one being worked on, and a just-created run has no
+      // date and no customers yet — so any active filter would hide it the
+      // instant it was created, and changing an open run's date would yank
+      // it off screen mid-edit.
+      if (editingRunIds.has(run.id)) return true;
+      const date = run.deliveryDate || "";
+      if (yearFilter && date.slice(0, 4) !== yearFilter) return false;
+      if (monthFilter && date.slice(5, 7) !== monthFilter) return false;
+      // A run with no customers at all still shows: it is a run being built,
+      // and hiding it would make "Create delivery run" look like it failed.
+      if (query && !runJobs.length) return false;
+      return true;
+    });
+
+  const filtered = Boolean(monthFilter || yearFilter || customerQuery);
 
   return (
     <div className="planning-panel">
@@ -6842,130 +8002,119 @@ function DeliveryPlanningView({
           <h2>Stock delivery</h2>
           <p>Group customer materials into warehouse delivery routes.</p>
         </div>
-        <button className="button primary" onClick={createRun}>
-          <Truck size={16} />
-          Create delivery run
-        </button>
-      </div>
-      {runs.map((run) => {
-        const isEditing = editingRunIds.has(run.id);
-        const feedback = etaFeedback[run.id];
-        return (
-          <section className="planning-group" key={run.id}>
-            <div className="run-route-bar">
-              <label className="run-route-address">
-                <span>Warehouse address</span>
-                <input
-                  value={run.warehouseAddress ?? ""}
-                  onChange={(event) =>
-                    updateRun(run.id, { warehouseAddress: event.target.value })
-                  }
-                  placeholder="e.g. 15 Jalan Kenanga 1/6, Taman Desa Cemerlang, 81800 Ulu Tiram, Johor"
-                  aria-label="Warehouse address"
-                />
-              </label>
+        <div className="planning-heading-actions">
+          <div className="schedule-filters">
+            <label className="schedule-search">
+              <span>Customer</span>
+              <input
+                type="search"
+                value={customerQuery}
+                onChange={(event) => setCustomerQuery(event.target.value)}
+                placeholder="Search name"
+                aria-label="Search customer name"
+              />
+            </label>
+            <label>
+              <span>Month</span>
+              <select
+                value={monthFilter}
+                onChange={(event) => setMonthFilter(event.target.value)}
+                aria-label="Filter by delivery month"
+              >
+                <option value="">All months</option>
+                {MONTH_OPTIONS.map((month) => (
+                  <option key={month.value} value={month.value}>
+                    {month.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Year</span>
+              <select
+                value={yearFilter}
+                onChange={(event) => setYearFilter(event.target.value)}
+                aria-label="Filter by delivery year"
+              >
+                <option value="">All years</option>
+                {availableYears.map((year) => (
+                  <option key={year} value={year}>
+                    {year}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {filtered && (
               <button
                 type="button"
                 className="button secondary"
-                onClick={() => void calculateEtas(run)}
-                disabled={feedback?.busy}
+                onClick={() => {
+                  setMonthFilter("");
+                  setYearFilter("");
+                  setCustomerQuery("");
+                }}
               >
-                {feedback?.busy ? (
-                  <LoaderCircle size={15} className="spin" />
-                ) : (
-                  <MapPin size={15} />
-                )}
-                {feedback?.busy ? "Calculating…" : "Calculate ETAs"}
+                Clear
               </button>
-              {feedback?.message && (
-                <span
-                  className={
-                    feedback.failed
-                      ? "run-route-note failed"
-                      : "run-route-note"
-                  }
-                  role={feedback.failed ? "alert" : undefined}
-                >
-                  {feedback.message}
-                </span>
+            )}
+          </div>
+          <button className="button primary" onClick={createRun}>
+            <Truck size={16} />
+            Create delivery run
+          </button>
+        </div>
+      </div>
+      <section className="planning-group">
+        <div className="table-wrap unified-team-table delivery-schedule-table">
+          <table>
+            <colgroup>
+              <col className="col-customer" />
+              <col className="col-location" />
+              <col className="col-stock" />
+              <col className="col-eta" />
+              <col className="col-pin" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th>Location</th>
+                <th>Stock details</th>
+                <th>ETA</th>
+                <th aria-label="Pin"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRuns.length === 0 && (
+                <tr className="delivery-run-placeholder-row">
+                  <td colSpan={5}>
+                    {runs.length
+                      ? "No delivery run matches these filters."
+                      : "No delivery runs yet."}
+                  </td>
+                </tr>
               )}
-            </div>
-            <div className="table-wrap">
-              <table className="delivery-run-customers">
-                <thead>
-                  <tr>
-                    <th>Run name</th>
-                    <th>Status</th>
-                    <th>Delivery date &amp; departure</th>
-                    <th>Warehouse</th>
-                    <th>Delivery PIC</th>
-                    <th>Contact number</th>
-                    <th>Customer</th>
-                    <th>Location</th>
-                    <th>Stock details</th>
-                    <th>ETA</th>
-                    <th aria-label="Pin"></th>
-                    <th aria-label="Actions"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(() => {
-                    // One row per customer carrying the whole run: the run
-                    // fields are rendered once and spanned down the rows, so
-                    // each line reads run + customer end to end. Completed
-                    // installations drop out of the list entirely — once
-                    // every customer in a run is done, the run itself
-                    // collapses to a single note rather than an empty table.
-                    const runJobs = jobs.filter(
-                      (job) =>
-                        run.jobIds.includes(job.id) &&
-                        !isCompleteInstallation(
-                          job,
-                          todayIso,
-                          groupByJobId.get(job.id),
-                        ),
-                    );
-                    if (run.jobIds.length > 0 && runJobs.length === 0) {
-                      return (
-                        <tr>
-                          <td colSpan={12} className="run-all-complete">
-                            All customers in this run have completed installation.
-                          </td>
-                        </tr>
-                      );
-                    }
-                    // No customers linked yet (a just-created run, or one
-                    // that never had any) — still show one row so the run's
-                    // own fields (name, status, warehouse…) stay editable.
-                    const displayRows: (InstallationJob | null)[] =
-                      runJobs.length > 0 ? runJobs : [null];
-                    return displayRows.map((job, index) => {
-                      // Customer Scheduling's own definition of "in play":
-                      // available or still waiting on confirmation. A row's
-                      // own current customer stays selectable even if their
-                      // status has since moved on, and a customer already
-                      // parked in another row of this same run is hidden so
-                      // the same person can't end up double-booked.
-                      const eligibleJobs = jobs.filter(
-                        (candidate) =>
-                          (candidate.customerAvailabilityStatus === "available" ||
-                            candidate.customerAvailabilityStatus === "pending") &&
-                          (candidate.id === job?.id ||
-                            !run.jobIds.includes(candidate.id)),
-                      );
-                      return (
-                      <tr
-                        key={job ? job.id : "empty"}
-                        className={isEditing ? "selected" : undefined}
-                        onClick={() => toggleRunEdit(run.id)}
-                      >
-                        {index === 0 && (
-                          <td
-                            rowSpan={displayRows.length}
-                            className="run-field-cell"
-                            onClick={isEditing ? (event) => event.stopPropagation() : undefined}
+              {visibleRuns.map(({ run, runJobs }) => {
+                const isEditing = editingRunIds.has(run.id);
+                const feedback = etaFeedback[run.id];
+                // No customers linked yet — still render one row so a new
+                // run has somewhere to pick its first customer.
+                const displayRows: (InstallationJob | null)[] = runJobs.length
+                  ? runJobs
+                  : [null];
+                return (
+                  <Fragment key={run.id}>
+                    <tr
+                      className={`schedule-band delivery-band${isEditing ? " is-editing" : ""}`}
+                      onClick={() => toggleRunEdit(run.id)}
+                    >
+                      <th colSpan={5} scope="colgroup">
+                        {isEditing ? (
+                          <div
+                            className="delivery-band-fields"
+                            onClick={(event) => event.stopPropagation()}
                           >
-                            {isEditing ? (
+                            <label>
+                              <span>Run name</span>
                               <input
                                 value={run.name}
                                 onChange={(event) =>
@@ -6973,20 +8122,9 @@ function DeliveryPlanningView({
                                 }
                                 aria-label="Delivery run name"
                               />
-                            ) : (
-                              <span className="run-field-readout">
-                                {run.name || "Unnamed run"}
-                              </span>
-                            )}
-                          </td>
-                        )}
-                        {index === 0 && (
-                          <td
-                            rowSpan={displayRows.length}
-                            className="run-field-cell"
-                            onClick={isEditing ? (event) => event.stopPropagation() : undefined}
-                          >
-                            {isEditing ? (
+                            </label>
+                            <label>
+                              <span>Status</span>
                               <select
                                 value={run.status}
                                 onChange={(event) =>
@@ -7001,75 +8139,49 @@ function DeliveryPlanningView({
                                 <option value="in_transit">In transit</option>
                                 <option value="delivered">Delivered</option>
                               </select>
-                            ) : (
-                              <span className="run-field-readout">
-                                {DELIVERY_RUN_STATUS_LABELS[run.status]}
-                              </span>
-                            )}
-                          </td>
-                        )}
-                        {index === 0 && (
-                          <td
-                            rowSpan={displayRows.length}
-                            className="run-field-cell"
-                            onClick={isEditing ? (event) => event.stopPropagation() : undefined}
-                          >
-                            {isEditing ? (
-                              <div className="delivery-date-pair">
-                                <input
-                                  type="date"
-                                  value={run.deliveryDate}
-                                  onChange={(event) =>
-                                    updateRun(run.id, { deliveryDate: event.target.value })
-                                  }
-                                  aria-label="Delivery date"
-                                />
-                                <input
-                                  type="time"
-                                  value={run.departureTime || "09:00"}
-                                  onChange={(event) =>
-                                    updateRun(run.id, { departureTime: event.target.value })
-                                  }
-                                  aria-label="Departure time from warehouse"
-                                  title="Time the lorry leaves the warehouse — each customer's ETA counts up from here."
-                                />
-                              </div>
-                            ) : (
-                              <span className="run-field-readout">
-                                {run.deliveryDate || "Date not arranged"} ·{" "}
-                                {run.departureTime || "09:00"}
-                              </span>
-                            )}
-                          </td>
-                        )}
-                        {index === 0 && (
-                          <td
-                            rowSpan={displayRows.length}
-                            className="run-field-cell"
-                            onClick={isEditing ? (event) => event.stopPropagation() : undefined}
-                          >
-                            {isEditing ? (
+                            </label>
+                            <label>
+                              <span>Delivery date</span>
                               <input
+                                type="date"
+                                value={run.deliveryDate}
+                                onChange={(event) =>
+                                  updateRun(run.id, { deliveryDate: event.target.value })
+                                }
+                                aria-label="Delivery date"
+                              />
+                            </label>
+                            <label>
+                              <span>Departure</span>
+                              <input
+                                type="time"
+                                value={run.departureTime || "09:00"}
+                                onChange={(event) =>
+                                  updateRun(run.id, { departureTime: event.target.value })
+                                }
+                                aria-label="Departure time from warehouse"
+                                title="Time the lorry leaves the warehouse — each customer's ETA counts up from here."
+                              />
+                            </label>
+                            <label>
+                              <span>Warehouse</span>
+                              <select
                                 value={run.warehouse}
                                 onChange={(event) =>
                                   updateRun(run.id, { warehouse: event.target.value })
                                 }
                                 aria-label="Warehouse"
-                              />
-                            ) : (
-                              <span className="run-field-readout">
-                                {run.warehouse || "Not selected"}
-                              </span>
-                            )}
-                          </td>
-                        )}
-                        {index === 0 && (
-                          <td
-                            rowSpan={displayRows.length}
-                            className="run-field-cell"
-                            onClick={isEditing ? (event) => event.stopPropagation() : undefined}
-                          >
-                            {isEditing ? (
+                              >
+                                <option value="">Select warehouse</option>
+                                {warehouseOptions(run.warehouse).map((name) => (
+                                  <option value={name} key={name}>
+                                    {name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              <span>Delivery PIC</span>
                               <input
                                 value={run.deliveryPic || ""}
                                 onChange={(event) =>
@@ -7077,20 +8189,9 @@ function DeliveryPlanningView({
                                 }
                                 aria-label="Delivery PIC"
                               />
-                            ) : (
-                              <span className="run-field-readout">
-                                {run.deliveryPic || "Not assigned"}
-                              </span>
-                            )}
-                          </td>
-                        )}
-                        {index === 0 && (
-                          <td
-                            rowSpan={displayRows.length}
-                            className="run-field-cell"
-                            onClick={isEditing ? (event) => event.stopPropagation() : undefined}
-                          >
-                            {isEditing ? (
+                            </label>
+                            <label>
+                              <span>Contact number</span>
                               <input
                                 type="tel"
                                 value={run.contactNumber || ""}
@@ -7099,209 +8200,30 @@ function DeliveryPlanningView({
                                 }
                                 aria-label="Contact number"
                               />
-                            ) : phoneWhatsAppHref(run.contactNumber || "") ? (
-                              <a
-                                className="run-field-readout phone-number"
-                                href={phoneWhatsAppHref(run.contactNumber || "")!}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={(event) => event.stopPropagation()}
-                                title={`WhatsApp ${run.deliveryPic || "delivery PIC"}`}
+                            </label>
+                            <div className="row-actions delivery-band-actions">
+                              <button
+                                type="button"
+                                className="button primary"
+                                aria-label={`Finish editing delivery run ${run.name}`}
+                                onClick={() => toggleRunEdit(run.id)}
                               >
-                                <MessageCircle size={13} />
-                                {formatPhoneNumber(run.contactNumber || "")}
-                              </a>
-                            ) : (
-                              <span className="run-field-readout">
-                                {formatPhoneNumber(run.contactNumber || "")}
-                              </span>
-                            )}
-                          </td>
-                        )}
-                        <td onClick={isEditing ? (event) => event.stopPropagation() : undefined}>
-                          {isEditing ? (
-                            <select
-                              value={job?.id ?? ""}
-                              onChange={(event) => {
-                                const nextJobId = event.target.value;
-                                const withoutCurrent = run.jobIds.filter(
-                                  (id) => id !== job?.id,
-                                );
-                                updateRun(run.id, {
-                                  jobIds: nextJobId
-                                    ? [...withoutCurrent, nextJobId]
-                                    : withoutCurrent,
-                                });
-                              }}
-                              aria-label="Customer"
-                            >
-                              <option value="">Select customer</option>
-                              {eligibleJobs.map((candidate) => (
-                                <option value={candidate.id} key={candidate.id}>
-                                  {candidate.customerName} · {candidate.invoiceNumber}
-                                </option>
-                              ))}
-                            </select>
-                          ) : job ? (
-                            <>
-                              <strong>{job.customerName}</strong>
-                              <span>{job.invoiceNumber}</span>
-                            </>
-                          ) : (
-                            <span className="run-field-readout">No customer selected</span>
-                          )}
-                        </td>
-                        {job ? (
-                          <>
-                            <td>{job.city || job.state || "Not available"}</td>
-                            <td onClick={isEditing ? (event) => event.stopPropagation() : undefined}>
-                              {isEditing ? (
-                                <div className="member-tag-input">
-                                  <div className="member-tag-list">
-                                    {stockTags(job).map((item) => (
-                                      <span className="member-tag" key={item}>
-                                        {item}
-                                        <button
-                                          type="button"
-                                          aria-label={`Remove ${item}`}
-                                          onClick={() => removeStockTag(job, item)}
-                                        >
-                                          <X size={12} />
-                                        </button>
-                                      </span>
-                                    ))}
-                                  </div>
-                                  <div className="member-tag-add">
-                                    <input
-                                      value={stockDraft[job.id] ?? ""}
-                                      onChange={(event) =>
-                                        setStockDraft((prev) => ({
-                                          ...prev,
-                                          [job.id]: event.target.value,
-                                        }))
-                                      }
-                                      onKeyDown={(event) => {
-                                        if (event.key === "Enter") {
-                                          event.preventDefault();
-                                          addStockTag(job);
-                                        }
-                                      }}
-                                      placeholder="Add stock item"
-                                      aria-label={`Add stock item for ${job.customerName}`}
-                                    />
-                                    <button
-                                      type="button"
-                                      className="icon-button"
-                                      aria-label={`Add stock item for ${job.customerName}`}
-                                      onClick={() => addStockTag(job)}
-                                    >
-                                      <Plus size={14} />
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <span className="run-field-readout">
-                                  {stockTags(job).length > 0
-                                    ? stockTags(job).join(", ")
-                                    : "No stock details"}
-                                </span>
-                              )}
-                            </td>
-                            {/* Estimated arrival at the customer's address. Falls
-                                back to the run's delivery date/departure time
-                                until someone gives this customer their own, the
-                                same way a job's installation date falls back to
-                                its group's. The fallback is shown, not saved:
-                                leaving the row alone keeps arrivalDate/arrivalTime
-                                null, so moving the run's date or departure time
-                                carries every un-estimated stop along with it. */}
-                            <td onClick={isEditing ? (event) => event.stopPropagation() : undefined}>
-                              {isEditing ? (
-                                <div className="delivery-date-pair">
-                                  <input
-                                    type="date"
-                                    className={job.arrivalDate ? "" : "is-inherited"}
-                                    value={job.arrivalDate ?? run.deliveryDate ?? ""}
-                                    onChange={(event) =>
-                                      onUpdateJob({
-                                        ...job,
-                                        arrivalDate: event.target.value || null,
-                                      })
-                                    }
-                                    aria-label={`Estimated arrival date for ${job.customerName}`}
-                                    title={
-                                      job.arrivalDate
-                                        ? "Estimated for this customer. Clear it to go back to the run's delivery date."
-                                        : "Taken from the delivery run. Set a date here to estimate this stop on its own."
-                                    }
-                                  />
-                                  <input
-                                    type="time"
-                                    className={job.arrivalTime ? "" : "is-inherited"}
-                                    value={job.arrivalTime ?? run.departureTime ?? "09:00"}
-                                    onChange={(event) =>
-                                      onUpdateJob({
-                                        ...job,
-                                        arrivalTime: event.target.value || null,
-                                      })
-                                    }
-                                    aria-label={`Estimated arrival time for ${job.customerName}`}
-                                    title={
-                                      job.arrivalTime
-                                        ? "Estimated for this customer. Clear it to go back to the run's departure time."
-                                        : "Taken from the delivery run's departure time. Set a time here to estimate this stop on its own."
-                                    }
-                                  />
-                                </div>
-                              ) : (
-                                <span className="run-field-readout">
-                                  {job.arrivalDate ?? run.deliveryDate ?? "Not set"} ·{" "}
-                                  {job.arrivalTime ?? run.departureTime ?? "09:00"}
-                                </span>
-                              )}
-                            </td>
-                          </>
-                        ) : (
-                          <td colSpan={3} className="run-no-customers">
-                            Select a customer above to set location, stock, and ETA.
-                          </td>
-                        )}
-                        <td className="pin-cell" onClick={(event) => event.stopPropagation()}>
-                          {job && (
-                            <button
-                              type="button"
-                              className={`icon-button pin-toggle ${pinnedJobIds.has(job.id) ? "is-pinned" : ""}`}
-                              aria-label={pinnedJobIds.has(job.id) ? "Unpin row" : "Pin row to top"}
-                              aria-pressed={pinnedJobIds.has(job.id)}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                onTogglePin(job.id);
-                              }}
-                            >
-                              {pinnedJobIds.has(job.id) ? <Pin size={14} /> : <PinOff size={14} />}
-                            </button>
-                          )}
-                        </td>
-                        {index === 0 && (
-                          <td
-                            rowSpan={displayRows.length}
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            <div className="row-actions">
-                              {/* Editable cells stop the click from reaching the
-                                  row, so leaving edit mode needs its own control
-                                  rather than depending on finding a cell that
-                                  happens not to swallow it. */}
-                              {isEditing && (
-                                <button
-                                  type="button"
-                                  className="button primary"
-                                  aria-label={`Finish editing delivery run ${run.name}`}
-                                  onClick={() => toggleRunEdit(run.id)}
-                                >
-                                  Done
-                                </button>
-                              )}
+                                Done
+                              </button>
+                              <button
+                                type="button"
+                                className="button secondary"
+                                aria-label={`Calculate ETAs for delivery run ${run.name}`}
+                                onClick={() => void calculateEtas(run)}
+                                disabled={feedback?.busy}
+                              >
+                                {feedback?.busy ? (
+                                  <LoaderCircle size={15} className="spin" />
+                                ) : (
+                                  <MapPin size={15} />
+                                )}
+                                {feedback?.busy ? "Calculating…" : "Calculate ETAs"}
+                              </button>
                               <button
                                 type="button"
                                 className="button secondary"
@@ -7313,18 +8235,260 @@ function DeliveryPlanningView({
                                 Remove
                               </button>
                             </div>
-                          </td>
+                          </div>
+                        ) : (
+                          <>
+                            <span className="schedule-band-week">
+                              {run.name || "Unnamed run"}
+                            </span>
+                            <span className="schedule-band-crew">
+                              {[
+                                run.deliveryDate
+                                  ? `${run.deliveryDate} · ${run.departureTime || "09:00"}`
+                                  : "Date not arranged",
+                                DELIVERY_RUN_STATUS_LABELS[run.status],
+                                run.warehouse
+                                  ? `From: ${run.warehouse}`
+                                  : "Warehouse not selected",
+                                run.deliveryPic
+                                  ? `PIC: ${run.deliveryPic}${
+                                      run.contactNumber
+                                        ? ` ${formatPhoneNumber(run.contactNumber)}`
+                                        : ""
+                                    }`
+                                  : "",
+                                `${run.jobIds.length} ${
+                                  run.jobIds.length === 1 ? "customer" : "customers"
+                                }`,
+                              ]
+                                .filter(Boolean)
+                                .join("  ·  ")}
+                            </span>
+                          </>
                         )}
-                      </tr>
+                        {feedback?.message && (
+                          <span
+                            className={
+                              feedback.failed
+                                ? "run-route-note failed"
+                                : "run-route-note"
+                            }
+                            role={feedback.failed ? "alert" : undefined}
+                          >
+                            {feedback.message}
+                          </span>
+                        )}
+                      </th>
+                    </tr>
+                    {displayRows.map((job) => {
+                      // Customer Scheduling's own definition of "in play":
+                      // available or still waiting on confirmation. A row's
+                      // own current customer stays selectable even if their
+                      // status has since moved on, and a customer already
+                      // parked in another row of this same run is hidden so
+                      // the same person can't end up double-booked.
+                      const eligibleJobs = jobs.filter(
+                        (candidate) =>
+                          isSchedulingInPlay(candidate) &&
+                          (candidate.id === job?.id ||
+                            !run.jobIds.includes(candidate.id)),
                       );
-                    });
-                  })()}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        );
-      })}
+                      const complete =
+                        job &&
+                        isCompleteInstallation(
+                          job,
+                          todayIso,
+                          groupByJobId.get(job.id),
+                        );
+                      return (
+                        <tr
+                          key={job ? job.id : "empty"}
+                          className={complete ? "run-stop-complete" : undefined}
+                          onClick={() => toggleRunEdit(run.id)}
+                        >
+                          <td
+                            className="run-stop-customer"
+                            title={
+                              complete
+                                ? "Installation already done — this stop is history, and Calculate ETAs skips it."
+                                : undefined
+                            }
+                            onClick={isEditing ? (event) => event.stopPropagation() : undefined}
+                          >
+                            {isEditing ? (
+                              <select
+                                value={job?.id ?? ""}
+                                onChange={(event) => {
+                                  const nextJobId = event.target.value;
+                                  const withoutCurrent = run.jobIds.filter(
+                                    (id) => id !== job?.id,
+                                  );
+                                  updateRun(run.id, {
+                                    jobIds: nextJobId
+                                      ? [...withoutCurrent, nextJobId]
+                                      : withoutCurrent,
+                                  });
+                                }}
+                                aria-label="Customer"
+                              >
+                                <option value="">Select customer</option>
+                                {eligibleJobs.map((candidate) => (
+                                  <option value={candidate.id} key={candidate.id}>
+                                    {candidate.customerName} · {candidate.invoiceNumber}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : job ? (
+                              <>
+                                <strong>{job.customerName}</strong>
+                                <span>{job.invoiceNumber}</span>
+                              </>
+                            ) : (
+                              <span className="run-field-readout">No customer selected</span>
+                            )}
+                          </td>
+                          {job ? (
+                            <>
+                              <td>{job.city || job.state || "Not available"}</td>
+                              <td onClick={isEditing ? (event) => event.stopPropagation() : undefined}>
+                                {isEditing ? (
+                                  <div className="member-tag-input">
+                                    <div className="member-tag-list">
+                                      {stockTags(job).map((item) => (
+                                        <span className="member-tag" key={item}>
+                                          {item}
+                                          <button
+                                            type="button"
+                                            aria-label={`Remove ${item}`}
+                                            onClick={() => removeStockTag(job, item)}
+                                          >
+                                            <X size={12} />
+                                          </button>
+                                        </span>
+                                      ))}
+                                    </div>
+                                    <div className="member-tag-add">
+                                      <input
+                                        value={stockDraft[job.id] ?? ""}
+                                        onChange={(event) =>
+                                          setStockDraft((prev) => ({
+                                            ...prev,
+                                            [job.id]: event.target.value,
+                                          }))
+                                        }
+                                        onKeyDown={(event) => {
+                                          if (event.key === "Enter") {
+                                            event.preventDefault();
+                                            addStockTag(job);
+                                          }
+                                        }}
+                                        placeholder="Add stock item"
+                                        aria-label={`Add stock item for ${job.customerName}`}
+                                      />
+                                      <button
+                                        type="button"
+                                        className="icon-button"
+                                        aria-label={`Add stock item for ${job.customerName}`}
+                                        onClick={() => addStockTag(job)}
+                                      >
+                                        <Plus size={14} />
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <span className="run-field-readout">
+                                    {stockTags(job).length > 0
+                                      ? stockTags(job).join(", ")
+                                      : "No stock details"}
+                                  </span>
+                                )}
+                              </td>
+                              {/* Estimated arrival at the customer's address. Falls
+                                  back to the run's delivery date/departure time
+                                  until someone gives this customer their own, the
+                                  same way a job's installation date falls back to
+                                  its group's. The fallback is shown, not saved:
+                                  leaving the row alone keeps arrivalDate/arrivalTime
+                                  null, so moving the run's date or departure time
+                                  carries every un-estimated stop along with it. */}
+                              <td onClick={isEditing ? (event) => event.stopPropagation() : undefined}>
+                                {isEditing ? (
+                                  <div className="delivery-date-pair">
+                                    <input
+                                      type="date"
+                                      className={job.arrivalDate ? "" : "is-inherited"}
+                                      value={job.arrivalDate ?? run.deliveryDate ?? ""}
+                                      onChange={(event) =>
+                                        onUpdateJob({
+                                          ...job,
+                                          arrivalDate: event.target.value || null,
+                                        })
+                                      }
+                                      aria-label={`Estimated arrival date for ${job.customerName}`}
+                                      title={
+                                        job.arrivalDate
+                                          ? "Estimated for this customer. Clear it to go back to the run's delivery date."
+                                          : "Taken from the delivery run. Set a date here to estimate this stop on its own."
+                                      }
+                                    />
+                                    <input
+                                      type="time"
+                                      className={job.arrivalTime ? "" : "is-inherited"}
+                                      value={job.arrivalTime ?? run.departureTime ?? "09:00"}
+                                      onChange={(event) =>
+                                        onUpdateJob({
+                                          ...job,
+                                          arrivalTime: event.target.value || null,
+                                        })
+                                      }
+                                      aria-label={`Estimated arrival time for ${job.customerName}`}
+                                      title={
+                                        job.arrivalTime
+                                          ? "Estimated for this customer. Clear it to go back to the run's departure time."
+                                          : "Taken from the delivery run's departure time. Set a time here to estimate this stop on its own."
+                                      }
+                                    />
+                                  </div>
+                                ) : (
+                                  <span className="run-field-readout">
+                                    {job.arrivalDate ?? run.deliveryDate ?? "Not set"} ·{" "}
+                                    {job.arrivalTime ?? run.departureTime ?? "09:00"}
+                                  </span>
+                                )}
+                              </td>
+                            </>
+                          ) : (
+                            <td colSpan={3} className="run-no-customers">
+                              Select a customer above to set location, stock, and ETA.
+                            </td>
+                          )}
+                          <td className="pin-cell" onClick={(event) => event.stopPropagation()}>
+                            {job && (
+                              <button
+                                type="button"
+                                className={`icon-button pin-toggle ${pinnedJobIds.has(job.id) ? "is-pinned" : ""}`}
+                                aria-label={pinnedJobIds.has(job.id) ? "Unpin row" : "Pin row to top"}
+                                aria-pressed={pinnedJobIds.has(job.id)}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  onTogglePin(job.id);
+                                }}
+                              >
+                                {pinnedJobIds.has(job.id) ? <Pin size={14} /> : <PinOff size={14} />}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {warehouseTable}
     </div>
   );
 }
