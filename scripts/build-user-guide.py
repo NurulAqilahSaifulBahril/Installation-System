@@ -296,16 +296,20 @@ def callout(title, lines, accent=AMBER_EDGE, background=AMBER_BG):
     return table
 
 
-def url_block(url):
-    """The download address, shown in full.
+DOWNLOAD_LINK_TEXT = "Installation Portal download page"
 
-    A bare <link> renders as styled words with the address hidden, which is no
-    use to someone reading this on paper or typing it into a browser.
+
+def url_block(url, label=DOWNLOAD_LINK_TEXT):
+    """The download link, shown as its name rather than its address.
+
+    The releases URL is long enough to wrap awkwardly and tells the reader
+    nothing; the name of the page is what they are looking for. The trade-off
+    is that the address can no longer be copied off a printed page — this guide
+    is handed out as a PDF people open, so the click is the path that matters.
     """
     table = Table(
         [[Paragraph(
-            f'<link href="{url}"><font face="Consolas" size="9.4" '
-            f'color="#2563EB">{url}</font></link>',
+            f'<link href="{url}" color="#2563EB"><b>{label}</b></link>',
             S["step"],
         )]],
         colWidths=[CONTENT_W],
@@ -475,7 +479,7 @@ def build_story():
     story.append(
         para(
             "Sign in to <b>GitHub</b> with the account Nurul added for you, then "
-            "go to the Installation System download page:"
+            "go to the Installation Portal download page:"
         )
     )
     story.append(url_block(RELEASES_URL))
