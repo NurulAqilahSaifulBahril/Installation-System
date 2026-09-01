@@ -1114,15 +1114,19 @@ function weekRangeLabel(dateStr: string): string {
 }
 
 // How long a paid-up customer may sit with nothing booked before the dashboard
-// starts asking about them. Counted in working days, not calendar days.
-const DAYS_BEFORE_ATTENTION = 28;
+// starts asking about them. Working days: weekends and Malaysian public
+// holidays do not count towards the total.
+const WORKING_DAYS_BEFORE_ATTENTION = 28;
 
-// The card is a new addition to the pipeline — nobody has been chasing this
-// list before now, so switching it on for old, already-overdue customers
-// would dump a backlog on staff the day it ships. Gating it on today's date
-// rather than the payment date means it turns on cleanly for everyone at
-// once instead of per-customer.
-const ATTENTION_START_DATE = "2026-09-01";
+// Only second payments from this date onward are chased. The gate is on the
+// payment date, not on today's date. Gating on today was the first attempt and
+// it does not bound the list at all — it only picks the day the whole backlog
+// arrives, which is why the card opened on 1 Sept 2026 holding 613 jobs, all
+// but one of them already past the threshold before it shipped. Most were
+// installs that predate this system and so have no date recorded, not
+// customers waiting on anybody. Anchoring the gate to the payment keeps the
+// card to the era this system has actually tracked.
+const ATTENTION_PAYMENT_FROM = "2026-01-01";
 
 // Paid the deposit but still has no date on the calendar, four working weeks
 // on. Jobs that already have a confirmed date — their own, their group's, or
@@ -1134,16 +1138,17 @@ function needsAttention(
   todayIso: string,
   group?: InstallationGroup | null,
 ) {
-  if (todayIso < ATTENTION_START_DATE) return false;
   // Still nothing on the calendar is what makes this a chase list rather than
   // a list of ageing invoices: without it every long-since-installed job whose
   // payment is old enough would sit here too.
   if (confirmedInstallationDate(job, group)) return false;
   if (!job.secondPaymentDate) return false;
-  // Calendar days now, not working days — the rule is simply "28 days since
-  // the second payment".
-  const due = addDays(job.secondPaymentDate, DAYS_BEFORE_ATTENTION);
-  return due !== null && todayIso >= due;
+  if (job.secondPaymentDate < ATTENTION_PAYMENT_FROM) return false;
+  return hasWorkingDaysElapsed(
+    job.secondPaymentDate,
+    todayIso,
+    WORKING_DAYS_BEFORE_ATTENTION,
+  );
 }
 
 // The unfiltered view. It heads the status dropdown and is where the page
@@ -1188,8 +1193,8 @@ const PIPELINE_STAGES = [
   {
     value: "attention",
     label: "Need Attention",
-    note: "28 days, no date",
-    hint: "The 2nd payment was 28 or more days ago and there is still no installation date. Starts 1 Sept 2026.",
+    note: "28 working days, no date",
+    hint: "The 2nd payment was 28 or more working days ago — weekends and Malaysian public holidays do not count — and there is still no installation date. Only 2nd payments from 1 Jan 2026 onward are counted.",
   },
 ] as const;
 
@@ -1255,6 +1260,30 @@ function isBookedIn(
       job.deliveryDate ||
       job.arrivalDate,
   );
+}
+
+// Whether Customer Scheduling should carry a customer at all.
+//
+// Its own gate asks "may this customer be put on the calendar?" — paid enough
+// or overridden, and neither unavailable nor cancelled. That is the right
+// question while a job is still waiting for a date, and the wrong one for a
+// job already on one: stock delivered, crew attended, a remark left behind.
+// Those are past scheduling, so being booked in exempts them rather than
+// hiding work that has already happened.
+//
+// Without the exemption the tab's Pending Complete and Complete cards disagree
+// with every other workspace about the same jobs — a payment gate deciding
+// whether a finished installation counts as finished.
+//
+// Deposit and Need Attention are deliberately still gated: those describe
+// customers nobody has scheduled, which is exactly what the gate is for.
+function belongsInPlanning(
+  job: InstallationJob,
+  group: InstallationGroup | null | undefined,
+  lookup: PlanningLookup,
+) {
+  if (isBookedIn(job, group, lookup)) return true;
+  return hasPlanningEligibility(job) && !isOutOfPlanning(job);
 }
 
 // Every free-text remark box on the job, the per-visit note the crew leaves on
@@ -2819,8 +2848,7 @@ export default function DashboardPage() {
     // guard, so admitting them here cannot inflate any other card.
     return jobs.filter(
       (job) =>
-        hasPlanningEligibility(job) &&
-        !isOutOfPlanning(job) &&
+        belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
         (!planningMonthFilter ||
           Boolean(job.secondPaymentDate?.startsWith(planningMonthFilter))) &&
         (!postcodeSearch ||
@@ -2831,6 +2859,7 @@ export default function DashboardPage() {
     jobs,
     groups,
     groupByJobId,
+    planningLookup,
     todayIso,
     planningPostcodeFilter,
     planningMonthFilter,
@@ -7013,14 +7042,13 @@ function TeamPlanningView({
   const showingCompleted = planningFilter === "complete";
   const readyJobs = jobs.filter(
     (job) =>
-      hasPlanningEligibility(job) &&
+      belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
       (showingCompleted ||
         !isCompleteInstallation(
           job,
           planningTodayIso,
           groupByJobId.get(job.id),
         )) &&
-      !isOutOfPlanning(job) &&
       matchesSecondPaymentMonth(job) &&
       matchesPlanningStatus(job),
   );
@@ -7032,7 +7060,7 @@ function TeamPlanningView({
     jobs
       .filter(
         (job) =>
-          hasPlanningEligibility(job) &&
+          belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
           matchesPlanningStatus(job) &&
           (showingCompleted ||
             !isCompleteInstallation(
@@ -7040,7 +7068,6 @@ function TeamPlanningView({
               planningTodayIso,
               groupByJobId.get(job.id),
             )) &&
-          !isOutOfPlanning(job) &&
           matchesSecondPaymentMonth(job),
       )
       .map((job) => job.id),
