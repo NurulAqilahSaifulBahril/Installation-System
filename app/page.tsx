@@ -890,6 +890,25 @@ function postcodeForJob(job: InstallationJob) {
   return job.address.match(/\b\d{5}\b/)?.[0] || "";
 }
 
+// What the customer search box on every workspace matches against: the name,
+// the invoice number, and the whole address as one string — `address` already
+// prefers the installation address over the billing one (see rowToJob in
+// lib/source-api.ts), and city/state/postcode follow it so "Ayer Keroh" and
+// "75450" both find the job.
+//
+// Shared rather than repeated per workspace: Customer Scheduling, Installation
+// groups and Stock delivery all offer the same box, and three copies of the
+// test is how they drift into matching three different things.
+function jobMatchesSearch(job: InstallationJob, search: string) {
+  const query = search.trim().toLowerCase();
+  if (!query) return true;
+  return [job.customerName, job.invoiceNumber, job.address, job.city, job.state, job.postcode]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .includes(query);
+}
+
 type LocationSuggestion = {
   id: string;
   area: string;
@@ -1157,8 +1176,8 @@ const PIPELINE_STAGES = [
   {
     value: "pending_complete",
     label: "Pending Complete Installation",
-    note: "Pending / reschedule noted",
-    hint: "The customer's notes or status mention pending or reschedule — something is holding the job up. Clears once the note is resolved or the booked date passes.",
+    note: "Booked, remark says pending",
+    hint: "The job is booked in — an installation date agreed or stock on a delivery run — and a remark says something is still outstanding, e.g. \"pending wiring\", \"Pending batt\". \"Pending SEDA Approval\" does not count, and neither does a job nobody has scheduled yet. Clears once the remark is cleared.",
   },
   {
     value: "complete",
@@ -1221,6 +1240,55 @@ const stageAccents: Partial<Record<StageValue, "amber" | "red">> = {
  * the individual tests — a job paid 70% with a date three days past is
  * Complete, even though it also satisfies Ready and Deposit.
  */
+// Booked in: a day has been agreed, or the stock is going out on a run. Both
+// count, because either one means the job has left planning and is real work
+// on a calendar — which is what separates "pending completion" from a job
+// nobody has scheduled yet.
+function isBookedIn(
+  job: InstallationJob,
+  group: InstallationGroup | null | undefined,
+  lookup: PlanningLookup,
+) {
+  return Boolean(
+    confirmedInstallationDate(job, group) ||
+      lookup.deliveryRunByJobId.get(job.id) ||
+      job.deliveryDate ||
+      job.arrivalDate,
+  );
+}
+
+// Every free-text remark box on the job, the per-visit note the crew leaves on
+// the day included — that is where "Pending batt" and "[PENDING JOB] continue
+// wiring" actually live.
+//
+// Status codes are deliberately absent. Four of them carry the word without a
+// human ever typing it: customerAvailabilityStatus 'pending',
+// paymentOverrideStatus 'pending', deliveryStatus 'pending_stock' and
+// installationApprovalStatus 'pending_seda_approval'. Matching those made the
+// stage fire on jobs where nothing was outstanding on site.
+function remarkText(job: InstallationJob) {
+  return [
+    job.availabilityRemarks,
+    job.remarks,
+    job.installationRemarks,
+    ...(job.visits ?? []).flatMap((visit) => [visit.kind, visit.notes]),
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+// "Pending SEDA Approval" is written by the app itself (see rowToJob in
+// lib/source-api.ts) off a seda_status that nobody maintained before the
+// approval-email matcher started on 10 July 2026, so on an older invoice it
+// records missing data rather than outstanding work. Stripped before the test
+// rather than excluded after it, so a remark naming both — "pending seda,
+// pending wiring" — still counts on the wiring.
+const PENDING_SEDA_PHRASE = /pending\s*seda[a-z\s]*/gi;
+
+function hasPendingRemark(job: InstallationJob) {
+  return /pending/i.test(remarkText(job).replace(PENDING_SEDA_PHRASE, " "));
+}
+
 function pipelineStageOf(
   job: InstallationJob,
   todayIso: string,
@@ -1228,22 +1296,17 @@ function pipelineStageOf(
 ): StageValue | null {
   const group = lookup.groupByJobId.get(job.id) ?? null;
 
+  // The crew went out and something is still open. Tested before "complete"
+  // on purpose: that is the whole case this describes — the date has passed,
+  // so the three-day rule below would otherwise file every one of these as
+  // finished and the stage would only ever collect jobs nobody had visited.
+  if (isBookedIn(job, group, lookup) && hasPendingRemark(job)) {
+    return "pending_complete";
+  }
+
   // Done: its booked day is at least three days behind us, or the source
   // system has said so outright.
   if (isCompleteInstallation(job, todayIso, group)) return "complete";
-
-  // Booked but held up. Read off the words rather than a status code, because
-  // that is where the reason lives — "Pending batt", "to reschedule",
-  // "PENDING JOB".
-  const notes = [
-    job.availabilityRemarks,
-    job.remarks,
-    job.installationRemarks,
-    job.customerAvailabilityStatus,
-  ]
-    .filter(Boolean)
-    .join(" ");
-  if (/pending|reschedul/i.test(notes)) return "pending_complete";
 
   // Paid up long enough ago with still nothing on the calendar.
   if (needsAttention(job, todayIso, group)) return "attention";
@@ -2762,8 +2825,7 @@ export default function DashboardPage() {
           Boolean(job.secondPaymentDate?.startsWith(planningMonthFilter))) &&
         (!postcodeSearch ||
           postcodeForJob(job).toLowerCase().includes(postcodeSearch)) &&
-        (!nameSearch ||
-          job.customerName?.toLowerCase().includes(nameSearch)),
+        jobMatchesSearch(job, nameSearch),
     );
   }, [
     jobs,
@@ -4315,9 +4377,8 @@ function InstallationGroupsView({
       // crew row with nobody on it can never match a name, so it drops out
       // while a search is running.
       .filter((row) => {
-        const query = customerQuery.trim().toLowerCase();
-        if (!query) return true;
-        return (row.job?.customerName ?? "").toLowerCase().includes(query);
+        if (!customerQuery.trim()) return true;
+        return row.job ? jobMatchesSearch(row.job, customerQuery) : false;
       })
       // Crew first, date within it: every row a given crew works sits together
       // in the order they go out, which is how the schedule sheet itself is
@@ -5132,8 +5193,8 @@ function InstallationGroupsView({
                   type="search"
                   value={customerQuery}
                   onChange={(event) => setCustomerQuery(event.target.value)}
-                  placeholder="Search name"
-                  aria-label="Search customer name"
+                  placeholder="Search customer, invoice, address…"
+                  aria-label="Search customer name, invoice number or address"
                 />
               </label>
               <label>
@@ -7070,7 +7131,7 @@ function TeamPlanningView({
         (suggestion) =>
           !nameSearch ||
           suggestion.customers.some((customer) =>
-            customer.customerName?.toLowerCase().includes(nameSearch),
+            jobMatchesSearch(customer, nameSearch),
           ),
       );
 
@@ -7425,10 +7486,10 @@ function TeamPlanningView({
         </div>
         <div className="planning-filters">
           <label className="range-control">
-            Customer name
+            Customer, invoice or address
             <input
               type="search"
-              placeholder="e.g. Tan Wei Ming"
+              placeholder="e.g. Tan Wei Ming, INV-1009919, Ayer Keroh"
               value={customerNameFilter}
               onChange={(event) => {
                 onCustomerNameFilterChange(event.target.value);
@@ -8196,11 +8257,7 @@ function DeliveryPlanningView({
     .map((run) => {
       const runJobs = jobs.filter((job) => run.jobIds.includes(job.id));
       const matching = query
-        ? runJobs.filter(
-            (job) =>
-              job.customerName.toLowerCase().includes(query) ||
-              job.invoiceNumber.toLowerCase().includes(query),
-          )
+        ? runJobs.filter((job) => jobMatchesSearch(job, query))
         : runJobs;
       return { run, runJobs: matching };
     })
@@ -8237,8 +8294,8 @@ function DeliveryPlanningView({
                 type="search"
                 value={customerQuery}
                 onChange={(event) => setCustomerQuery(event.target.value)}
-                placeholder="Search name"
-                aria-label="Search customer name"
+                placeholder="Search customer, invoice, address…"
+                aria-label="Search customer name, invoice number or address"
               />
             </label>
             <label>
