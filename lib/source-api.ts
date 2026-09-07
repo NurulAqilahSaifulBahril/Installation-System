@@ -7,6 +7,7 @@ type ProxyRow = {
   total_amount: string | null;
   balance_due: string | null;
   percent_of_total_amount: string | null;
+  amount_paid: string | null;
   first_payment_date: string | null;
   second_payment_date: string | null;
   ballast_details: string | null;
@@ -65,6 +66,18 @@ with ranked_payments as (
     ) as payment_sequence
   from payment
   where linked_invoice is not null
+),
+-- What the customer has actually handed over, added up from the ledger.
+-- invoice.percent_of_total_amount cannot be trusted on its own: it is written
+-- when a payment is first recorded and then left behind, so a customer who has
+-- since paid in full still reads at their deposit. It is also inconsistent
+-- about units — the same 5% deposit appears as 5 on one invoice and as 0.05 on
+-- another. Summing the payments avoids both problems. See rowToJob.
+payment_totals as (
+  select linked_invoice, sum(amount) as amount_paid
+  from payment
+  where linked_invoice is not null
+  group by linked_invoice
 ),
 -- The deposit. Ranked the same way as the second payment rather than taken as
 -- min(payment_date), so an invoice whose payments share a date still resolves
@@ -143,6 +156,7 @@ select
   i.total_amount,
   i.balance_due,
   i.percent_of_total_amount,
+  payment_totals.amount_paid,
   first_payments.first_payment_date,
   second_payments.second_payment_date,
   invoice_item_details.ballast_details,
@@ -183,6 +197,7 @@ left join product inverter_product on inverter_product.bubble_id = p.inverter_1
 left join seda_registration s on s.bubble_id = i.linked_seda_registration
 left join first_payments on first_payments.linked_invoice = i.bubble_id
 left join second_payments on second_payments.linked_invoice = i.bubble_id
+left join payment_totals on payment_totals.linked_invoice = i.bubble_id
 left join invoice_item_details on invoice_item_details.linked_invoice = i.bubble_id
 left join package_items on package_items.linked_invoice = i.bubble_id
 left join requested_status
@@ -265,14 +280,17 @@ function applyRequestedSedaStatusOverrides(rows: ProxyRow[]): ProxyRow[] {
       (row) => (row.seda_status ?? "").trim().toLowerCase() === "pending",
     );
 
+    // Resolved rather than stored, for the reason resolvePaymentPercent gives:
+    // the stored column can leave a fully-paid invoice reading at its deposit,
+    // which would hand the approval to a less-paid sibling.
     let winner: ProxyRow | null = null;
     for (const candidate of pending) {
-      const candidatePercent = Number(candidate.percent_of_total_amount ?? 0);
-      const winnerPercent = Number(winner?.percent_of_total_amount ?? -1);
+      const candidatePercent = resolvePaymentPercent(candidate);
+      const winnerPercent = winner ? resolvePaymentPercent(winner) : -1;
       if (candidatePercent > winnerPercent) winner = candidate;
     }
 
-    if (winner && Number(winner.percent_of_total_amount ?? 0) > 0) {
+    if (winner && resolvePaymentPercent(winner) > 0) {
       overrideIds.add(winner.bubble_id);
     }
   }
@@ -302,7 +320,10 @@ function applyPreAutomationPaymentAssumption(rows: ProxyRow[]): ProxyRow[] {
   return rows.map((row) => {
     if (hasSedaApproval(row.seda_status)) return row;
     if (!isBeforePreAutomationCutoff(row.invoice_date)) return row;
-    if (Number(row.percent_of_total_amount ?? 0) < 60) return row;
+    // Resolved, not stored: an old invoice that has been paid in full but whose
+    // percentage column stopped at the deposit would otherwise be denied the
+    // assumption and left showing a SEDA status nobody has maintained.
+    if (resolvePaymentPercent(row) < 60) return row;
     return { ...row, seda_status: "Approved" };
   });
 }
@@ -378,8 +399,32 @@ function parsePhaseFromText(text: string | null): InstallationJob["phase"] {
   return "Unknown";
 }
 
+// How much of the invoice the customer has paid.
+//
+// invoice.percent_of_total_amount is written when a payment is first recorded
+// and then not maintained, so a customer who has since paid in full still reads
+// at their deposit — MARY WONG (1008543) paid 1,400 + 16,800 + 9,800 against a
+// 28,000 invoice, the whole of it, and the column still says 0.05. It is also
+// inconsistent about units: the same 5% deposit is `5` on one invoice and
+// `0.05` on another. 161 invoices are understated this way.
+//
+// So the payment ledger leads. The stored figure is kept as a floor rather than
+// discarded: 10 invoices read higher than their payments add up to, where a
+// payment was evidently taken but never entered as a row, and 5 more carry a
+// percentage with no payment rows at all. Taking the larger of the two keeps
+// those whole while fixing everyone the ledger knows better than the column.
+function resolvePaymentPercent(row: ProxyRow): number {
+  const stored = Number(row.percent_of_total_amount ?? 0);
+  const total = Number(row.total_amount ?? 0);
+  const paid = Number(row.amount_paid ?? 0);
+  const safeStored = Number.isFinite(stored) ? stored : 0;
+  if (!Number.isFinite(total) || total <= 0) return safeStored;
+  if (!Number.isFinite(paid) || paid <= 0) return safeStored;
+  return Math.max(safeStored, (paid / total) * 100);
+}
+
 function rowToJob(row: ProxyRow): InstallationJob {
-  const paymentPercent = Number(row.percent_of_total_amount ?? 0);
+  const paymentPercent = resolvePaymentPercent(row);
   const sedaApproved = hasSedaApproval(row.seda_status);
   const sourceAddress = row.installation_address || row.address || "";
 
