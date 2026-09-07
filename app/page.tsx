@@ -551,31 +551,41 @@ const availabilityLabels: Record<
   pending: "Pending confirmation",
   available: "Available",
   reschedule: "Reschedule",
+  others: "Others",
   unavailable: "Not available",
   cancelled: "Cancellation",
 };
 
 // Customer Scheduling's definition of "in play": the customer is still active
-// work. Available and Pending are the two settled cases; Reschedule joins them
-// because a customer who has moved off their date is still coming, they just
-// have not agreed the new one yet. Named rather than repeated inline so the
-// three places that ask this question cannot drift apart.
+// work. Available and Pending are the two settled cases; Reschedule and Others
+// join them because a customer who has moved off their date is still coming,
+// they just have not agreed the new one yet. Named rather than repeated inline
+// so the three places that ask this question cannot drift apart.
 function isSchedulingInPlay(job: InstallationJob) {
   return (
     job.customerAvailabilityStatus === "available" ||
     job.customerAvailabilityStatus === "pending" ||
-    job.customerAvailabilityStatus === "reschedule"
+    job.customerAvailabilityStatus === "reschedule" ||
+    job.customerAvailabilityStatus === "others"
   );
 }
 
-// A customer who is rescheduling but has no replacement date yet. The whole
-// point of the status is to get that date agreed, so Customer Scheduling marks
-// these rows until one is.
-function needsRescheduleDate(job: InstallationJob) {
+// The two statuses that are waiting on a replacement date, and so get the
+// second date field on Customer Scheduling. Others behaves as Reschedule does
+// here: whatever the reason written in the remark, the outstanding thing is
+// the new date.
+function awaitsNewDate(job: InstallationJob) {
   return (
-    job.customerAvailabilityStatus === "reschedule" &&
-    !job.secondPreferredInstallationDate
+    job.customerAvailabilityStatus === "reschedule" ||
+    job.customerAvailabilityStatus === "others"
   );
+}
+
+// One of those customers with no replacement date yet. The whole point of the
+// status is to get that date agreed, so Customer Scheduling marks these rows
+// until one is.
+function needsNewDate(job: InstallationJob) {
+  return awaitsNewDate(job) && !job.secondPreferredInstallationDate;
 }
 
 // Both statuses take the customer out of planning: they drop out of the
@@ -1551,10 +1561,12 @@ const PENDING_SEDA_PHRASE = /pending\s*seda[a-z\s]*/gi;
 // Availability statuses are matched on purpose — a customer marked Reschedule
 // or Cancelled with nothing rebooked was previously falling into Scheduled
 // Installation (or Need Attention) purely because nobody had also typed the
-// same word into a remark box; the status already says it.
+// same word into a remark box; the status already says it. Others is in the
+// set for the same reason and not because of its name: it is only ever chosen
+// when something is holding the job up that the other statuses do not cover.
 const ESCALATION_AVAILABILITY_STATUSES = new Set<
   InstallationJob["customerAvailabilityStatus"]
->(["pending", "reschedule", "cancelled"]);
+>(["pending", "reschedule", "others", "cancelled"]);
 
 function signalsPendingComplete(job: InstallationJob) {
   if (ESCALATION_AVAILABILITY_STATUSES.has(job.customerAvailabilityStatus)) {
@@ -8034,9 +8046,10 @@ function TeamPlanningView({
           )}
         </td>
         <td>
-          {/* A rescheduling customer keeps the date that fell through and gains
-              a second one for the replacement, so the move stays legible. Every
-              other status has the one date, and the second input is not even
+          {/* A rescheduling customer — or one held up by something Others
+              covers — keeps the date that fell through and gains a second one
+              for the replacement, so the move stays legible. Every other
+              status has the one date, and the second input is not even
               rendered — there is nothing to reschedule from. */}
           {isEditing ? (
             <div className="preferred-date-pair">
@@ -8052,7 +8065,7 @@ function TeamPlanningView({
                   })
                 }
               />
-              {job.customerAvailabilityStatus === "reschedule" && (
+              {awaitsNewDate(job) && (
                 <label className="preferred-date-second">
                   <span>New date</span>
                   <input
@@ -8074,7 +8087,7 @@ function TeamPlanningView({
           ) : (
             <span className="run-field-readout">
               {formatDateOnly(job.preferredInstallationDate)}
-              {job.customerAvailabilityStatus === "reschedule" && (
+              {awaitsNewDate(job) && (
                 <span className="preferred-date-readout-second">
                   {job.secondPreferredInstallationDate
                     ? `→ ${formatDateOnly(job.secondPreferredInstallationDate)}`
@@ -8266,7 +8279,7 @@ function TeamPlanningView({
                       group
                         ? "status-grouped"
                         : `status-${job.customerAvailabilityStatus}`
-                    }${needsRescheduleDate(job) ? " needs-reschedule-date" : ""}`}
+                    }${needsNewDate(job) ? " needs-reschedule-date" : ""}`}
                     onMouseEnter={() => {
                       setHighlightedMapGroupId(suggestion.id);
                       setHighlightedMapCustomerId(job.id);
@@ -8326,9 +8339,7 @@ function TeamPlanningView({
                     <tr
                       key={job.id}
                       className={
-                        needsRescheduleDate(job)
-                          ? "needs-reschedule-date"
-                          : undefined
+                        needsNewDate(job) ? "needs-reschedule-date" : undefined
                       }
                       onMouseEnter={() => {
                         setHighlightedMapGroupId(suggestion.id);

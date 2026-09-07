@@ -117,6 +117,11 @@ export type InstallationJob = {
     // so they stay in planning the way "pending" does — what they are missing
     // is the replacement date, held in secondPreferredInstallationDate.
     | "reschedule"
+    // Anything the five named statuses do not cover, with the reason written
+    // in the remark. Carries a replacement date exactly as "reschedule" does,
+    // and counts as still-open work for the same reason: the office is
+    // waiting on something before this job can be booked.
+    | "others"
     | "unavailable"
     | "cancelled";
   preferredInstallationDate: string | null;

@@ -1708,14 +1708,15 @@ input.second-payment-search {
   background: #453923;
 }
 
-/* A customer who is rescheduling but has no replacement date yet. Deliberately
-   a stronger yellow than the --amber-soft used for Pending directly above:
-   these two states sit in the same table and must not read as each other, so
-   this one is saturated enough to scan for and carries its own left bar.
+/* A customer waiting on a replacement date — Reschedule or Others — who has
+   not been given one yet. Deliberately a stronger yellow than the
+   --amber-soft used for Pending directly above: these two states sit in the
+   same table and must not read as each other, so this one is saturated
+   enough to scan for and carries its own left bar.
 
    Unlike the status tints, this applies to rows inside the town groups too —
-   those carry no status colour at all, and a reschedule stays in its town
-   group rather than pinning to the top. */
+   those carry no status colour at all, and neither status pins to the top,
+   so both stay down in their town group. */
 tr.needs-reschedule-date td {
   background: #fdf0b8;
 }

@@ -10,11 +10,15 @@ const updateSchema = z.object({
   invoiceNumber: z.string().min(1),
   customerName: z.string().min(1),
   installationDate: z.string().nullable(),
+  // Keep in step with InstallationJob['customerAvailabilityStatus'] in
+  // lib/types.ts. This list is not derived from that type, so a status added
+  // there and not here type-checks clean and then fails the save with a 400.
   customerAvailabilityStatus: z.enum([
     'not_set',
     'pending',
     'available',
     'reschedule',
+    'others',
     'unavailable',
     'cancelled',
   ]),
