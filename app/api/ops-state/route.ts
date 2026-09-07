@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/audit";
 import { AuthError, requireUser } from "@/lib/auth";
 import { readOpsState, writeOpsState, type OpsState } from "@/lib/ops-store";
+import { getCached, getInflight, setCached, setInflight } from "@/lib/ops-state-cache";
 
 export const dynamic = "force-dynamic";
 
@@ -19,9 +20,31 @@ function describe(error: unknown) {
 }
 
 export async function GET() {
+  const cached = getCached();
+  if (cached) return NextResponse.json(cached);
+
+  // Two tabs loading in at once would otherwise both pay the full round trip
+  // to the remote database for the same row; the second rides the first's
+  // in-flight request instead of firing a duplicate query.
+  const inflight = getInflight();
+  if (inflight) {
+    try {
+      return NextResponse.json(await inflight);
+    } catch (error) {
+      return NextResponse.json(
+        { error: "Shared planning data is unreachable: " + describe(error) },
+        { status: 503 },
+      );
+    }
+  }
+
+  const requestPromise = readOpsState();
+  setInflight(requestPromise);
+
   try {
-    const { exists, state } = await readOpsState();
-    return NextResponse.json({ exists, state });
+    const body = await requestPromise;
+    setCached(body);
+    return NextResponse.json(body);
   } catch (error) {
     // 503 rather than 500, and never an empty state: the client has to be able
     // to tell "the shared store is unreachable" apart from "there is nothing
@@ -31,6 +54,8 @@ export async function GET() {
       { error: "Shared planning data is unreachable: " + describe(error) },
       { status: 503 },
     );
+  } finally {
+    setInflight(null);
   }
 }
 
@@ -75,6 +100,10 @@ export async function PUT(request: Request) {
 
   try {
     const state = await writeOpsState(patch);
+    // Updated in place rather than merely invalidated: writeOpsState already
+    // hands back the merged row, so the next reader (this tab included) gets
+    // it straight from memory instead of paying for a request that just ran.
+    setCached({ exists: true, state });
 
     const touched = Object.keys(patch)
       .map((key) => KEY_LABELS[key] ?? key)

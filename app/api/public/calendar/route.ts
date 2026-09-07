@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { buildCalendarDayDetails } from '@/lib/calendar-day-details';
-import type { CalendarAssignment, CalendarGroup } from '@/lib/calendar-day-details';
+import type {
+  CalendarAssignment,
+  CalendarDeliveryRun,
+  CalendarGroup,
+} from '@/lib/calendar-day-details';
 import { fetchEligibleSourceJobs } from '@/lib/source-api';
 import { readOpsState } from '@/lib/ops-store';
 import type { InstallationJob, JobUpdate } from '@/lib/types';
@@ -49,6 +53,7 @@ export async function GET() {
     const state = ops.state as unknown as {
       groups?: CalendarGroup[];
       teamWeekAssignments?: CalendarAssignment[];
+      deliveryRuns?: CalendarDeliveryRun[];
       jobUpdates?: Record<string, JobUpdate>;
     };
 
@@ -56,6 +61,7 @@ export async function GET() {
       applyUpdates(jobs, state.jobUpdates ?? {}),
       state.groups ?? [],
       state.teamWeekAssignments ?? [],
+      state.deliveryRuns ?? [],
     );
 
     return NextResponse.json({ dayDetails });

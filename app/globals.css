@@ -300,10 +300,12 @@ button:disabled {
   padding-bottom: 48px;
 }
 
-/* Team planning's table needs more room than any other page here — nine
-   columns plus a map, which cannot both fit at the standard 1480px shell
-   width without the table scrolling sideways. Widening only while that page
-   is open keeps every other page's layout exactly as it was. */
+/* Team planning's table needs more room than most pages here — nine columns
+   plus a map — and Customer details has grown past the standard shell width
+   too (13 columns, Remark and Pin among the last of them). Neither fits at
+   the standard 1480px shell width without scrolling sideways. Widening only
+   while one of these pages is open keeps every other page's layout exactly
+   as it was. */
 .app-shell-wide {
   width: min(1900px, calc(100% - 20px));
 }
@@ -555,6 +557,12 @@ button:disabled {
 .notice-blocking button:disabled {
   cursor: default;
   opacity: 0.6;
+}
+
+.metrics-note {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 /* Eight cards: two even rows of four, dropping to two rows of two on
@@ -1072,78 +1080,6 @@ tbody tr.selected {
   background: #34342f;
 }
 
-/* Arranged customers pin to the top of the pipeline, shaded by how many of the
-   three arrangement columns are filled: green = all three, amber = two, grey =
-   one. Placed after the column-band rules so the row tier wins on every cell,
-   and paired with a left bar so the tier survives for colour-blind readers. */
-.pipeline-table tbody tr.arranged td:first-child {
-  box-shadow: inset 3px 0 0 var(--line);
-}
-
-.pipeline-table tbody tr.arranged-3 td,
-.pipeline-table tbody tr.arranged-3 td:nth-child(6),
-.pipeline-table tbody tr.arranged-3 td:nth-child(7),
-.pipeline-table tbody tr.arranged-3 td:nth-child(8),
-.pipeline-table tbody tr.arranged-3 td:nth-child(9) {
-  background: var(--green-soft);
-}
-
-.pipeline-table tbody tr.arranged-3 td:first-child {
-  box-shadow: inset 3px 0 0 var(--green);
-}
-
-.pipeline-table tbody tr.arranged-2 td,
-.pipeline-table tbody tr.arranged-2 td:nth-child(6),
-.pipeline-table tbody tr.arranged-2 td:nth-child(7),
-.pipeline-table tbody tr.arranged-2 td:nth-child(8),
-.pipeline-table tbody tr.arranged-2 td:nth-child(9) {
-  background: var(--amber-soft);
-}
-
-.pipeline-table tbody tr.arranged-2 td:first-child {
-  box-shadow: inset 3px 0 0 var(--amber);
-}
-
-.pipeline-table tbody tr.arranged-1 td,
-.pipeline-table tbody tr.arranged-1 td:nth-child(6),
-.pipeline-table tbody tr.arranged-1 td:nth-child(7),
-.pipeline-table tbody tr.arranged-1 td:nth-child(8),
-.pipeline-table tbody tr.arranged-1 td:nth-child(9) {
-  background: var(--surface-soft);
-}
-
-/* Each tier needs its own hover step, otherwise the row tint sits above the
-   row background and hovering an arranged row does nothing visible. */
-.pipeline-table tbody tr.arranged-3:hover td,
-.pipeline-table tbody tr.arranged-3.selected td {
-  background: #dfeee5;
-}
-
-.pipeline-table tbody tr.arranged-2:hover td,
-.pipeline-table tbody tr.arranged-2.selected td {
-  background: #f3e9cd;
-}
-
-.pipeline-table tbody tr.arranged-1:hover td,
-.pipeline-table tbody tr.arranged-1.selected td {
-  background: #e8e8e3;
-}
-
-:root[data-theme="dark"] .pipeline-table tbody tr.arranged-3:hover td,
-:root[data-theme="dark"] .pipeline-table tbody tr.arranged-3.selected td {
-  background: #27422f;
-}
-
-:root[data-theme="dark"] .pipeline-table tbody tr.arranged-2:hover td,
-:root[data-theme="dark"] .pipeline-table tbody tr.arranged-2.selected td {
-  background: #453922;
-}
-
-:root[data-theme="dark"] .pipeline-table tbody tr.arranged-1:hover td,
-:root[data-theme="dark"] .pipeline-table tbody tr.arranged-1.selected td {
-  background: #34342f;
-}
-
 /* Manually pinned rows sort to the top of the table (see pipelineJobs in
    app/page.tsx), so unlike the arrangement tiers above, "pinned" rows really
    are contiguous — this divider marks where the pinned block ends. */
@@ -1165,65 +1101,6 @@ tbody tr.selected {
 
 .pin-toggle.is-pinned {
   color: var(--primary);
-}
-
-
-/* Complete installations read as done at a glance. Comes before the
-   cancellation rule below so a cancelled-but-installed edge case (rare, but
-   possible on a reconciled record) still reads red, not green. */
-.pipeline-table tbody tr.installation-complete td,
-.pipeline-table tbody tr.installation-complete td:nth-child(6),
-.pipeline-table tbody tr.installation-complete td:nth-child(7),
-.pipeline-table tbody tr.installation-complete td:nth-child(8),
-.pipeline-table tbody tr.installation-complete td:nth-child(9) {
-  background: var(--green-soft);
-}
-
-.pipeline-table tbody tr.installation-complete td:first-child {
-  box-shadow: inset 3px 0 0 var(--green);
-}
-
-.pipeline-table tbody tr.installation-complete:hover td,
-.pipeline-table tbody tr.installation-complete:hover td:nth-child(6),
-.pipeline-table tbody tr.installation-complete:hover td:nth-child(7),
-.pipeline-table tbody tr.installation-complete:hover td:nth-child(8),
-.pipeline-table tbody tr.installation-complete:hover td:nth-child(9),
-.pipeline-table tbody tr.installation-complete.selected td {
-  background: #d3ecdc;
-}
-
-:root[data-theme="dark"] .pipeline-table tbody tr.installation-complete:hover td,
-:root[data-theme="dark"] .pipeline-table tbody tr.installation-complete.selected td {
-  background: #2c4a38;
-}
-
-/* A cancellation outranks the arrangement tier: a job with teams and a
-   delivery run booked still needs to read as cancelled, so this comes last
-   and wins on every cell. */
-.pipeline-table tbody tr.availability-cancelled td,
-.pipeline-table tbody tr.availability-cancelled td:nth-child(6),
-.pipeline-table tbody tr.availability-cancelled td:nth-child(7),
-.pipeline-table tbody tr.availability-cancelled td:nth-child(8),
-.pipeline-table tbody tr.availability-cancelled td:nth-child(9) {
-  background: var(--red-soft);
-}
-
-.pipeline-table tbody tr.availability-cancelled td:first-child {
-  box-shadow: inset 3px 0 0 var(--red);
-}
-
-.pipeline-table tbody tr.availability-cancelled:hover td,
-.pipeline-table tbody tr.availability-cancelled:hover td:nth-child(6),
-.pipeline-table tbody tr.availability-cancelled:hover td:nth-child(7),
-.pipeline-table tbody tr.availability-cancelled:hover td:nth-child(8),
-.pipeline-table tbody tr.availability-cancelled:hover td:nth-child(9),
-.pipeline-table tbody tr.availability-cancelled.selected td {
-  background: #f5dcd9;
-}
-
-:root[data-theme="dark"] .pipeline-table tbody tr.availability-cancelled:hover td,
-:root[data-theme="dark"] .pipeline-table tbody tr.availability-cancelled.selected td {
-  background: #4b2c2a;
 }
 
 
@@ -1578,6 +1455,14 @@ td span {
   padding-right: 9px;
 }
 
+/* Wider than the postcode box beside it: this one holds a typed month and year
+   ("August 2026"), not a five-digit code. Matched on both workspaces so the
+   same filter is the same size wherever it appears. */
+input.second-payment-search {
+  width: 200px;
+  min-width: 200px;
+}
+
 .planning-filters {
   display: flex;
   align-items: end;
@@ -1925,6 +1810,60 @@ tr.needs-reschedule-date.selected td {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* A type-and-pick combobox: the input alone, with the match list appearing
+   underneath only while there is something typed to match against. */
+.customer-combobox {
+  position: relative;
+  min-width: 0;
+}
+
+.customer-combobox input {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+}
+
+.customer-combobox-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.customer-combobox-option {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.customer-combobox-option:hover,
+.customer-combobox-option:focus-visible {
+  background: var(--surface-soft);
+}
+
+.customer-combobox-empty {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 @media (max-width: 1100px) {
@@ -2417,20 +2356,6 @@ tr.needs-reschedule-date.selected td {
   justify-content: center;
   padding-inline: 6px;
   font-size: 11px;
-}
-
-/* Sits in the page heading beside Add Team. Wraps as a unit on a narrow
-   window so the button never gets pushed off the row on its own. */
-/* Date and time as one slot, side by side, so the column reads as a single
-   value rather than two stacked fields. */
-.preferred-date-slot {
-  display: flex;
-  gap: 4px;
-  min-width: 0;
-}
-
-.preferred-date-slot input[type="time"] {
-  max-width: 104px;
 }
 
 .schedule-filters {
@@ -3999,6 +3924,292 @@ a.phone-number:hover {
 .schedule-modal-content {
   overflow-y: auto;
   padding: 0 20px 20px;
+}
+
+/* --- New customer pipeline report ---------------------------------------- */
+
+.sidebar-report-button {
+  width: 100%;
+  margin-top: 10px;
+  justify-content: center;
+}
+
+.report-modal {
+  width: min(900px, 100%);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(20, 20, 18, 0.24);
+}
+
+.report-content {
+  overflow-y: auto;
+  padding: 0 20px 20px;
+}
+
+.report-period {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  margin-bottom: 16px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.report-period button {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.report-period button.active {
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(20, 20, 18, 0.08);
+}
+
+.report-total {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.report-total-label {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.report-total-value {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.report-row {
+  position: relative;
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  padding: 15px 18px 15px 21px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* The colour bar is the only thing separating the five rows at a glance, so it
+   carries the same meaning as the stage accents on the summary cards. */
+.report-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 4px;
+}
+
+.report-row.amber::before {
+  background: var(--amber);
+}
+
+.report-row.blue::before {
+  background: var(--primary);
+}
+
+.report-row.teal::before {
+  background: var(--green);
+}
+
+.report-row.slate::before {
+  background: var(--muted);
+}
+
+/* Dashed: a row that describes a record which does not fit the normal path,
+   so it reads as "look at this" rather than as another pipeline stage. */
+.report-row.odd {
+  border-style: dashed;
+  background: var(--surface-soft);
+}
+
+.report-row-left {
+  flex: 0 0 76px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.report-row-count {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.report-row-share {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-row.odd .report-row-share {
+  background: var(--surface);
+}
+
+.report-row-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.report-row-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.report-row-tag {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.report-row-desc {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.report-row-figures {
+  display: flex;
+  gap: 22px;
+  margin-top: 9px;
+}
+
+.report-row-figures span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.report-row-figures strong {
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-empty {
+  margin: 0;
+  padding: 22px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  font-size: 13px;
+  text-align: center;
+}
+
+.report-agents {
+  margin-top: 22px;
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.report-agents h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.report-agents-sub {
+  margin: 3px 0 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.report-agent {
+  display: grid;
+  grid-template-columns: 130px 1fr 34px;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 0;
+}
+
+.report-agent-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-agent-track {
+  height: 10px;
+  background: var(--surface-soft);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.report-agent-fill {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+  border-radius: 6px;
+}
+
+.report-agent-value {
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.report-method {
+  margin: 20px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.65;
 }
 
 /* The view already carries its own panel chrome; inside the modal that would
