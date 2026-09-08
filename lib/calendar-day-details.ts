@@ -218,8 +218,22 @@ export function buildCalendarDayDetails(
     // and both are real. Headed by the run's PIC or team rather than an
     // installation crew, so "materials arriving" never reads as "crew on
     // site".
-    const jobRuns = (runsByJobId.get(job.id) ?? []).filter(
-      (run) => run.deliveryDate,
+    // Which day a stop lands on. The customer's own estimated arrival wins
+    // when they have one: Stock delivery offers that field per stop and tells
+    // the user it overrides the run ("Clear it to go back to the run's
+    // delivery date"), so the calendar has to honour the same promise. Reading
+    // only the run's date put 236 of the 383 stops that carry an estimate on
+    // the wrong day, and left the stops on undated runs off the calendar
+    // altogether — LEONG YEU JIAN (INV-1010725) sat on an undated run with a
+    // 5 Sep estimate and appeared nowhere.
+    //
+    // Falls back to the run's date, so a stop with no estimate of its own is
+    // placed exactly as before.
+    const stopDayFor = (run: CalendarDeliveryRun) =>
+      job.arrivalDate || run.deliveryDate;
+
+    const jobRuns = (runsByJobId.get(job.id) ?? []).filter((run) =>
+      stopDayFor(run),
     );
     jobRuns.forEach((run) => {
       const entry = {
@@ -229,7 +243,7 @@ export function buildCalendarDayDetails(
         installTime: null,
         visitKind: null,
       };
-      const day = dayFor(run.deliveryDate);
+      const day = dayFor(stopDayFor(run));
       day.customers.push(entry);
       crewFor(day, {
         teamLabel: "Delivery",
