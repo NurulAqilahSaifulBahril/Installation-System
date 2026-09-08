@@ -234,8 +234,19 @@ export function buildCalendarDayDetails(
     //
     // Falls back to the run's date, so a stop with no estimate of its own is
     // placed exactly as before.
+    // An estimate only describes a delivery that has not happened yet. Once a
+    // run is marked delivered its date is a record of when the materials
+    // actually moved, and the customer's estimate — a single field they carry
+    // across every run they are on — must not overwrite it.
+    //
+    // LEONG YEU JIAN (INV-1010725) shows why: delivered on 25 Aug, and pending
+    // again on 5 Sep. One estimate of 5 Sep applied to both runs erased the
+    // 25 Aug delivery from the calendar entirely. Two deliveries happened;
+    // both belong on it.
     const stopDayFor = (run: CalendarDeliveryRun) =>
-      job.arrivalDate || run.deliveryDate;
+      run.status === "delivered"
+        ? run.deliveryDate
+        : job.arrivalDate || run.deliveryDate;
 
     // One entry per day, not per run. Two runs still mean two real deliveries
     // when they fall on different days, and both are kept — but the arrival
