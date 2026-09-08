@@ -41,6 +41,11 @@ export type CalendarDeliveryRun = {
   deliveryPic?: string;
   deliveryTeam?: string;
   departureTime?: string;
+  // Only ever compared against "delivered", to tell a run that still describes
+  // future work from one that is already history. Optional and widened to
+  // string so this stays a structural view of DeliveryRun rather than a copy
+  // of its status union.
+  status?: string;
 };
 
 export function formatPersonName(name: string) {
@@ -232,9 +237,39 @@ export function buildCalendarDayDetails(
     const stopDayFor = (run: CalendarDeliveryRun) =>
       job.arrivalDate || run.deliveryDate;
 
-    const jobRuns = (runsByJobId.get(job.id) ?? []).filter((run) =>
-      stopDayFor(run),
-    );
+    // One entry per day, not per run. Two runs still mean two real deliveries
+    // when they fall on different days, and both are kept — but the arrival
+    // estimate above is a single field on the customer, so a customer sitting
+    // on more than one run has every one of those runs resolve to that same
+    // day. LEONG YEU JIAN (INV-1010725) is on two, and appeared twice on
+    // 5 Sep: once at 12:00 from the undated run and once at 15:00 from the
+    // 25 Aug one.
+    //
+    // Where two runs do collide on a day, the live one wins the row: a run
+    // still to be delivered describes what is going to happen, while one
+    // already marked delivered is history. Failing that, the later-dated run,
+    // so the heading names the most recent movement rather than an older one.
+    const stopByDay = new Map<string, CalendarDeliveryRun>();
+    (runsByJobId.get(job.id) ?? []).forEach((run) => {
+      const day = stopDayFor(run);
+      if (!day) return;
+      const held = stopByDay.get(day);
+      if (!held) {
+        stopByDay.set(day, run);
+        return;
+      }
+      const isLive = (candidate: CalendarDeliveryRun) =>
+        candidate.status !== "delivered";
+      if (isLive(run) !== isLive(held)) {
+        if (isLive(run)) stopByDay.set(day, run);
+        return;
+      }
+      if ((run.deliveryDate ?? "") > (held.deliveryDate ?? "")) {
+        stopByDay.set(day, run);
+      }
+    });
+
+    const jobRuns = [...stopByDay.values()];
     jobRuns.forEach((run) => {
       const entry = {
         id: job.id,
