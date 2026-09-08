@@ -949,6 +949,22 @@ textarea:focus {
   font-size: 11px;
 }
 
+/* Footer under the pipeline table when the row cap is holding rows back.
+   Uses the existing --line/--muted tokens so it follows light and dark. */
+.pipeline-show-more {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.pipeline-show-more small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .source-age {
   display: flex;
   flex-direction: column;
@@ -1085,6 +1101,21 @@ tbody tr.selected {
    are contiguous — this divider marks where the pinned block ends. */
 .pipeline-table tbody tr.pinned + tr:not(.pinned) td {
   border-top: 2px solid var(--line);
+}
+
+/* Booked day has passed with nobody confirming Complete (or Reschedule) — see
+   needsCompletionVerification in lib/completion.ts. A flag only, not a status:
+   the row stays wherever its real status already puts it, just visibly marked
+   so an admin goes and checks rather than the system assuming for them. */
+.pipeline-table tbody tr.needs-completion-verification td:first-child {
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
+.verify-completion-flag {
+  display: block;
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .pin-cell {
@@ -1589,6 +1620,30 @@ input.second-payment-search {
   text-shadow: 0 0 0.5px currentColor;
 }
 
+/* The customer name once their row is open for editing: a way into the full
+   installation record, so it reads as a link rather than a button. Strips the
+   button chrome the browser would otherwise give it — the element is a button
+   for the keyboard and screen readers, not for the look. */
+.customer-name-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+}
+
+.customer-name-link:hover,
+.customer-name-link:focus-visible {
+  text-decoration-style: solid;
+  text-decoration-color: currentColor;
+}
+
 .planning-map-empty {
   position: absolute;
   inset: 120px 24px auto;
@@ -1672,43 +1727,43 @@ input.second-payment-search {
   font-weight: 700;
 }
 
-.team-planning-pinned-row.status-available td {
+.team-planning-pinned-row.status-propose td {
   background: var(--green-soft);
 }
 
-.team-planning-pinned-row.status-available td:first-child {
+.team-planning-pinned-row.status-propose td:first-child {
   box-shadow: inset 3px 0 0 var(--green);
 }
 
-.team-planning-pinned-row.status-pending td {
+.team-planning-pinned-row.status-pending_complete td {
   background: var(--amber-soft);
 }
 
-.team-planning-pinned-row.status-pending td:first-child {
+.team-planning-pinned-row.status-pending_complete td:first-child {
   box-shadow: inset 3px 0 0 var(--amber);
 }
 
-.team-planning-pinned-row.status-available:hover td,
-.team-planning-pinned-row.status-available.selected td {
+.team-planning-pinned-row.status-propose:hover td,
+.team-planning-pinned-row.status-propose.selected td {
   background: #dfeee5;
 }
 
-:root[data-theme="dark"] .team-planning-pinned-row.status-available:hover td,
-:root[data-theme="dark"] .team-planning-pinned-row.status-available.selected td {
+:root[data-theme="dark"] .team-planning-pinned-row.status-propose:hover td,
+:root[data-theme="dark"] .team-planning-pinned-row.status-propose.selected td {
   background: #234531;
 }
 
-.team-planning-pinned-row.status-pending:hover td,
-.team-planning-pinned-row.status-pending.selected td {
+.team-planning-pinned-row.status-pending_complete:hover td,
+.team-planning-pinned-row.status-pending_complete.selected td {
   background: #f5e9c9;
 }
 
-:root[data-theme="dark"] .team-planning-pinned-row.status-pending:hover td,
-:root[data-theme="dark"] .team-planning-pinned-row.status-pending.selected td {
+:root[data-theme="dark"] .team-planning-pinned-row.status-pending_complete:hover td,
+:root[data-theme="dark"] .team-planning-pinned-row.status-pending_complete.selected td {
   background: #453923;
 }
 
-/* A customer waiting on a replacement date — Reschedule or Others — who has
+/* A customer waiting on a replacement date — Reschedule — who has
    not been given one yet. Deliberately a stronger yellow than the
    --amber-soft used for Pending directly above: these two states sit in the
    same table and must not read as each other, so this one is saturated

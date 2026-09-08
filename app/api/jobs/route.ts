@@ -1,5 +1,14 @@
 ﻿import { NextResponse } from 'next/server';
-import { toDateOnly } from '@/lib/dates';
+import { malaysiaToday, toDateOnly } from '@/lib/dates';
+import { normalizeAvailabilityStatus } from '@/lib/types';
+import { resolvedAvailabilityStatus } from '@/lib/completion';
+import { readOpsState, writeOpsState } from '@/lib/ops-store';
+import {
+  RECONCILE_INSERT_SQL,
+  RECONCILE_UPDATE_SQL,
+  applyStoreReconciliation,
+  planStoreReconciliation,
+} from '@/lib/store-reconcile';
 import { demoJobs } from '@/lib/demo-data';
 import { ensureInstallationSchema } from '@/lib/installation-schema';
 import { queryProxy } from '@/lib/proxy-db';
@@ -69,8 +78,11 @@ function mergeOperations(
     return {
       ...job,
       installationDate: toDateOnly(operation.installation_date),
-      customerAvailabilityStatus:
-        operation.customer_availability_status ?? 'not_set',
+      // The column is plain text and still holds values from the seven-status
+      // scheme, so it is translated on the way out rather than migrated.
+      customerAvailabilityStatus: normalizeAvailabilityStatus(
+        operation.customer_availability_status,
+      ),
       preferredInstallationDate: toDateOnly(operation.preferred_installation_date),
       preferredInstallationTime: operation.preferred_installation_time || null,
       secondPreferredInstallationDate: toDateOnly(
@@ -190,13 +202,75 @@ function newestSourceUpdate(jobs: InstallationJob[]): string | null {
   return newest;
 }
 
+// A group as this route needs to read it: which jobs are in it, and the date
+// it is booked for. The stored shape is wider and belongs to the page, so it
+// is narrowed here rather than imported.
+type StoredGroup = { jobIds?: unknown; installationDate?: unknown };
+
+function groupDatesByJobId(groups: unknown[]): Map<string, string | null> {
+  const byJob = new Map<string, string | null>();
+  for (const entry of groups) {
+    const group = entry as StoredGroup;
+    const date =
+      typeof group?.installationDate === 'string' ? group.installationDate : null;
+    if (!Array.isArray(group?.jobIds)) continue;
+    for (const id of group.jobIds) {
+      if (typeof id === 'string') byJob.set(id, date);
+    }
+  }
+  return byJob;
+}
+
+// Bring the stored status up to date with where the job actually stands: one
+// that has reached Complete Installation reads Complete, whatever it was last
+// set to. Returned to the caller and written back to the column, so the
+// database and the dashboard agree rather than the page having to re-derive it
+// on every render.
+//
+// The only two values it can ever write. resolvedAvailabilityStatus returns
+// the job's existing status untouched in every other case, so a job can be
+// moved to Complete or held at Pending Complete and nothing else — it cannot
+// invent a date, clear a status, or overrule a Reschedule.
+//
+// The comparison is against the already-normalised status, not the raw column,
+// so a row still holding a legacy value is left alone unless the rule actually
+// changes where the job stands. Translating those is a read-time concern (see
+// normalizeAvailabilityStatus); this is only for drift the rule itself causes.
+function applyResolvedStatus(
+  jobs: InstallationJob[],
+  groupDates: Map<string, string | null>,
+  todayIso: string,
+): { jobs: InstallationJob[]; corrected: Map<string, string[]> } {
+  const corrected = new Map<string, string[]>();
+  const resolved = jobs.map((job) => {
+    const group = { installationDate: groupDates.get(job.id) ?? null };
+    const status = resolvedAvailabilityStatus(job, todayIso, group);
+    if (status === job.customerAvailabilityStatus) return job;
+    corrected.set(status, [...(corrected.get(status) ?? []), job.id]);
+    return { ...job, customerAvailabilityStatus: status };
+  });
+  return { jobs: resolved, corrected };
+}
+
 async function loadJobsPayload() {
   let source: 'live' | 'demo' = 'live';
   let warning: string | null = null;
   let jobs: InstallationJob[];
 
+  // The source query and the schema check talk to two different databases and
+  // neither needs the other's answer, so they are started together rather than
+  // one after the other. Each is still awaited inside the block that owns its
+  // failure mode, so the fallbacks below are unchanged.
+  const sourcePromise = fetchEligibleSourceJobs();
+  const schemaPromise = ensureInstallationSchema();
+  // schemaPromise is not awaited until the second block, and a rejection with
+  // nothing attached in the meantime is an unhandled rejection — fatal on
+  // Node's default in recent versions. This observes it without swallowing it:
+  // the await below still sees the same rejected promise and still throws.
+  schemaPromise.catch(() => {});
+
   try {
-    const result = await fetchEligibleSourceJobs();
+    const result = await sourcePromise;
     jobs = result.jobs;
     if (result.truncated) {
       warning =
@@ -215,10 +289,96 @@ async function loadJobsPayload() {
   const sourceUpdatedAt = newestSourceUpdate(jobs);
 
   try {
-    await ensureInstallationSchema();
-    const merged = mergeOperations(jobs, await readOperationalRows(jobs.map((job) => job.id)));
+    await schemaPromise;
+    // Two independent reads against the same database, previously sequential.
+    // readOpsState calls ensureInstallationSchema itself, but that is memoised
+    // and already resolved by this point, so it costs nothing here.
+    const [operationalRows, { state }] = await Promise.all([
+      readOperationalRows(jobs.map((job) => job.id)),
+      readOpsState(),
+    ]);
+    const merged = mergeOperations(jobs, operationalRows);
+
+    // Step one: fill in anything the table is missing that the browser-side
+    // store holds. See lib/store-reconcile.ts — it only ever fills columns in,
+    // never clears them, because the loss between the two stores runs one way.
+    const patches = planStoreReconciliation(merged, state.jobUpdates);
+    if (patches.length > 0) {
+      const payload = JSON.stringify(patches);
+      try {
+        // Create-then-fill: the insert only adds rows that were missing, the
+        // update only touches columns the patch actually carries.
+        await queryProxy(RECONCILE_INSERT_SQL, [payload]);
+        await queryProxy(RECONCILE_UPDATE_SQL, [payload]);
+      } catch {
+        // Same reasoning as the status write below: the response is already
+        // correct, so a failed write costs a retry rather than a wrong answer.
+      }
+    }
+
+    // Step two: resolve the status, now that the dates it reads are whole.
+    const { jobs: resolved, corrected } = applyResolvedStatus(
+      applyStoreReconciliation(merged, patches),
+      groupDatesByJobId(state.groups),
+      malaysiaToday(),
+    );
+    // Written back rather than only returned: a job goes Complete by its date
+    // passing, which happens with nobody at a keyboard, so nothing else would
+    // ever record it. One statement, only the rows that drifted, and it
+    // settles to a no-op once they are all in step.
+    for (const [status, ids] of corrected) {
+      try {
+        await queryProxy(
+          'update public.installation_jobs set customer_availability_status = $1 ' +
+            'where source_invoice_id = any($2::text[])',
+          [status, ids],
+        );
+      } catch {
+        // A failed write is not worth failing the read over: the response
+        // already carries the corrected status, so the dashboard is right
+        // either way and the next load tries again.
+      }
+    }
+
+    // And the same status into the other store. Without this the table moves
+    // to Complete while jobUpdates keeps whatever it was last saved with, and
+    // the two disagree for good — the client re-derives the status on load, so
+    // nothing on screen would ever reveal the divergence.
+    //
+    // The stored entry is spread rather than replaced: jsonb merges jobUpdates
+    // per job id but swaps each id's object wholesale, so sending the one field
+    // on its own would drop everything else saved against that job.
+    // Driven by the resolved jobs rather than by what changed on this load:
+    // a job the table settled days ago still has a stale copy sitting in
+    // jobUpdates, and keying off this load's corrections would never reach it.
+    // Comparing the raw stored string also retires the legacy values still in
+    // there — an "available" becomes the "propose" it already reads as.
+    const statusPatch: Record<string, unknown> = {};
+    for (const job of resolved) {
+      const stored = state.jobUpdates[job.id] as
+        | Record<string, unknown>
+        | undefined;
+      if (!stored) continue;
+      if (stored.customerAvailabilityStatus === job.customerAvailabilityStatus) {
+        continue;
+      }
+      statusPatch[job.id] = {
+        ...stored,
+        customerAvailabilityStatus: job.customerAvailabilityStatus,
+      };
+    }
+    if (Object.keys(statusPatch).length > 0) {
+      try {
+        await writeOpsState({
+          jobUpdates: statusPatch,
+        } as Parameters<typeof writeOpsState>[0]);
+      } catch {
+        // As above.
+      }
+    }
+
     return {
-      jobs: merged,
+      jobs: resolved,
       source,
       persistence: 'api-db',
       warning,

@@ -5,23 +5,30 @@ import { AuthError, requireUser } from '@/lib/auth';
 import { ensureInstallationSchema } from '@/lib/installation-schema';
 import { queryProxy } from '@/lib/proxy-db';
 import { invalidateJobsCache } from '@/lib/jobs-cache';
+import { normalizeAvailabilityStatus } from '@/lib/types';
 
 const updateSchema = z.object({
   invoiceNumber: z.string().min(1),
   customerName: z.string().min(1),
   installationDate: z.string().nullable(),
-  // Keep in step with InstallationJob['customerAvailabilityStatus'] in
-  // lib/types.ts. This list is not derived from that type, so a status added
-  // there and not here type-checks clean and then fails the save with a 400.
-  customerAvailabilityStatus: z.enum([
-    'not_set',
-    'pending',
-    'available',
-    'reschedule',
-    'others',
-    'unavailable',
-    'cancelled',
-  ]),
+  // The five current statuses, plus the five they replaced. The old ones are
+  // still accepted so a browser tab left open on the previous build saves
+  // instead of failing with a 400; they are translated to their successors by
+  // normalizeAvailabilityStatus below rather than written through as-is.
+  customerAvailabilityStatus: z
+    .enum([
+      'not_set',
+      'propose',
+      'reschedule',
+      'pending_complete',
+      'complete',
+      'pending',
+      'available',
+      'others',
+      'unavailable',
+      'cancelled',
+    ])
+    .transform(normalizeAvailabilityStatus),
   preferredInstallationDate: z.string().nullable(),
   secondPreferredInstallationDate: z.string().nullable(),
   preferredInstallationTime: z.string().nullable(),

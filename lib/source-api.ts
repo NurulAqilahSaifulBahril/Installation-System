@@ -1,5 +1,10 @@
 import { toDateOnly } from "@/lib/dates";
-import type { InstallationJob } from "@/lib/types";
+import {
+  APPROVAL_PAYMENT_PERCENT,
+  READY_PAYMENT_PERCENT,
+  hasReachedPaymentPercent,
+  type InstallationJob,
+} from "@/lib/types";
 
 type ProxyRow = {
   bubble_id: string;
@@ -63,7 +68,14 @@ with ranked_payments as (
     row_number() over (
       partition by linked_invoice
       order by payment_date asc nulls last, created_at asc, id asc
-    ) as payment_sequence
+    ) as payment_sequence,
+    -- The ledger read forwards: what the invoice stood at once this payment
+    -- had landed. second_payments below walks this to find the crossing.
+    sum(coalesce(amount, 0)) over (
+      partition by linked_invoice
+      order by payment_date asc nulls last, created_at asc, id asc
+      rows between unbounded preceding and current row
+    ) as paid_to_date
   from payment
   where linked_invoice is not null
 ),
@@ -79,18 +91,43 @@ payment_totals as (
   where linked_invoice is not null
   group by linked_invoice
 ),
--- The deposit. Ranked the same way as the second payment rather than taken as
--- min(payment_date), so an invoice whose payments share a date still resolves
--- to one first and one second row instead of both collapsing onto the same one.
+-- The deposit: the earliest payment, taken by rank rather than by
+-- min(payment_date) so an invoice whose first payments share a date still
+-- resolves to exactly one row.
 first_payments as (
   select linked_invoice, payment_date as first_payment_date
   from ranked_payments
   where payment_sequence = 1
 ),
+-- The date the invoice reached the installation threshold, carried under the
+-- second_payment name the UI still shows as "2nd payment". It is deliberately
+-- NOT the literal second transaction: customers pay the balance in as many
+-- instalments as they like, so the second row is only the crossing when the
+-- balance happened to arrive in one piece. SOONG KOK MING (INV-1010945) paid
+-- 30,000 across six payments and crossed on the sixth (16 Aug), while their
+-- second row was 500 on 28 Jul at 5% paid — a date that would have claimed
+-- they were cleared to install three weeks before the balance existed. Since
+-- everything downstream reads this as "when were they cleared" (Ready to
+-- Install's era gate, Need Attention's 28-working-day clock, the 2nd payment
+-- column and its month filter), it has to be the crossing itself.
+--
+-- distinct on takes the first row in threshold order, so a customer who later
+-- pays in full still dates to the payment that first got them there.
+--
+-- The threshold is a share of the invoice, so an invoice with no usable
+-- total_amount is left null rather than guessed at: a percentage of nothing
+-- cannot say when the threshold was passed.
 second_payments as (
-  select linked_invoice, payment_date as second_payment_date
+  select distinct on (ranked_payments.linked_invoice)
+    ranked_payments.linked_invoice,
+    ranked_payments.payment_date as second_payment_date
   from ranked_payments
-  where payment_sequence = 2
+  join invoice threshold_invoice
+    on threshold_invoice.bubble_id = ranked_payments.linked_invoice
+  where coalesce(threshold_invoice.total_amount, 0) > 0
+    and ranked_payments.paid_to_date
+      >= threshold_invoice.total_amount * ${READY_PAYMENT_PERCENT} / 100.0
+  order by ranked_payments.linked_invoice, ranked_payments.payment_sequence
 ),
 invoice_item_details as (
   select
@@ -423,8 +460,34 @@ function resolvePaymentPercent(row: ProxyRow): number {
   return Math.max(safeStored, (paid / total) * 100);
 }
 
+// invoice.balance_due suffers the same staleness as percent_of_total_amount
+// above but was never given the same fix: SOONG KOK MING (INV-1010945) paid
+// 24,000 of a 30,000 invoice — 80%, which percent_of_total_amount correctly
+// shows — while balance_due still reads 20,300, a figure that matches no
+// point in the six-payment history and contradicts the 80% sitting right next
+// to it in the same UI column. Deriving the balance from the already-
+// reconciled percent keeps the two numbers consistent and inherits
+// resolvePaymentPercent's handling of the opposite failure (a payment taken
+// but never entered as a row), rather than trusting the same unreliable
+// column a second time.
+function resolvePaymentBalance(row: ProxyRow, paymentPercent: number): number {
+  const total = Number(row.total_amount ?? 0);
+  const stored = Number(row.balance_due ?? 0);
+  const safeStored = Number.isFinite(stored) ? stored : 0;
+  if (!Number.isFinite(total) || total <= 0) return safeStored;
+  return Math.max(0, total * (1 - paymentPercent / 100));
+}
+
 function rowToJob(row: ProxyRow): InstallationJob {
   const paymentPercent = resolvePaymentPercent(row);
+  // Compared through the shared test rather than with a bare `<`: an invoice
+  // paid to exactly the approval line does not reliably read as having reached
+  // it once the percentage has been through a division. See
+  // hasReachedPaymentPercent.
+  const belowApprovalLine = !hasReachedPaymentPercent(
+    paymentPercent,
+    APPROVAL_PAYMENT_PERCENT,
+  );
   const sedaApproved = hasSedaApproval(row.seda_status);
   const sourceAddress = row.installation_address || row.address || "";
 
@@ -447,7 +510,7 @@ function rowToJob(row: ProxyRow): InstallationJob {
     agentName: row.agent_name || "Not available",
     totalAmount: Number(row.total_amount ?? 0),
     paymentPercent,
-    paymentBalance: Number(row.balance_due ?? 0),
+    paymentBalance: resolvePaymentBalance(row, paymentPercent),
     firstPaymentDate: toDateOnly(row.first_payment_date),
     secondPaymentDate: toDateOnly(row.second_payment_date),
     panelQuantity: resolvedPanelQty,
@@ -478,7 +541,7 @@ function rowToJob(row: ProxyRow): InstallationJob {
       ? "pending_approval_date"
       : "pending_seda_approval",
     scheduleStatus:
-      paymentPercent < 59
+      belowApprovalLine
         ? "pending_approval"
         : sedaApproved
           ? "ready_to_schedule"
@@ -505,8 +568,8 @@ function rowToJob(row: ProxyRow): InstallationJob {
     paymentOverrideReason: "",
     teams: [],
     remarks:
-      paymentPercent < 59
-        ? "Below 59% payment · Management approval required"
+      belowApprovalLine
+        ? `Below ${APPROVAL_PAYMENT_PERCENT}% payment · Management approval required`
         : sedaApproved
           ? ""
           : "Pending SEDA Approval",

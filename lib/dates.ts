@@ -30,3 +30,12 @@ export function toDateOnly(value: unknown): string | null {
   const match = /^(\d{4}-\d{2}-\d{2})/.exec(value.trim());
   return match ? match[1] : null;
 }
+
+// Today in the timezone the business actually works in. The server may be
+// anywhere, and every date this app compares against — an installation date,
+// a payment date — is a Malaysian calendar day, so "today" has to be one too.
+export function malaysiaToday(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kuala_Lumpur",
+  }).format(new Date());
+}

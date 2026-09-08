@@ -40,18 +40,24 @@ import {
 import {
   Fragment,
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import dynamic from "next/dynamic";
-import type {
-  CalendarDayDetail,
-  InstallationJob,
-  JobUpdate,
-  JobVisit,
-  TeamAssignment,
+import {
+  APPROVAL_PAYMENT_PERCENT,
+  READY_PAYMENT_PERCENT,
+  hasReachedPaymentPercent,
+  normalizeAvailabilityStatus,
+  type CalendarDayDetail,
+  type CustomerAvailabilityStatus,
+  type InstallationJob,
+  type JobUpdate,
+  type JobVisit,
+  type TeamAssignment,
 } from "@/lib/types";
 import type { UpdateStatus } from "@/lib/electron-desktop";
 import {
@@ -59,6 +65,16 @@ import {
   fetchDailyWeather,
 } from "@/lib/calendar-weather";
 import { buildCalendarDayDetails } from "@/lib/calendar-day-details";
+import { malaysiaToday } from "@/lib/dates";
+import {
+  addDays,
+  confirmedInstallationDate,
+  hasPlannedDate,
+  isCompleteInstallation,
+  needsCompletionVerification,
+  resolvedAvailabilityStatus,
+  signalsPendingComplete,
+} from "@/lib/completion";
 import { ROUTE_METHOD_LABELS } from "@/lib/routing";
 import SidebarCalendar from "@/app/components/SidebarCalendar";
 import GroupMultiSelect from "@/app/components/GroupMultiSelect";
@@ -212,7 +228,6 @@ function schedulableMembers(group: InstallationGroup, jobs: InstallationJob[]) {
   return jobs.filter(
     (job) =>
       group.jobIds.includes(job.id) &&
-      !isOutOfPlanning(job) &&
       Boolean(job.installationDate || group.installationDate),
   );
 }
@@ -232,16 +247,17 @@ function groupHasSchedulingReadyMember(
 }
 
 /**
- * Available once every dated, in-play customer has confirmed; Pending while any
- * of them has not. Only the customers that qualified the group are consulted —
- * an undated customer never put the group in the list, so it does not get to
- * hold the group at Pending either.
+ * A group-level rollup shown on the Team management group picker, not a
+ * customer status: Available once every dated member has a date on the table,
+ * Pending while any of them has not. Only the customers that qualified the
+ * group are consulted — an undated customer never put the group in the list,
+ * so it does not get to hold the group at Pending either.
  */
 function groupAvailability(group: InstallationGroup, jobs: InstallationJob[]) {
   const members = schedulableMembers(group, jobs);
   const settled =
     members.length > 0 &&
-    members.every((job) => job.customerAvailabilityStatus === "available");
+    members.every((job) => job.customerAvailabilityStatus === "propose");
   return settled ? "Available" : "Pending";
 }
 
@@ -255,6 +271,52 @@ function groupDisplayDate(group: InstallationGroup, jobs: InstallationJob[]) {
     .sort()[0];
 }
 
+// Constructing an Intl.DateTimeFormat is expensive — far more so than calling
+// .format() on one — and these were previously built inline, including inside
+// the pipeline table's row body. At a few thousand rows that was tens of
+// thousands of constructions per render. Built once at module scope instead;
+// formatters are stateless and safe to share.
+//
+// DATE_KL and DATE_PLAIN differ only by time zone, and that difference is
+// load-bearing: values that are true instants (payment timestamps) have to be
+// read in Malaysian time, while plain "YYYY-MM-DD" values are already local
+// and are parsed at midnight, so giving those a zone can shift them a day.
+const DATE_PLAIN = new Intl.DateTimeFormat("en-MY", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+});
+const DATE_KL = new Intl.DateTimeFormat("en-MY", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: "Asia/Kuala_Lumpur",
+});
+const DATE_TIME_KL = new Intl.DateTimeFormat("en-MY", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "Asia/Kuala_Lumpur",
+});
+const WEEKDAY_KL = new Intl.DateTimeFormat("en-MY", {
+  weekday: "long",
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+  timeZone: "Asia/Kuala_Lumpur",
+});
+const DAY_MONTH = new Intl.DateTimeFormat("en-MY", {
+  day: "numeric",
+  month: "short",
+});
+const TIME_KL = new Intl.DateTimeFormat("en-MY", {
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "Asia/Kuala_Lumpur",
+});
+
 // Assignment stamps are stored as plain local strings rather than instants, so
 // they are split on the "T" instead of parsed — the same reasoning as
 // lib/dates.ts, where reparsing a zone-less value can move it a day.
@@ -264,11 +326,7 @@ function formatDateOnly(value: string | null | undefined) {
   if (!value) return "Not set";
   const date = new Date(`${value}T00:00:00`);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("en-MY", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  }).format(date);
+  return DATE_PLAIN.format(date);
 }
 
 function formatAssignmentStamp(value: string) {
@@ -276,11 +334,7 @@ function formatAssignmentStamp(value: string) {
   const [datePart, timePart] = value.split("T");
   const date = new Date(`${datePart}T00:00:00`);
   if (Number.isNaN(date.getTime())) return value;
-  const label = new Intl.DateTimeFormat("en-MY", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  }).format(date);
+  const label = DATE_PLAIN.format(date);
   return timePart ? `${label}, ${timePart.slice(0, 5)}` : label;
 }
 
@@ -398,14 +452,7 @@ function describeSourceAge(iso: string | null) {
   if (Number.isNaN(updated.getTime())) return null;
 
   const hours = (Date.now() - updated.getTime()) / 3_600_000;
-  const date = new Intl.DateTimeFormat("en-MY", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone: "Asia/Kuala_Lumpur",
-  }).format(updated);
+  const date = DATE_TIME_KL.format(updated);
 
   let elapsed: string;
   if (hours < 1) elapsed = "under an hour";
@@ -543,42 +590,32 @@ function scheduleStatusKind(
   return "warning";
 }
 
-const availabilityLabels: Record<
-  InstallationJob["customerAvailabilityStatus"],
-  string
-> = {
-  not_set: "Not set",
-  pending: "Pending confirmation",
-  available: "Available",
+const availabilityLabels: Record<CustomerAvailabilityStatus, string> = {
+  not_set: "Not Set",
+  propose: "Propose",
   reschedule: "Reschedule",
-  others: "Others",
-  unavailable: "Not available",
-  cancelled: "Cancellation",
+  pending_complete: "Pending Complete",
+  complete: "Complete",
 };
 
 // Customer Scheduling's definition of "in play": the customer is still active
-// work. Available and Pending are the two settled cases; Reschedule and Others
-// join them because a customer who has moved off their date is still coming,
-// they just have not agreed the new one yet. Named rather than repeated inline
-// so the three places that ask this question cannot drift apart.
+// work. Everything except the two ends of the list — nobody has started on a
+// Not Set customer, and there is nothing left to plan for a Complete one.
+// Named rather than repeated inline so the three places that ask this question
+// cannot drift apart.
 function isSchedulingInPlay(job: InstallationJob) {
   return (
-    job.customerAvailabilityStatus === "available" ||
-    job.customerAvailabilityStatus === "pending" ||
+    job.customerAvailabilityStatus === "propose" ||
     job.customerAvailabilityStatus === "reschedule" ||
-    job.customerAvailabilityStatus === "others"
+    job.customerAvailabilityStatus === "pending_complete"
   );
 }
 
-// The two statuses that are waiting on a replacement date, and so get the
-// second date field on Customer Scheduling. Others behaves as Reschedule does
-// here: whatever the reason written in the remark, the outstanding thing is
-// the new date.
+// The status that is waiting on a replacement date, and so gets the second
+// date field on Customer Scheduling. Cancellations read as Reschedule now, so
+// a called-off date arrives here too: the outstanding thing is the new date.
 function awaitsNewDate(job: InstallationJob) {
-  return (
-    job.customerAvailabilityStatus === "reschedule" ||
-    job.customerAvailabilityStatus === "others"
-  );
+  return job.customerAvailabilityStatus === "reschedule";
 }
 
 // One of those customers with no replacement date yet. The whole point of the
@@ -588,39 +625,12 @@ function needsNewDate(job: InstallationJob) {
   return awaitsNewDate(job) && !job.secondPreferredInstallationDate;
 }
 
-// Both statuses take the customer out of planning: they drop out of the
-// suggestion lists and are removed from any installation group.
-function isOutOfPlanning(job: InstallationJob) {
-  return (
-    job.customerAvailabilityStatus === "unavailable" ||
-    job.customerAvailabilityStatus === "cancelled"
-  );
-}
+// No availability status takes a customer out of planning any more. The two
+// that used to — "unavailable" and "cancelled" — are gone, and a cancelled
+// date now reads as Reschedule, which is active work by definition: the job
+// still has to be booked, just on a day nobody has agreed yet. Completed jobs
+// leave planning by having been done (isHiddenAsCompleted), not by status.
 
-// The confirmed date: whichever is latest among the customer's own date, the
-// group they were scheduled through, and — only while marked Available — the
-// date agreed on Customer Scheduling. Latest wins rather than the customer's
-// own date always taking priority, because a reschedule commonly leaves a
-// newer, later-dated group in place while the customer's own field (nothing
-// in the app ever clears it) still carries the date that fell through; the
-// most recent of the two is what actually reflects where things stand today.
-// The availability guard on the preferred date is unchanged: a Pending
-// customer's preferred date is still just their suggestion, and it stops
-// counting the moment they go unavailable.
-function confirmedInstallationDate(
-  job: InstallationJob,
-  group: InstallationGroup | null | undefined,
-) {
-  const candidates = [
-    job.installationDate,
-    group?.installationDate || null,
-    job.customerAvailabilityStatus === "available"
-      ? job.preferredInstallationDate
-      : null,
-  ].filter((date): date is string => Boolean(date));
-  if (candidates.length === 0) return null;
-  return candidates.reduce((latest, date) => (date > latest ? date : latest));
-}
 
 // A booked date that is at least a full day gone counts as installed, without
 // waiting on the source system to record the sign-off — otherwise a finished
@@ -636,41 +646,12 @@ function confirmedInstallationDate(
 // How long after its booked day a job is taken to be finished. Three days
 // rather than one: an install that ran late, or slipped to the next morning,
 // should not be filed as done while the crew may still be on site.
-const DAYS_BEFORE_ASSUMED_COMPLETE = 3;
 
 // Plain "YYYY-MM-DD" plus n days, read back field by field. Not via
 // toISOString, which would return UTC and slip a day at UTC+8 — the same trap
 // lib/dates.ts documents.
-function addDays(dateStr: string, days: number): string | null {
-  const date = new Date(`${dateStr.slice(0, 10)}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return null;
-  date.setDate(date.getDate() + days);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-    date.getDate(),
-  ).padStart(2, "0")}`;
-}
 
-function isAssumedComplete(
-  job: InstallationJob,
-  todayIso: string,
-  group?: InstallationGroup | null,
-) {
-  const date = confirmedInstallationDate(job, group);
-  if (!date) return false;
-  const settled = addDays(date, DAYS_BEFORE_ASSUMED_COMPLETE);
-  return settled !== null && todayIso >= settled;
-}
 
-function isCompleteInstallation(
-  job: InstallationJob,
-  todayIso: string,
-  group?: InstallationGroup | null,
-) {
-  return (
-    job.scheduleStatus === "installed" ||
-    isAssumedComplete(job, todayIso, group)
-  );
-}
 
 // Group and delivery-run membership live outside the job record, so any
 // question about how arranged a job is needs both maps alongside it.
@@ -727,12 +708,12 @@ function isFullyPlanned(job: InstallationJob, lookup: PlanningLookup) {
   return planningGaps(job, lookup).length === 0;
 }
 
-// Financially free to move: paid 59% or more, or carrying an approved
-// exception for a job that has not reached that threshold.
+// Financially free to move: paid to the approval line or above, or carrying
+// an approved exception for a job that has not reached it.
 function hasPlanningEligibility(job: InstallationJob) {
   return (
-    job.paymentPercent >= 59 ||
-    (job.paymentPercent < 59 && job.paymentOverrideStatus === "approved")
+    hasReachedPaymentPercent(job.paymentPercent, APPROVAL_PAYMENT_PERCENT) ||
+    job.paymentOverrideStatus === "approved"
   );
 }
 
@@ -986,14 +967,62 @@ function postcodeForJob(job: InstallationJob) {
 // Shared rather than repeated per workspace: Customer Scheduling, Installation
 // groups and Stock delivery all offer the same box, and three copies of the
 // test is how they drift into matching three different things.
+// Search haystacks, built once per job object instead of once per job per
+// keystroke. Typing in a search box re-runs these filters over the whole
+// pipeline on every character, and rebuilding the string each time meant tens
+// of thousands of array/join/toLowerCase allocations per keypress.
+//
+// A WeakMap rather than a cleared cache: the key is the job object itself, so
+// a reload that replaces `jobs` lets the old entries be collected, and an
+// edited job (always a fresh object — the update path spreads rather than
+// mutates) misses the cache and is rebuilt. There is no way to read a stale
+// haystack for a job whose fields have changed.
+const locationHaystacks = new WeakMap<InstallationJob, string>();
+const pipelineHaystacks = new WeakMap<InstallationJob, string>();
+
+function locationHaystack(job: InstallationJob) {
+  let text = locationHaystacks.get(job);
+  if (text === undefined) {
+    text = [
+      job.customerName,
+      job.invoiceNumber,
+      job.address,
+      job.city,
+      job.state,
+      job.postcode,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    locationHaystacks.set(job, text);
+  }
+  return text;
+}
+
+function pipelineHaystack(job: InstallationJob) {
+  let text = pipelineHaystacks.get(job);
+  if (text === undefined) {
+    // Not .filter(Boolean) — the original joined these raw, so a null field
+    // contributed an empty slot rather than being dropped. Kept identical so
+    // a search for a two-word span across a blank field behaves as before.
+    text = [
+      job.customerName,
+      job.invoiceNumber,
+      job.address,
+      job.agentName,
+      job.inverter,
+    ]
+      .join(" ")
+      .toLowerCase();
+    pipelineHaystacks.set(job, text);
+  }
+  return text;
+}
+
 function jobMatchesSearch(job: InstallationJob, search: string) {
   const query = search.trim().toLowerCase();
   if (!query) return true;
-  return [job.customerName, job.invoiceNumber, job.address, job.city, job.state, job.postcode]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase()
-    .includes(query);
+  return locationHaystack(job).includes(query);
 }
 
 type LocationSuggestion = {
@@ -1099,23 +1128,23 @@ function operationalUpdate(job: InstallationJob): JobUpdate {
 // compares directly against the date-only strings the jobs carry. en-CA is the
 // locale that formats as YYYY-MM-DD; toISOString would give UTC and roll the
 // day back for the first eight hours of every Malaysian morning.
-function malaysiaToday() {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kuala_Lumpur",
-  }).format(new Date());
-}
 
 // The same day as malaysiaToday(), spelled out for the heading. Kept live
 // rather than written into the markup so the dashboard cannot sit there
 // claiming a date that has already passed.
+// The most recent return-trip note, if any — Installation groups shows a
+// visit's own note on the row for that specific day, but a one-row-per-job
+// summary (Customer details) has no day to key off, so it takes the latest
+// one instead.
+function latestVisitNote(job: InstallationJob): string {
+  const notedVisits = (job.visits ?? []).filter((visit) => visit.notes?.trim());
+  if (notedVisits.length === 0) return "";
+  return notedVisits.slice().sort((a, b) => b.date.localeCompare(a.date))[0]
+    .notes!;
+}
+
 function malaysiaTodayLabel() {
-  return new Intl.DateTimeFormat("en-MY", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-    timeZone: "Asia/Kuala_Lumpur",
-  }).format(new Date());
+  return WEEKDAY_KL.format(new Date());
 }
 
 /**
@@ -1192,10 +1221,7 @@ function weekRangeLabel(dateStr: string): string {
   const bounds = weekBounds(dateStr);
   if (!bounds) return "Unscheduled";
   const part = (value: string) =>
-    new Intl.DateTimeFormat("en-MY", {
-      day: "numeric",
-      month: "short",
-    }).format(new Date(`${value}T00:00:00`));
+    DAY_MONTH.format(new Date(`${value}T00:00:00`));
   const year = bounds.end.slice(0, 4);
   return `${part(bounds.start)} – ${part(bounds.end)} ${year}`;
 }
@@ -1207,11 +1233,7 @@ function weekRangeLabel(dateStr: string): string {
 function deliveryRunLabel(run: DeliveryRun): string {
   if (run.name.trim()) return run.name;
   if (!run.deliveryDate) return "Unnamed run";
-  return new Intl.DateTimeFormat("en-MY", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  }).format(new Date(`${run.deliveryDate}T00:00:00`));
+  return DATE_PLAIN.format(new Date(`${run.deliveryDate}T00:00:00`));
 }
 
 // How long a paid-up customer may sit with nothing booked before the dashboard
@@ -1239,10 +1261,15 @@ function needsAttention(
   todayIso: string,
   group?: InstallationGroup | null,
 ) {
-  // Still nothing on the calendar is what makes this a chase list rather than
-  // a list of ageing invoices: without it every long-since-installed job whose
-  // payment is old enough would sit here too.
-  if (confirmedInstallationDate(job, group)) return false;
+  // Nobody has put a date against them yet is what makes this a chase list
+  // rather than a list of ageing invoices: without it every long-since-
+  // installed job whose payment is old enough would sit here too.
+  //
+  // Any date counts, not just a confirmed booking — see hasPlannedDate. A
+  // customer whose date fell through has been got to; they belong in Ready to
+  // Install with the rest of the work in progress, not on a list of customers
+  // nobody has contacted.
+  if (hasPlannedDate(job, group)) return false;
   if (!job.secondPaymentDate) return false;
   if (job.secondPaymentDate < ATTENTION_PAYMENT_FROM) return false;
   return hasWorkingDaysElapsed(
@@ -1263,17 +1290,11 @@ function needsAttention(
 // that era, so it is left uncounted rather than assumed recent.
 const DEPOSIT_PAYMENT_FROM = "2026-01-01";
 
-// What the 2nd payment has to reach before a customer is cleared to install.
-// Also the ceiling on Deposit: the two stages are written against the same
-// number so they stay adjacent, and a customer at 62% cannot fall between them
-// into no stage at all.
-const READY_PAYMENT_PERCENT = 65;
-
-// Ready is gated on the 2nd payment's date, the same way Need Attention is.
-// The card is a worklist of customers cleared and waiting, and without the gate
-// it carries 634, of which 586 either paid before this system existed or never
-// recorded a 2nd payment at all — a backlog of history rather than work anyone
-// is waiting on.
+// Ready is gated on the date the invoice crossed the threshold, the same way
+// Need Attention is. The card is a worklist of customers cleared and waiting,
+// and without the gate it fills with invoices that either crossed before this
+// system existed or never crossed at all — a backlog of history rather than
+// work anyone is waiting on.
 const READY_PAYMENT_FROM = "2026-01-01";
 
 // Part-paid, and the deposit landed inside the tracked era. Both halves are
@@ -1281,19 +1302,22 @@ const READY_PAYMENT_FROM = "2026-01-01";
 // Scheduling pool — so the two can never drift apart and leave a card
 // disagreeing with the list it opens.
 function hasCountedDeposit(job: InstallationJob) {
-  if (job.paymentPercent <= 0 || job.paymentPercent >= READY_PAYMENT_PERCENT) {
+  if (job.paymentPercent <= 0 || hasReachedPaymentPercent(job.paymentPercent)) {
     return false;
   }
   if (!job.firstPaymentDate) return false;
   return job.firstPaymentDate >= DEPOSIT_PAYMENT_FROM;
 }
 
-// Cleared to install: the 2nd payment has taken them to the threshold, and it
-// was made inside the tracked era. A customer who reached the threshold without
-// a 2nd payment on record has not "made a 2nd payment" in the sense the card
-// describes, so they are left uncounted rather than assumed.
+// Cleared to install: the invoice has reached the threshold, and it got there
+// inside the tracked era. secondPaymentDate is the date of the payment that
+// carried it over the line (see the second_payments CTE in lib/source-api.ts),
+// not of the second transaction — a customer who paid the balance in five
+// instalments is dated to the one that finished the job. A customer reading at
+// the threshold with no crossing date on record cannot be shown to belong to
+// this era, so they are left uncounted rather than assumed.
 function hasCountedSecondPayment(job: InstallationJob) {
-  if (job.paymentPercent < READY_PAYMENT_PERCENT) return false;
+  if (!hasReachedPaymentPercent(job.paymentPercent)) return false;
   if (!job.secondPaymentDate) return false;
   return job.secondPaymentDate >= READY_PAYMENT_FROM;
 }
@@ -1303,45 +1327,58 @@ function hasCountedSecondPayment(job: InstallationJob) {
 // them is highlighted while this is selected.
 const ALL_JOBS = "all";
 
+// How many pipeline rows to build DOM for at once, and how many more each
+// "Show more" adds. The pipeline is ~8,000 jobs since every live invoice
+// became visible, and at nine cells a row that was ~72,000 cells on first
+// paint — enough to stall the tab for seconds on load and again on every
+// keystroke. Only rendering is capped: the header count, the stage cards and
+// every filter still read the full set, so this changes what is drawn, never
+// what is matched or counted.
+const PIPELINE_PAGE_SIZE = 100;
+
 // The single source of truth for the pipeline: the summary cards, the status
 // filter and the counts all read this list, so a card can never show a number
 // the filter it opens disagrees with.
+//
+// There is no "Scheduled Installation" stage. Booking a date does not move a
+// customer anywhere — they stay under Ready to Install with the date filled in
+// beside them — so a stage for it only ever split the same worklist in two.
+//
+// The first four are one-per-job and follow from the customer's availability.
+// Need Attention is different: it sits on top, so a paid job nobody has
+// scheduled in 28 working days shows up there AND in the stage it belongs to.
+// That is deliberate — it is a chase list, not a place jobs go — and it means
+// the card numbers deliberately do not add up to the job count.
 const PIPELINE_STAGES = [
   {
     value: "deposit",
     label: "Deposit",
     note: "Deposit paid",
-    hint: "The customer has paid something towards the invoice but is still under 65%, and nothing further has happened yet. Only deposits paid from 1 Jan 2026 onward are counted. Each job sits in exactly one stage — the most advanced one it qualifies for.",
+    hint: `The customer has paid something towards the invoice but is still under ${READY_PAYMENT_PERCENT}%, and is not marked Pending Complete or Complete. Only deposits paid from 1 Jan 2026 onward are counted. Deposit, Ready to Install, Pending Complete and Complete Installation are one-per-job; Need Attention sits on top of whichever of them a job is in.`,
   },
   {
     value: "ready",
     label: "Ready to Install",
-    note: "2nd payment, 65%+",
-    hint: "The 2nd payment has taken the invoice to 65% or more, and no date or availability has been recorded yet — the job is cleared and waiting to be scheduled. Only 2nd payments from 1 Jan 2026 onward are counted.",
-  },
-  {
-    value: "scheduled",
-    label: "Scheduled Installation",
-    note: "Availability or date recorded",
-    hint: "The customer's availability is recorded or an installation date exists, and nothing marks the job as held up or finished.",
+    note: `${READY_PAYMENT_PERCENT}%+ paid, still to install`,
+    hint: `The invoice has reached ${READY_PAYMENT_PERCENT}% or more, and the customer's availability is Not Set, Propose or Reschedule — the job is cleared and still to be installed. A booked date does not move the job out of here; it just fills the date in beside the customer. Only payments from 1 Jan 2026 onward are counted.`,
   },
   {
     value: "pending_complete",
-    label: "Pending Complete Installation",
-    note: "Reschedule, cancel, or pending noted",
-    hint: "The customer's availability is Pending, Reschedule, or Cancelled, or a remark mentions reschedule, cancel, or pending — e.g. \"pending wiring\", \"Pending batt\", \"to arrange new date\". \"Pending SEDA Approval\" does not count. Does not require a date or delivery run to already be booked — the customer's own status can be enough on its own.",
+    label: "Pending Complete",
+    note: "Marked Pending Complete",
+    hint: "The customer's availability is set to Pending Complete, or a remark says something is being waited on — e.g. \"pending wiring\", \"Pending batt\". \"Pending SEDA Approval\" does not count. Does not require a date or delivery run to already be booked — the status is enough on its own.",
   },
   {
     value: "complete",
     label: "Complete Installation",
-    note: "Date passed 3+ days ago",
-    hint: "Marked installed in the source system, or the installation date is at least 3 days behind us — enough margin for a job that ran a day or two late.",
+    note: "Marked Complete, or date passed",
+    hint: "The customer's availability is set to Complete, or the job is marked installed in the source system, or its installation date is at least 3 days behind us — enough margin for a job that ran a day or two late. A remark reporting something still outstanding holds the job in Pending Complete instead.",
   },
   {
     value: "attention",
     label: "Need Attention",
     note: "28 working days, no date",
-    hint: "The 2nd payment was 28 or more working days ago — weekends and Malaysian public holidays do not count — and there is still no installation date. Only 2nd payments from 1 Jan 2026 onward are counted.",
+    hint: `The invoice reached ${READY_PAYMENT_PERCENT}% 28 or more working days ago — weekends and Malaysian public holidays do not count — and there is still no installation date. A chase list rather than a stage of its own: these jobs are also counted under the stage their availability puts them in, so the card numbers deliberately do not add up to the job count. Only payments from 1 Jan 2026 onward are counted.`,
   },
 ] as const;
 
@@ -1361,14 +1398,14 @@ const PLANNING_STAGES = PIPELINE_STAGES.filter(
 const stageIcons: Record<StageValue, React.ReactNode> = {
   deposit: <Wallet size={18} />,
   ready: <Check size={18} />,
-  scheduled: <CalendarDays size={18} />,
   pending_complete: <Clock3 size={18} />,
   complete: <PackageCheck size={18} />,
   attention: <AlertTriangle size={18} />,
 };
 
 // Only the two stages that mean something has gone wrong carry colour: amber
-// for a booking that has slipped, red for a paid customer nobody has scheduled.
+// for a job with something still outstanding, red for a paid customer nobody
+// has scheduled.
 const stageTones: Partial<Record<StageValue, "warning">> = {
   pending_complete: "warning",
   attention: "warning",
@@ -1403,10 +1440,10 @@ function reportBucketOf(
 ): ReportBucket {
   const group = lookup.groupByJobId.get(job.id) ?? null;
   // "Booked" the same way the rest of the dashboard means it: their own date,
-  // their group's, or the date an Available customer agreed.
+  // their group's, or the date a Propose customer agreed.
   const booked = Boolean(confirmedInstallationDate(job, group));
   if (job.paymentPercent <= 0) return "unpaid";
-  if (job.paymentPercent >= READY_PAYMENT_PERCENT) {
+  if (hasReachedPaymentPercent(job.paymentPercent)) {
     return booked ? "paid_installed" : "paid_pending";
   }
   return booked ? "deposit_installed" : "deposit_pending";
@@ -1519,63 +1556,9 @@ function belongsInPlanning(
   lookup: PlanningLookup,
 ) {
   if (isBookedIn(job, group, lookup)) return true;
-  if (isOutOfPlanning(job)) return false;
   return hasPlanningEligibility(job) || hasCountedDeposit(job);
 }
 
-// Every free-text remark box on the job, the per-visit note the crew leaves on
-// the day included — that is where "Pending batt" and "[PENDING JOB] continue
-// wiring" actually live.
-function remarkText(job: InstallationJob) {
-  return [
-    job.availabilityRemarks,
-    job.remarks,
-    job.installationRemarks,
-    ...(job.visits ?? []).flatMap((visit) => [visit.kind, visit.notes]),
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
-// The most recent return-trip note, if any — Installation groups shows a
-// visit's own note on the row for that specific day, but a one-row-per-job
-// summary (Customer details) has no day to key off, so it takes the latest
-// one instead.
-function latestVisitNote(job: InstallationJob): string {
-  const notedVisits = (job.visits ?? []).filter((visit) => visit.notes?.trim());
-  if (notedVisits.length === 0) return "";
-  return notedVisits.slice().sort((a, b) => b.date.localeCompare(a.date))[0]
-    .notes!;
-}
-
-// "Pending SEDA Approval" is written by the app itself (see rowToJob in
-// lib/source-api.ts) off a seda_status that nobody maintained before the
-// approval-email matcher started on 10 July 2026, so on an older invoice it
-// records missing data rather than outstanding work. Stripped before the test
-// rather than excluded after it, so a remark naming both — "pending seda,
-// pending wiring" — still counts on the wiring.
-const PENDING_SEDA_PHRASE = /pending\s*seda[a-z\s]*/gi;
-
-// Reschedule, cancel, or pending anywhere in the job's own record: the
-// customer's own recorded availability status, or a free-text remark.
-// Availability statuses are matched on purpose — a customer marked Reschedule
-// or Cancelled with nothing rebooked was previously falling into Scheduled
-// Installation (or Need Attention) purely because nobody had also typed the
-// same word into a remark box; the status already says it. Others is in the
-// set for the same reason and not because of its name: it is only ever chosen
-// when something is holding the job up that the other statuses do not cover.
-const ESCALATION_AVAILABILITY_STATUSES = new Set<
-  InstallationJob["customerAvailabilityStatus"]
->(["pending", "reschedule", "others", "cancelled"]);
-
-function signalsPendingComplete(job: InstallationJob) {
-  if (ESCALATION_AVAILABILITY_STATUSES.has(job.customerAvailabilityStatus)) {
-    return true;
-  }
-  return /pending|reschedule|cancel/i.test(
-    remarkText(job).replace(PENDING_SEDA_PHRASE, " "),
-  );
-}
 
 // A job that reads as completed by date alone (its booked day is 3+ days
 // gone) still needs to stay in view if the customer's own status or remarks
@@ -1593,47 +1576,60 @@ function isHiddenAsCompleted(
   );
 }
 
-function pipelineStageOf(
+// Every stage a job belongs to. Usually one, because the first four are
+// mutually exclusive; a job can also carry "attention" alongside whichever of
+// those it is in.
+//
+// The customer's availability picks the stage, and what they have paid decides
+// whether they can reach it. That order matters: availability is the thing
+// staff actually set, so the pipeline reads back what the office recorded
+// rather than second-guessing it from dates and remarks.
+function pipelineStagesOf(
   job: InstallationJob,
   todayIso: string,
   lookup: PlanningLookup,
-): StageValue | null {
+): Set<StageValue> {
   const group = lookup.groupByJobId.get(job.id) ?? null;
+  const stages = new Set<StageValue>();
 
-  // The crew went out and something is still open, or the customer is
-  // mid-reschedule/cancelled with nothing rebooked. Tested before "complete"
-  // and "attention" on purpose: a booked date that has passed, or a second
-  // payment old enough to chase, should still surface here first when that is
-  // what is actually going on with the customer. No longer requires the job
-  // to be booked in — that gate used to leave a Reschedule/Cancelled customer
-  // with no date parked in Scheduled Installation or Need Attention instead.
+  // Paid up long enough ago with still nothing on the calendar. Additive
+  // rather than a stage of its own: a customer nobody has scheduled in 28
+  // working days is still in whatever stage their availability puts them in,
+  // and the chase list is a second view of them, not a place they move to.
+  if (needsAttention(job, todayIso, group)) stages.add("attention");
+
+  // Something is outstanding — the status says so, or a remark reports a
+  // specific hold-up. Tested before "complete" so a date that has come and
+  // gone without the job being closed off still reads as open.
   if (signalsPendingComplete(job)) {
-    return "pending_complete";
+    stages.add("pending_complete");
+    return stages;
   }
 
-  // Done: its booked day is at least three days behind us, or the source
-  // system has said so outright.
-  if (isCompleteInstallation(job, todayIso, group)) return "complete";
-
-  // Paid up long enough ago with still nothing on the calendar.
-  if (needsAttention(job, todayIso, group)) return "attention";
-
-  // Somebody has either agreed a date or recorded where the customer stands.
+  // Done: marked Complete, or its booked day is at least three days behind us,
+  // or the source system has said so outright. This is what carries a Propose
+  // customer over once their date has passed and nothing is holding them up.
   if (
-    confirmedInstallationDate(job, group) ||
-    (job.customerAvailabilityStatus &&
-      job.customerAvailabilityStatus !== "not_set")
+    job.customerAvailabilityStatus === "complete" ||
+    isCompleteInstallation(job, todayIso, group)
   ) {
-    return "scheduled";
+    stages.add("complete");
+    return stages;
   }
 
-  if (hasCountedSecondPayment(job)) return "ready";
+  // Not Set, Propose and Reschedule all land here — but only once the invoice
+  // has actually cleared the threshold. Below it the customer is still paying,
+  // whatever has been agreed about dates.
+  if (hasCountedSecondPayment(job)) {
+    stages.add("ready");
+    return stages;
+  }
   // Paid before the tracked era — or paid up without a 2nd payment on record —
   // falls through to no stage at all: counted by no card, but the status
   // filter's All jobs still lists it, so the record stays reachable rather
   // than disappearing from the dashboard.
-  if (hasCountedDeposit(job)) return "deposit";
-  return null;
+  if (hasCountedDeposit(job)) stages.add("deposit");
+  return stages;
 }
 
 // The write side of the row-remark read a few lines above its editor: a return
@@ -1661,17 +1657,42 @@ function matchesPipelineStage(
 ) {
   // ALL_JOBS, and anything unrecognised, leaves the list untouched.
   if (!PIPELINE_STAGES.some((item) => item.value === stage)) return true;
-  return pipelineStageOf(job, todayIso, lookup) === stage;
+  return pipelineStagesOf(job, todayIso, lookup).has(stage as StageValue);
 }
 
+// The stored per-job edits, laid over what the API returned, and the status
+// brought up to date afterwards. That last step matters here and not only in
+// the API: these updates are applied *on top of* the API's job, so a saved
+// "available" from before the rename would otherwise put a finished job back
+// to Propose on every load, undoing on the client exactly what the server had
+// just written to the column.
 function applyJobUpdates(
   jobs: InstallationJob[],
   updates: Record<string, JobUpdate>,
+  groups: InstallationGroup[],
+  todayIso: string,
 ) {
+  const groupByJobId = new Map<string, InstallationGroup>();
+  groups.forEach((group) => {
+    group.jobIds.forEach((id) => groupByJobId.set(id, group));
+  });
   return jobs.map((job) => {
     const merged = { ...job, ...(updates[job.id] ?? {}) };
-    return {
+    // Stored updates predate the five-value availability scheme, so a saved
+    // "available" or "cancelled" is translated before anything reads it.
+    const normalized = {
       ...merged,
+      customerAvailabilityStatus: normalizeAvailabilityStatus(
+        merged.customerAvailabilityStatus,
+      ),
+    };
+    return {
+      ...normalized,
+      customerAvailabilityStatus: resolvedAvailabilityStatus(
+        normalized,
+        todayIso,
+        groupByJobId.get(job.id),
+      ),
       teams: merged.teams.map((team) => ({
         ...team,
         activity:
@@ -2045,6 +2066,70 @@ function StatusDot({
   return <span className={`status-dot ${status}`} aria-hidden="true" />;
 }
 
+// The job as the Installation record shows it: the customer's own fields, with
+// anything they inherit from their installation group or delivery run filled
+// in behind. The record is a summary of where this customer stands, so a date
+// held by their group is theirs to display even though nothing was written
+// against the customer directly.
+//
+// Shared rather than built at the point of use because two pages open this
+// record now — Customer details and Customer Scheduling — and a record that
+// filled its blanks differently depending on which page opened it would be
+// worse than no record at all.
+function recordJobFor(
+  job: InstallationJob,
+  group: InstallationGroup | undefined | null,
+  deliveryRun: DeliveryRun | undefined | null,
+  groups: InstallationGroup[],
+): InstallationJob {
+  return {
+    ...job,
+    installationDate:
+      job.installationDate || group?.installationDate || null,
+    deliveryDate: job.deliveryDate || deliveryRun?.deliveryDate || null,
+    warehouseLocation:
+      job.warehouseLocation || deliveryRun?.warehouse || "",
+    deliveryContactNumber:
+      job.deliveryContactNumber ||
+      deliveryRun?.contactNumber ||
+      job.customerPhone,
+    deliveryRunName: deliveryRun?.name || "",
+    deliveryGroupLocation:
+      groups.find(
+        (candidate) => candidate.id === deliveryRun?.installationGroupId,
+      )?.area ||
+      group?.area ||
+      "",
+    // A customer with no crew of their own stands in the one their group is
+    // booked with, so the record does not read as unstaffed work.
+    teams:
+      job.teams.length > 0
+        ? job.teams
+        : [
+            ...(group?.installationTeam
+              ? [
+                  {
+                    id: `${group.id}-installation`,
+                    role: "roof" as const,
+                    teamName: group.installationTeam,
+                    activity: "pv_panels" as const,
+                  },
+                ]
+              : []),
+            ...(group?.wiringTeam
+              ? [
+                  {
+                    id: `${group.id}-wiring`,
+                    role: "wiring" as const,
+                    teamName: group.wiringTeam,
+                    activity: "cable_trunking" as const,
+                  },
+                ]
+              : []),
+          ],
+  };
+}
+
 function JobDetail({
   job,
   locationGroupLabel,
@@ -2224,19 +2309,17 @@ function JobDetail({
           <SpecRow
             label="Payment received"
             value={`${job.paymentPercent.toFixed(0)}%`}
-            emphasis={job.paymentPercent >= 59}
+            emphasis={hasReachedPaymentPercent(
+              job.paymentPercent,
+              APPROVAL_PAYMENT_PERCENT,
+            )}
           />
           <SpecRow label="Balance due" value={currency(job.paymentBalance)} />
           <SpecRow
             label="2nd payment date"
             value={
               job.secondPaymentDate
-                ? new Intl.DateTimeFormat("en-MY", {
-                    day: "numeric",
-                    month: "short",
-                    year: "numeric",
-                    timeZone: "Asia/Kuala_Lumpur",
-                  }).format(new Date(job.secondPaymentDate))
+                ? DATE_KL.format(new Date(job.secondPaymentDate))
                 : "Not recorded"
             }
           />
@@ -2314,10 +2397,13 @@ function JobDetail({
                 />
               )}
               <SpecRow
-                label="Customer availability"
+                label="Status"
                 value={availabilityLabels[job.customerAvailabilityStatus]}
               />
-              {job.paymentPercent < 60 && (
+              {/* Only a job below the line that clears it to install has an
+                  exception worth asking about, so this tracks that line rather
+                  than carrying a number of its own. */}
+              {!hasReachedPaymentPercent(job.paymentPercent) && (
                 <SpecRow
                   label="Payment exception"
                   value={
@@ -2615,6 +2701,11 @@ export default function DashboardPage() {
   const [jobs, setJobs] = useState<InstallationJob[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // The search box binds to `query` so typing stays instant, but every filter
+  // and count downstream reads `deferredQuery`. React renders the keystroke
+  // first and the re-filtered table after, so a slow pass over the pipeline
+  // can no longer block the character appearing in the input.
+  const deferredQuery = useDeferredValue(query);
   const [status, setStatus] = useState<string>(ALL_JOBS);
   const [stateFilter, setStateFilter] = useState("all");
   const [secondPaymentMonthFilter, setSecondPaymentMonthFilter] = useState("");
@@ -2698,6 +2789,10 @@ export default function DashboardPage() {
   });
 
   const jobUpdatesRef = useRef<Record<string, JobUpdate>>({});
+  // Mirrors the groups state for the same reason jobUpdatesRef mirrors its
+  // own: the jobs fetch reads it from a callback that would otherwise close
+  // over an empty list on the first load.
+  const groupsRef = useRef<InstallationGroup[]>([]);
 
   // Whether this device has a confirmed connection to the shared database.
   // Held in a ref as well as state because the save helpers below are plain
@@ -2760,8 +2855,16 @@ export default function DashboardPage() {
     );
     setTeamWeekAssignments(state.teamWeekAssignments);
     jobUpdatesRef.current = state.jobUpdates;
+    groupsRef.current = state.groups;
     setJobs((current) =>
-      current.length ? applyJobUpdates(current, state.jobUpdates) : current,
+      current.length
+        ? applyJobUpdates(
+            current,
+            state.jobUpdates,
+            state.groups,
+            malaysiaToday(),
+          )
+        : current,
     );
   }, []);
 
@@ -2933,7 +3036,12 @@ export default function DashboardPage() {
       });
       const data = (await response.json()) as JobsResponse;
       if (!response.ok) throw new Error("Could not load installation jobs.");
-      const merged = applyJobUpdates(data.jobs, jobUpdatesRef.current);
+      const merged = applyJobUpdates(
+        data.jobs,
+        jobUpdatesRef.current,
+        groupsRef.current,
+        malaysiaToday(),
+      );
       setJobs(merged);
       setMeta({
         source: data.source,
@@ -3049,20 +3157,9 @@ export default function DashboardPage() {
   // axis stageCounts computes, and folding it in here would zero every card
   // except the selected one.
   const pipelineScopedJobs = useMemo(() => {
-    const needle = query.toLowerCase().trim();
+    const needle = deferredQuery.toLowerCase().trim();
     return jobs.filter((job) => {
-      const matchesQuery =
-        !needle ||
-        [
-          job.customerName,
-          job.invoiceNumber,
-          job.address,
-          job.agentName,
-          job.inverter,
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(needle);
+      const matchesQuery = !needle || pipelineHaystack(job).includes(needle);
       const matchesState = stateFilter === "all" || job.state === stateFilter;
       // A text search over the payment's month and year — "august", "2026",
       // "august 2026". Matched as plain strings, so no date parsing and no
@@ -3089,7 +3186,7 @@ export default function DashboardPage() {
     });
   }, [
     jobs,
-    query,
+    deferredQuery,
     stateFilter,
     secondPaymentMonthFilter,
     installationDateFilter,
@@ -3255,6 +3352,26 @@ export default function DashboardPage() {
       .map((entry) => entry.job);
   }, [filteredJobs, pinnedJobIds]);
 
+  // Narrowing the list should start you back at the top of it, so the cap
+  // resets whenever the filters change. Pinning is deliberately not in here:
+  // it reorders rows you are already looking at, and collapsing the list back
+  // to the first hundred underneath the click would lose your place.
+  const [visibleCount, setVisibleCount] = useState(PIPELINE_PAGE_SIZE);
+  useEffect(() => {
+    setVisibleCount(PIPELINE_PAGE_SIZE);
+  }, [
+    deferredQuery,
+    status,
+    stateFilter,
+    secondPaymentMonthFilter,
+    installationDateFilter,
+  ]);
+
+  const visiblePipelineJobs = useMemo(
+    () => pipelineJobs.slice(0, visibleCount),
+    [pipelineJobs, visibleCount],
+  );
+
   // "Team 3, Installer AR17". Teams are stored on a group by name, and two
   // teams can share a name (one installing, one wiring), so the slot decides
   // which of them the role is read from — matching how an assignment routes a
@@ -3287,56 +3404,7 @@ export default function DashboardPage() {
     ? deliveryRunByJobId.get(selected.id)
     : undefined;
   const selectedJobForDisplay = selected
-    ? {
-        ...selected,
-        installationDate:
-          selected.installationDate ||
-          selectedPlanningGroup?.installationDate ||
-          null,
-        deliveryDate:
-          selected.deliveryDate || selectedDeliveryRun?.deliveryDate || null,
-        warehouseLocation:
-          selected.warehouseLocation ||
-          selectedDeliveryRun?.warehouse ||
-          "",
-        deliveryContactNumber:
-          selected.deliveryContactNumber ||
-          selectedDeliveryRun?.contactNumber ||
-          selected.customerPhone,
-        deliveryRunName: selectedDeliveryRun?.name || "",
-        deliveryGroupLocation:
-          groups.find(
-            (group) =>
-              group.id === selectedDeliveryRun?.installationGroupId,
-          )?.area ||
-          selectedPlanningGroup?.area ||
-          "",
-        teams:
-          selected.teams.length > 0
-            ? selected.teams
-            : [
-                ...(selectedPlanningGroup?.installationTeam
-                  ? [
-                      {
-                        id: `${selectedPlanningGroup.id}-installation`,
-                        role: "roof" as const,
-                        teamName: selectedPlanningGroup.installationTeam,
-                        activity: "pv_panels" as const,
-                      },
-                    ]
-                  : []),
-                ...(selectedPlanningGroup?.wiringTeam
-                  ? [
-                      {
-                        id: `${selectedPlanningGroup.id}-wiring`,
-                        role: "wiring" as const,
-                        teamName: selectedPlanningGroup.wiringTeam,
-                        activity: "cable_trunking" as const,
-                      },
-                    ]
-                  : []),
-              ],
-      }
+    ? recordJobFor(selected, selectedPlanningGroup, selectedDeliveryRun, groups)
     : null;
 
   // Escape closes the top-most popup, one layer per press. The order matches
@@ -3381,6 +3449,7 @@ export default function DashboardPage() {
 
   function saveGroups(next: InstallationGroup[]) {
     setGroups(next);
+    groupsRef.current = next;
     window.localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(next));
     persistOps({ groups: next });
   }
@@ -3513,15 +3582,11 @@ export default function DashboardPage() {
     }
   }
 
+  // Setting an availability status no longer pulls a customer out of their
+  // installation group. It used to, for the two statuses that meant the job
+  // was off — and those are gone: a cancelled date is now a Reschedule, and a
+  // rescheduling customer keeps their group while a new date is agreed.
   async function saveAvailability(updated: InstallationJob) {
-    if (isOutOfPlanning(updated)) {
-      saveGroups(
-        groups.map((group) => ({
-          ...group,
-          jobIds: group.jobIds.filter((id) => id !== updated.id),
-        })),
-      );
-    }
     await saveJob(updated);
   }
 
@@ -3860,11 +3925,7 @@ export default function DashboardPage() {
               <CalendarDays size={14} />
               <span>
                 Showing installations for{" "}
-                {new Intl.DateTimeFormat("en-MY", {
-                  day: "numeric",
-                  month: "short",
-                  year: "numeric",
-                }).format(new Date(`${installationDateFilter}T00:00:00`))}
+                {DATE_PLAIN.format(new Date(`${installationDateFilter}T00:00:00`))}
               </span>
               <button
                 type="button"
@@ -3879,7 +3940,11 @@ export default function DashboardPage() {
           <div className="pipeline-heading">
             <div>
               <h2>Active installation pipeline</h2>
-              <p>{pipelineJobs.length} jobs shown</p>
+              <p>
+                {pipelineJobs.length === visiblePipelineJobs.length
+                  ? `${pipelineJobs.length} jobs shown`
+                  : `Showing ${visiblePipelineJobs.length} of ${pipelineJobs.length} jobs`}
+              </p>
             </div>
             {sourceAge ? (
               <span
@@ -3897,11 +3962,7 @@ export default function DashboardPage() {
                 <small>
                   Newest record {sourceAge.date}
                   {meta?.syncedAt &&
-                    ` · last checked ${new Intl.DateTimeFormat("en-MY", {
-                      hour: "numeric",
-                      minute: "2-digit",
-                      timeZone: "Asia/Kuala_Lumpur",
-                    }).format(new Date(meta.syncedAt))}`}
+                    ` · last checked ${TIME_KL.format(new Date(meta.syncedAt))}`}
                 </small>
               </span>
             ) : (
@@ -3909,11 +3970,7 @@ export default function DashboardPage() {
                 <span className="source-age">
                   <small>
                     Checked{" "}
-                    {new Intl.DateTimeFormat("en-MY", {
-                      hour: "numeric",
-                      minute: "2-digit",
-                      timeZone: "Asia/Kuala_Lumpur",
-                    }).format(new Date(meta.syncedAt))}
+                    {TIME_KL.format(new Date(meta.syncedAt))}
                   </small>
                 </span>
               )
@@ -3951,7 +4008,7 @@ export default function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pipelineJobs.map((job) => {
+                  {visiblePipelineJobs.map((job) => {
                     const isPinned = pinnedJobIds.has(job.id);
                     return (
                     <tr
@@ -3969,8 +4026,12 @@ export default function DashboardPage() {
                         )
                           ? "installation-complete"
                           : "",
-                        job.customerAvailabilityStatus === "cancelled"
-                          ? "availability-cancelled"
+                        needsCompletionVerification(
+                          job,
+                          todayIso,
+                          groupByJobId.get(job.id),
+                        )
+                          ? "needs-completion-verification"
                           : "",
                       ]
                         .filter(Boolean)
@@ -3996,12 +4057,7 @@ export default function DashboardPage() {
                       <td>
                         <strong>
                           {job.secondPaymentDate
-                            ? new Intl.DateTimeFormat("en-MY", {
-                                day: "numeric",
-                                month: "short",
-                                year: "numeric",
-                                timeZone: "Asia/Kuala_Lumpur",
-                              }).format(new Date(job.secondPaymentDate))
+                            ? DATE_KL.format(new Date(job.secondPaymentDate))
                             : "Pending 2nd Payment"}
                         </strong>
                       </td>
@@ -4066,15 +4122,23 @@ export default function DashboardPage() {
                           <td>
                             <strong>
                               {shownDate
-                                ? new Intl.DateTimeFormat("en-MY", {
-                                    day: "numeric",
-                                    month: "short",
-                                    year: "numeric",
-                                  }).format(new Date(`${shownDate}T00:00:00`))
+                                ? DATE_PLAIN.format(new Date(`${shownDate}T00:00:00`))
                                 : "Not scheduled"}
                             </strong>
                             {shownDate && !confirmedDate && (
                               <span className="is-inherited">Preferred</span>
+                            )}
+                            {needsCompletionVerification(
+                              job,
+                              todayIso,
+                              groupByJobId.get(job.id),
+                            ) && (
+                              <span
+                                className="verify-completion-flag"
+                                title="Booked day has passed with nobody confirming Complete — check whether the crew actually turned up."
+                              >
+                                Verify completion
+                              </span>
                             )}
                           </td>
                         );
@@ -4116,6 +4180,35 @@ export default function DashboardPage() {
                   })}
                 </tbody>
               </table>
+              {pipelineJobs.length > visiblePipelineJobs.length && (
+                <div className="pipeline-show-more">
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() =>
+                      setVisibleCount((count) => count + PIPELINE_PAGE_SIZE)
+                    }
+                  >
+                    Show {Math.min(
+                      PIPELINE_PAGE_SIZE,
+                      pipelineJobs.length - visiblePipelineJobs.length,
+                    )}{" "}
+                    more
+                  </button>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() => setVisibleCount(pipelineJobs.length)}
+                  >
+                    Show all {pipelineJobs.length}
+                  </button>
+                  <small>
+                    {pipelineJobs.length - visiblePipelineJobs.length} more match
+                    these filters. Searching looks at all of them, not just the
+                    rows drawn here.
+                  </small>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -4165,6 +4258,8 @@ export default function DashboardPage() {
             onUpdateJob={(job) => void saveAvailability(job)}
             manuallyPinnedJobIds={pinnedJobIds}
             onTogglePin={togglePinJob}
+            availableTeams={teamResources}
+            saving={saving}
           />
         )}
 
@@ -4735,6 +4830,20 @@ function InstallationGroupsView({
     () => latestByJobId(groups, (group) => group.installationDate),
     [groups],
   );
+  // The same stage filter Customer Scheduling carries, reading the same
+  // predicate, so "Ready to Install" means one thing across the dashboard and
+  // the two pages can never disagree about which customers that is.
+  const [planningFilter, setPlanningFilter] = useState<string>(ALL_JOBS);
+  const planningLookup = useMemo<PlanningLookup>(
+    () => ({
+      groupByJobId,
+      deliveryRunByJobId: latestByJobId(
+        deliveryRuns,
+        (run) => run.deliveryDate,
+      ),
+    }),
+    [groupByJobId, deliveryRuns],
+  );
   const [openGroupId, setOpenGroupId] = useState<string | null>(null);
   const [showFullCalendar, setShowFullCalendar] = useState(false);
   // The full calendar opens on top of the group drawer, so it closes first.
@@ -4939,6 +5048,15 @@ function InstallationGroupsView({
         if (!customerQuery.trim()) return true;
         return row.job ? jobMatchesSearch(row.job, customerQuery) : false;
       })
+      // Same treatment as the name search above, and for the same reason: the
+      // stage belongs to the customer, not to the crew, so an empty crew row
+      // has nothing to match and drops out while the filter is running.
+      .filter((row) => {
+        if (planningFilter === ALL_JOBS) return true;
+        return row.job
+          ? matchesPipelineStage(row.job, planningFilter, todayIso, planningLookup)
+          : false;
+      })
       // Crew first, date within it: every row a given crew works sits together
       // in the order they go out, which is how the schedule sheet itself is
       // laid out. Rows with no team label sort last rather than first, so a
@@ -4989,6 +5107,9 @@ function InstallationGroupsView({
     newRowGroupIds,
     periodFilter,
     customerQuery,
+    planningFilter,
+    planningLookup,
+    todayIso,
     pinnedWeekKeys,
   ]);
 
@@ -5052,7 +5173,6 @@ function InstallationGroupsView({
         if (isHiddenAsCompleted(job, todayIso, groupByJobId.get(job.id))) {
           return false;
         }
-        if (isOutOfPlanning(job) && !signalsPendingComplete(job)) return false;
         if (!hasPlanningEligibility(job)) return false;
         if (!jobMatchesSearch(job, search)) return false;
         const existingGroup = groupByJobId.get(job.id);
@@ -5800,13 +5920,29 @@ function InstallationGroupsView({
                   aria-label="Filter by installation month or year"
                 />
               </label>
-              {(periodFilter || customerQuery) && (
+              <label className="schedule-search">
+                <span>Planning status</span>
+                <select
+                  value={planningFilter}
+                  onChange={(event) => setPlanningFilter(event.target.value)}
+                  aria-label="Filter by planning status"
+                >
+                  <option value={ALL_JOBS}>All jobs</option>
+                  {PLANNING_STAGES.map((stage) => (
+                    <option key={stage.value} value={stage.value}>
+                      {stage.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {(periodFilter || customerQuery || planningFilter !== ALL_JOBS) && (
                 <button
                   type="button"
                   className="button secondary"
                   onClick={() => {
                     setPeriodFilter("");
                     setCustomerQuery("");
+                    setPlanningFilter(ALL_JOBS);
                   }}
                 >
                   Clear
@@ -7170,11 +7306,18 @@ function WeekGroupCard({
   pinnedJobIds: Set<string>;
 }) {
   const staffing = groupStaffing(group);
-  const linkedJobs = jobs.filter(
-    (job) =>
-      group.jobIds.includes(job.id) &&
-      !isCompleteInstallation(job, malaysiaToday(), group),
-  );
+  // Pinned customers lead the list; everyone else holds their existing order,
+  // which Array.sort preserves. filter has already made a new array, so this
+  // sorts a copy rather than the jobs prop.
+  const linkedJobs = jobs
+    .filter(
+      (job) =>
+        group.jobIds.includes(job.id) &&
+        !isCompleteInstallation(job, malaysiaToday(), group),
+    )
+    .sort(
+      (a, b) => Number(pinnedJobIds.has(b.id)) - Number(pinnedJobIds.has(a.id)),
+    );
   const runs = deliveryRunsForGroup(group.id);
   const weekHolidays = weekDates
     .map((date) => holidayForDate(dateKey(date)))
@@ -7336,11 +7479,18 @@ function GroupDrawer({
 }) {
   const staffing = groupStaffing(group);
   const runs = deliveryRunsForGroup(group.id);
-  const linkedJobs = jobs.filter(
-    (job) =>
-      group.jobIds.includes(job.id) &&
-      !isCompleteInstallation(job, malaysiaToday(), group),
-  );
+  // Pinned customers lead the list; everyone else holds their existing order,
+  // which Array.sort preserves. filter has already made a new array, so this
+  // sorts a copy rather than the jobs prop.
+  const linkedJobs = jobs
+    .filter(
+      (job) =>
+        group.jobIds.includes(job.id) &&
+        !isCompleteInstallation(job, malaysiaToday(), group),
+    )
+    .sort(
+      (a, b) => Number(pinnedJobIds.has(b.id)) - Number(pinnedJobIds.has(a.id)),
+    );
 
   const weatherDays: Date[] = [];
   if (group.installationDate) {
@@ -7578,6 +7728,8 @@ function TeamPlanningView({
   onUpdateJob,
   manuallyPinnedJobIds,
   onTogglePin,
+  availableTeams,
+  saving,
 }: {
   groups: InstallationGroup[];
   weekAssignments: TeamWeekAssignment[];
@@ -7594,8 +7746,22 @@ function TeamPlanningView({
   onUpdateJob: (job: InstallationJob) => void;
   manuallyPinnedJobIds: Set<string>;
   onTogglePin: (id: string) => void;
+  availableTeams: TeamResource[];
+  saving: boolean;
 }) {
   const [rangeKm, setRangeKm] = useState(20);
+  // The Installation record, opened from a customer's name once their row is
+  // being edited. Held as an id rather than the job itself so an edit made
+  // behind the popup shows through instead of the popup going stale.
+  const [recordJobId, setRecordJobId] = useState<string | null>(null);
+  const [recordSldOpen, setRecordSldOpen] = useState(false);
+  useEscapeKey(recordJobId !== null, () => {
+    if (recordSldOpen) {
+      setRecordSldOpen(false);
+      return;
+    }
+    setRecordJobId(null);
+  });
   // Which group's "add customer" control is open. A group id rather than a
   // snapshot of its customers — the row itself already renders live from
   // `suggestions`, so there is nothing left to hold a copy of.
@@ -7804,17 +7970,21 @@ function TeamPlanningView({
   // Available and Pending customers pin to the top of the table, ahead of
   // every location group, so the people who confirmed (or nearly confirmed)
   // their availability are never buried below customers nobody has reached
-  // yet. Available leads Pending within the pinned block; each customer
+  // yet. Propose leads Pending Complete within the pinned block; each customer
   // keeps a reference to its original suggestion so the map focus and "which
   // town is this" context still work once it's pulled out of its group.
   // Rank decides both which customers pin and the order they pin in: already
   // in an installation group first (they are the committed work and must stay
-  // reachable for rescheduling), then Available, then Pending. Everyone else
+  // reachable for rescheduling), then Propose, then Pending Complete. Everyone else
   // stays down in their town group.
   function pinRank(job: InstallationJob) {
+    // A pin the user placed themselves outranks every automatic reason, and
+    // pins a customer who would not otherwise qualify at all. The button has
+    // always said "Pin row to top"; until now it only lit up.
+    if (manuallyPinnedJobIds.has(job.id)) return -1;
     if (groupByJobId.has(job.id)) return 0;
-    if (job.customerAvailabilityStatus === "available") return 1;
-    if (job.customerAvailabilityStatus === "pending") return 2;
+    if (job.customerAvailabilityStatus === "propose") return 1;
+    if (job.customerAvailabilityStatus === "pending_complete") return 2;
     return null;
   }
 
@@ -7840,7 +8010,7 @@ function TeamPlanningView({
     return entries.sort(
       (a, b) => a.rank - b.rank || compareBySecondPayment(a.job, b.job),
     );
-  }, [filteredSuggestions, groupByJobId]);
+  }, [filteredSuggestions, groupByJobId, manuallyPinnedJobIds]);
 
   const pinnedJobIds = useMemo(
     () => new Set(pinnedEntries.map((entry) => entry.job.id)),
@@ -7896,7 +8066,6 @@ function TeamPlanningView({
           // a customer marked Cancelled but still being chased is not truly
           // out of planning, and a stale past date that was never cleared
           // when the customer rescheduled is not truly a finished install.
-          (!isOutOfPlanning(job) || signalsPendingComplete(job)) &&
           (!isHiddenAsCompleted(
             job,
             planningTodayIso,
@@ -7972,11 +8141,33 @@ function TeamPlanningView({
     return (
       <>
         <td>
+          {/* Read-only, the name is just a label — the row's own click is what
+              opens the customer for editing. Once it is open the name becomes
+              the way into the full Installation record, the same one Customer
+              details shows. stopPropagation keeps that click off the row,
+              which would otherwise close the editor underneath the popup. */}
           <span
             className="customer-name-hover-target"
             onMouseEnter={() => setHighlightedMapCustomerId(job.id)}
           >
-            <strong>{formatPersonName(job.customerName)}</strong>
+            {isEditing ? (
+              <button
+                type="button"
+                className="customer-name-link"
+                title={`Open the installation record for ${formatPersonName(
+                  job.customerName,
+                )}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setRecordJobId(job.id);
+                  setRecordSldOpen(false);
+                }}
+              >
+                <strong>{formatPersonName(job.customerName)}</strong>
+              </button>
+            ) : (
+              <strong>{formatPersonName(job.customerName)}</strong>
+            )}
           </span>
           {phoneWhatsAppHref(job.customerPhone) ? (
             <a
@@ -7996,7 +8187,10 @@ function TeamPlanningView({
               {formatPhoneNumber(job.customerPhone)}
             </span>
           )}
-          {job.paymentPercent < 59 && (
+          {!hasReachedPaymentPercent(
+            job.paymentPercent,
+            APPROVAL_PAYMENT_PERCENT,
+          ) && (
             <span className="special-case-label">
               Special case · Management approval required
             </span>
@@ -8010,12 +8204,7 @@ function TeamPlanningView({
         <td>{job.paymentPercent.toFixed(0)}%</td>
         <td>
           {job.secondPaymentDate
-            ? new Intl.DateTimeFormat("en-MY", {
-                day: "numeric",
-                month: "short",
-                year: "numeric",
-                timeZone: "Asia/Kuala_Lumpur",
-              }).format(new Date(job.secondPaymentDate))
+            ? DATE_KL.format(new Date(job.secondPaymentDate))
             : "Not recorded"}
         </td>
         <td>
@@ -8023,10 +8212,10 @@ function TeamPlanningView({
             <select
               value={job.customerAvailabilityStatus}
               onClick={(event) => event.stopPropagation()}
-              aria-label={`Customer availability for ${job.customerName}`}
+              aria-label={`Status for ${job.customerName}`}
               onChange={(event) => {
                 const status = event.target
-                  .value as InstallationJob["customerAvailabilityStatus"];
+                  .value as CustomerAvailabilityStatus;
                 onUpdateJob({
                   ...job,
                   customerAvailabilityStatus: status,
@@ -8046,9 +8235,9 @@ function TeamPlanningView({
           )}
         </td>
         <td>
-          {/* A rescheduling customer — or one held up by something Others
-              covers — keeps the date that fell through and gains a second one
-              for the replacement, so the move stays legible. Every other
+          {/* A rescheduling customer keeps the date that fell through and
+              gains a second one for the replacement, so the move stays
+              legible. Every other
               status has the one date, and the second input is not even
               rendered — there is nothing to reschedule from. */}
           {isEditing ? (
@@ -8123,6 +8312,24 @@ function TeamPlanningView({
       </>
     );
   }
+
+  const recordSource = recordJobId
+    ? jobs.find((job) => job.id === recordJobId) ?? null
+    : null;
+  const recordGroup = recordSource
+    ? groupByJobId.get(recordSource.id)
+    : undefined;
+  const recordJob = recordSource
+    ? recordJobFor(
+        recordSource,
+        recordGroup,
+        planningLookup.deliveryRunByJobId.get(recordSource.id),
+        groups,
+      )
+    : null;
+  const recordGroupLabel = recordGroup
+    ? [recordGroup.name, recordGroup.area].filter(Boolean).join(" · ")
+    : "Not grouped";
 
   return (
     <div className="planning-panel team-planning-panel">
@@ -8258,7 +8465,7 @@ function TeamPlanningView({
                 <th>Address</th>
                 <th>Payment</th>
                 <th>2nd payment date</th>
-                <th>Customer availability</th>
+                <th>Status</th>
                 <th>Preferred installation date</th>
                 <th>Availability remarks</th>
                 <th aria-label="Pin" />
@@ -8407,9 +8614,12 @@ function TeamPlanningView({
                                       <option value={customer.id} key={customer.id}>
                                         {formatPersonName(customer.customerName)}{" "}
                                         · {customer.paymentPercent.toFixed(0)}%
-                                        {customer.paymentPercent < 59
-                                          ? " · Special case"
-                                          : ""}
+                                        {hasReachedPaymentPercent(
+                                          customer.paymentPercent,
+                                          APPROVAL_PAYMENT_PERCENT,
+                                        )
+                                          ? ""
+                                          : " · Special case"}
                                       </option>
                                     ),
                                   )}
@@ -8473,6 +8683,48 @@ function TeamPlanningView({
               })}
             </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* The same Installation record Customer details opens, built from the
+          same helper so the two cannot show different versions of a customer.
+          Read from `jobs` by id rather than captured when the name was
+          clicked, so an edit made on the row behind it stays in step. */}
+      {recordJob && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={() => {
+            setRecordJobId(null);
+            setRecordSldOpen(false);
+          }}
+        >
+          <div
+            className="customer-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Installation details for ${recordJob.customerName}`}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <JobDetail
+              job={recordJob}
+              locationGroupLabel={recordGroupLabel}
+              group={groupByJobId.get(recordJob.id) ?? null}
+              deliveryRun={
+                planningLookup.deliveryRunByJobId.get(recordJob.id) ?? null
+              }
+              availableTeams={availableTeams}
+              saving={saving}
+              sldOpen={recordSldOpen}
+              onSave={onUpdateJob}
+              onOpenSld={() => setRecordSldOpen(true)}
+              onCloseSld={() => setRecordSldOpen(false)}
+              onDismiss={() => {
+                setRecordJobId(null);
+                setRecordSldOpen(false);
+              }}
+            />
           </div>
         </div>
       )}
@@ -8550,6 +8802,16 @@ function DeliveryPlanningView({
   // same filter on Installation groups.
   const [periodFilter, setPeriodFilter] = useState("");
   const [customerQuery, setCustomerQuery] = useState("");
+  // The same stage filter Customer Scheduling and Installation groups carry,
+  // reading the same predicate, so a stage means one thing everywhere.
+  const [planningFilter, setPlanningFilter] = useState<string>(ALL_JOBS);
+  const planningLookup = useMemo<PlanningLookup>(
+    () => ({
+      groupByJobId,
+      deliveryRunByJobId: latestByJobId(runs, (run) => run.deliveryDate),
+    }),
+    [groupByJobId, runs],
+  );
 
   // Creates a blank run and drops it straight into edit mode — the row-level
   // equivalent of the old "Create delivery run" popup. Customers are linked
@@ -8884,17 +9146,31 @@ function DeliveryPlanningView({
   // columns is what made this table too wide to read.
   const query = customerQuery.trim().toLowerCase();
 
-  // A run survives the period filters; its stops survive the name search.
-  // A run whose every stop is filtered out drops away with them, so a name
-  // search returns the runs that carry that customer rather than a page of
-  // empty bands.
+  // A run survives the period filters; its stops survive the name search and
+  // the planning status. A run whose every stop is filtered out drops away
+  // with them, so either filter returns the runs that carry those customers
+  // rather than a page of empty bands.
+  const stopFiltered = Boolean(query) || planningFilter !== ALL_JOBS;
   const visibleRuns = runs
     .map((run) => {
       const runJobs = jobs.filter((job) => run.jobIds.includes(job.id));
-      const matching = query
-        ? runJobs.filter((job) => jobMatchesSearch(job, query))
-        : runJobs;
-      return { run, runJobs: matching };
+      const matching = runJobs.filter(
+        (job) =>
+          (!query || jobMatchesSearch(job, query)) &&
+          matchesPipelineStage(job, planningFilter, todayIso, planningLookup),
+      );
+      // Pinned stops lead their run. To the top of the run rather than of the
+      // page, because a stop only means anything under the run that carries
+      // it — lifting it clear of its band would strip it of its date, crew and
+      // warehouse. Everything else holds its existing order; Array.sort is
+      // stable, so unpinned stops are not reshuffled around the pinned ones.
+      const ordered = matching
+        .slice()
+        .sort(
+          (a, b) =>
+            Number(pinnedJobIds.has(b.id)) - Number(pinnedJobIds.has(a.id)),
+        );
+      return { run, runJobs: ordered };
     })
     .filter(({ run, runJobs }) => {
       // A run that is open for editing always shows, whatever the filters
@@ -8906,11 +9182,13 @@ function DeliveryPlanningView({
       if (!matchesDateSearch(run.deliveryDate, periodFilter)) return false;
       // A run with no customers at all still shows: it is a run being built,
       // and hiding it would make "Create delivery run" look like it failed.
-      if (query && !runJobs.length) return false;
+      if (stopFiltered && !runJobs.length) return false;
       return true;
     });
 
-  const filtered = Boolean(periodFilter || customerQuery);
+  const filtered = Boolean(
+    periodFilter || customerQuery || planningFilter !== ALL_JOBS,
+  );
 
   return (
     <div className="planning-panel">
@@ -8942,6 +9220,21 @@ function DeliveryPlanningView({
                 aria-label="Filter by delivery month or year"
               />
             </label>
+            <label className="schedule-search">
+              <span>Planning status</span>
+              <select
+                value={planningFilter}
+                onChange={(event) => setPlanningFilter(event.target.value)}
+                aria-label="Filter by planning status"
+              >
+                <option value={ALL_JOBS}>All jobs</option>
+                {PLANNING_STAGES.map((stage) => (
+                  <option key={stage.value} value={stage.value}>
+                    {stage.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             {filtered && (
               <button
                 type="button"
@@ -8949,6 +9242,7 @@ function DeliveryPlanningView({
                 onClick={() => {
                   setPeriodFilter("");
                   setCustomerQuery("");
+                  setPlanningFilter(ALL_JOBS);
                 }}
               >
                 Clear

@@ -1,3 +1,73 @@
+// Where the customer stands on letting the crew in. Five values, and every job
+// has one — a job nobody has touched reads "not_set" — so between them they
+// place every customer in the pipeline:
+//
+//   not_set / propose / reschedule -> Ready to Install
+//   pending_complete               -> Pending Complete
+//   complete                       -> Complete Installation
+//
+// The stage still has to be paid for: reaching Ready to Install needs the
+// invoice past READY_PAYMENT_PERCENT in the tracked era, so a Not Set customer
+// who has only put a deposit down stays in Deposit. Availability decides which
+// stage a job lands in among the ones its payments already qualify it for.
+export type CustomerAvailabilityStatus =
+  // Nobody has spoken to the customer yet. The default, and by far the
+  // commonest value: it is what every job carries until someone sets one.
+  | "not_set"
+  // A date is on the table — proposed, agreed, or already on the calendar.
+  // There is no separate "scheduled" value: booking a date does not move the
+  // customer out of Propose, it just fills the date in beside it.
+  | "propose"
+  // The customer has moved off the date that was agreed. Still active work —
+  // what they are missing is the replacement date, held in
+  // secondPreferredInstallationDate.
+  | "reschedule"
+  // The crew has been, or the office has, and something is still outstanding.
+  | "pending_complete"
+  // Done. Also reached without anyone setting it, by a booked date falling far
+  // enough behind us — see isCompleteInstallation.
+  | "complete";
+
+export const CUSTOMER_AVAILABILITY_STATUSES: CustomerAvailabilityStatus[] = [
+  "not_set",
+  "propose",
+  "reschedule",
+  "pending_complete",
+  "complete",
+];
+
+// The seven-value scheme these five replaced, kept as a read-time translation
+// rather than migrated in the database. Two stores hold this field — the
+// installation_jobs column and the jobUpdates blob in installation_ops_state —
+// and they are not perfectly in step with each other, so rewriting both in
+// place risks losing the rows where they disagree. Translating on the way in
+// costs nothing and stays reversible.
+//
+// "cancelled" lands on reschedule rather than on anything final: a cancelled
+// date is a date that has to be agreed again, which is what reschedule is for.
+// "others" was only ever chosen when something the named statuses did not
+// cover was holding the job up, which is pending_complete.
+const LEGACY_AVAILABILITY_STATUSES: Record<string, CustomerAvailabilityStatus> = {
+  available: "propose",
+  pending: "pending_complete",
+  others: "pending_complete",
+  unavailable: "pending_complete",
+  cancelled: "reschedule",
+};
+
+// Anything unrecognised — a value from a future scheme, or a null out of the
+// database — reads as not_set rather than throwing: an unfamiliar status must
+// not be able to hide a customer from the dashboard.
+export function normalizeAvailabilityStatus(
+  value: string | null | undefined,
+): CustomerAvailabilityStatus {
+  if (!value) return "not_set";
+  if ((CUSTOMER_AVAILABILITY_STATUSES as string[]).includes(value)) {
+    return value as CustomerAvailabilityStatus;
+  }
+  return LEGACY_AVAILABILITY_STATUSES[value] ?? "not_set";
+}
+
 export type ReadinessState = "complete" | "pending" | "blocked";
 
 export type TeamAssignment = {
@@ -109,21 +179,7 @@ export type InstallationJob = {
   // Additional days this site is worked on, beyond installationDate. Absent on
   // the great majority of jobs.
   visits?: JobVisit[];
-  customerAvailabilityStatus:
-    | "not_set"
-    | "pending"
-    | "available"
-    // The customer has moved off the date that was agreed. Still active work,
-    // so they stay in planning the way "pending" does — what they are missing
-    // is the replacement date, held in secondPreferredInstallationDate.
-    | "reschedule"
-    // Anything the five named statuses do not cover, with the reason written
-    // in the remark. Carries a replacement date exactly as "reschedule" does,
-    // and counts as still-open work for the same reason: the office is
-    // waiting on something before this job can be booked.
-    | "others"
-    | "unavailable"
-    | "cancelled";
+  customerAvailabilityStatus: CustomerAvailabilityStatus;
   preferredInstallationDate: string | null;
   // "HH:mm" alongside the date above, so one column carries the whole slot
   // rather than a date here and a time somewhere else. Null when only a day
@@ -218,3 +274,43 @@ export type JobUpdate = Pick<
   | "remarks"
   | "installationRemarks"
 >;
+
+// What an invoice has to be paid to before the customer is cleared to install.
+// It lives here because two places have to agree on it and they are compiled
+// separately: the pipeline stages in app/page.tsx (Ready to Install, and the
+// ceiling on Deposit), and the SQL in lib/source-api.ts that dates the moment
+// an invoice crossed it. A number that drifted between them would put a
+// customer in a stage whose own date said they never qualified for it.
+export const READY_PAYMENT_PERCENT = 60;
+
+// Whether an invoice has reached that line.
+//
+// A function rather than a bare `>=` because the percentage is a division, and
+// a customer who has paid exactly 65% does not reliably land on 65 once it has
+// been through binary floating point. MONG YEE KEONG (INV-1009563) paid
+// 24,356.67 of 37,471.80 — exactly 65% to the sen, the threshold at the
+// time — and JavaScript makes that
+// 64.99999999999999, which put them in Deposit while the 2nd payment column,
+// dated by the database's exact numeric arithmetic, said they had crossed
+// weeks earlier. The SQL in lib/source-api.ts and this test have to agree
+// about the same customer, and only one of them has exact arithmetic.
+//
+// The tolerance is far below any real difference in money — a sen either way
+// on a 37,000 invoice moves the percentage by ~3e-6 — and far above the
+// rounding error, which runs at ~1e-14.
+const PAYMENT_PERCENT_TOLERANCE = 1e-9;
+
+export function hasReachedPaymentPercent(
+  percent: number,
+  threshold: number = READY_PAYMENT_PERCENT,
+): boolean {
+  return percent >= threshold - PAYMENT_PERCENT_TOLERANCE;
+}
+
+// The management-approval line. A job at or above it is financially free to be
+// planned; below it needs an approved payment exception, and says so on the
+// row and in the source remark. Not a display detail: hasPlanningEligibility
+// reads it, so a customer sitting exactly on 59% could be kept out of planning
+// altogether by the same rounding that misfiled MONG YEE KEONG.
+export const APPROVAL_PAYMENT_PERCENT = 59;
+

@@ -20,7 +20,12 @@ const MIGRATION_SQL = [
   "alter table public.installation_jobs add column if not exists invoice_number text not null default '';",
   "alter table public.installation_jobs add column if not exists customer_name text not null default '';",
   'alter table public.installation_jobs add column if not exists installation_date date;',
-  "alter table public.installation_jobs add column if not exists customer_availability_status text not null default 'pending';",
+  "alter table public.installation_jobs add column if not exists customer_availability_status text not null default 'not_set';",
+  // add column if not exists leaves an existing column's default alone, so the
+  // original 'pending' default has to be moved across explicitly. It matters:
+  // 'pending' now means Pending Complete, so a row inserted without a status
+  // would arrive claiming the job was already half done.
+  "alter table public.installation_jobs alter column customer_availability_status set default 'not_set';",
   'alter table public.installation_jobs add column if not exists preferred_installation_date date;',
   'alter table public.installation_jobs add column if not exists second_preferred_installation_date date;',
   // text, not time: the app carries clocks as plain "HH:mm" strings everywhere
