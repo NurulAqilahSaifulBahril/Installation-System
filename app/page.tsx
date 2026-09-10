@@ -2130,6 +2130,32 @@ function recordJobFor(
   };
 }
 
+// Whether a spec field actually says anything, or is one of the placeholders
+// the feed fills a blank with. rowToJob writes "Not available" wherever the
+// invoice had nothing, and panelDetails is built as "<qty> panels" — so a job
+// with no panel count arrives as the literal "— panels".
+//
+// Used to let the Installation record fall through to the specification the
+// crew typed in on Installation groups when the invoice carries none. The
+// invoice feed is missing a package line for a great many jobs, and the record
+// was reading it alone: 387 jobs had a power output recorded with nowhere to
+// show it, 98 an inverter, and 106 a panel count.
+const SPEC_PLACEHOLDERS = new Set([
+  "not available",
+  "not provided",
+  "none recorded",
+  "not recorded",
+  "n/a",
+  "— panels",
+  "- panels",
+]);
+
+function specFallback(value: string | null | undefined): string | null {
+  const text = (value ?? "").trim();
+  if (!text) return null;
+  return SPEC_PLACEHOLDERS.has(text.toLowerCase()) ? null : text;
+}
+
 function JobDetail({
   job,
   locationGroupLabel,
@@ -2336,10 +2362,18 @@ function JobDetail({
                   ? `${job.panelQuantity} panels · rating not provided`
                   : job.panelRating
                     ? `Quantity not provided · ${job.panelRating}W each`
-                    : "Panel specification not provided"
+                    : specFallback(job.panelDetails) ??
+                      "Panel specification not provided"
             }
           />
-          <SpecRow label="Inverter" value={job.inverter} />
+          <SpecRow
+            label="Inverter"
+            value={
+              specFallback(job.inverter) ??
+              specFallback(job.inverterBattery) ??
+              job.inverter
+            }
+          />
           <SpecRow
             label="Electrical phase"
             value={job.phase === "Unknown" ? "Not provided" : job.phase}
@@ -2347,9 +2381,19 @@ function JobDetail({
           <SpecRow
             label="Battery"
             value={
-              job.battery === "Not available" ? "Not provided" : job.battery
+              specFallback(job.battery) ??
+              specFallback(job.batteryDetails) ??
+              "Not provided"
             }
           />
+          {/* Ops-owned and absent from the invoice feed entirely, so they only
+              earn a row once someone has actually typed one in. */}
+          {specFallback(job.powerOutput) && (
+            <SpecRow label="Power output" value={job.powerOutput} />
+          )}
+          {specFallback(job.wiringDetails) && (
+            <SpecRow label="Wiring" value={job.wiringDetails} />
+          )}
           <SpecRow
             label="Ballast"
             value={job.ballastDetails || "None recorded"}
