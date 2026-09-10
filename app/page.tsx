@@ -5151,6 +5151,12 @@ function InstallationGroupsView({
           label(a).localeCompare(label(b), undefined, { numeric: true }) ||
           a.group.installationTeam.localeCompare(b.group.installationTeam) ||
           a.group.wiringTeam.localeCompare(b.group.wiringTeam) ||
+          // The supervisor is part of blockKey, so it has to be sorted on as
+          // well: without it two crews sharing a week and a team but working
+          // under different supervisors interleave by date, and the heading
+          // re-emits every time the supervisor flips. Three week-and-crew
+          // combinations were splitting their heading that way.
+          (a.group.supervisor ?? "").localeCompare(b.group.supervisor ?? "") ||
           // Days inside a week still read forwards, Monday to Saturday,
           // because that is the order the crew works them.
           a.group.installationDate.localeCompare(b.group.installationDate) ||
@@ -9249,6 +9255,35 @@ function DeliveryPlanningView({
       // and hiding it would make "Create delivery run" look like it failed.
       if (stopFiltered && !runJobs.length) return false;
       return true;
+    })
+    // Runs sharing a heading read as one block. Every run carries its own
+    // heading — that row is also where its date, status, warehouse and PIC are
+    // edited — so this puts the identical ones next to each other rather than
+    // merging them.
+    //
+    // The list had no order at all before this, which is how six runs headed
+    // "Week 26 Jul · PIC Khairul" ended up split between positions 26 and 144
+    // of 145. Week first because that is what the heading leads with, then the
+    // PIC named beside it, then the date inside the week.
+    //
+    // Undated runs sort to the very top: a run with no date yet is one being
+    // built, and burying it at the bottom of a hundred-odd rows would lose it.
+    .sort((a, b) => {
+      const week = (entry: typeof a) =>
+        entry.run.deliveryDate
+          ? (weekBounds(entry.run.deliveryDate)?.start ?? "")
+          : "";
+      const undated = (entry: typeof a) => (entry.run.deliveryDate ? 1 : 0);
+      return (
+        undated(a) - undated(b) ||
+        // Newest week first, matching Installation groups.
+        week(b).localeCompare(week(a)) ||
+        (a.run.deliveryPic ?? "").localeCompare(b.run.deliveryPic ?? "") ||
+        // Days inside a week read forwards, the order they are worked.
+        (a.run.deliveryDate ?? "").localeCompare(b.run.deliveryDate ?? "") ||
+        (a.run.departureTime ?? "").localeCompare(b.run.departureTime ?? "") ||
+        a.run.id.localeCompare(b.run.id)
+      );
     });
 
   const filtered = Boolean(
