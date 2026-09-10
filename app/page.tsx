@@ -611,18 +611,32 @@ function isSchedulingInPlay(job: InstallationJob) {
   );
 }
 
-// The status that is waiting on a replacement date, and so gets the second
-// date field on Customer Scheduling. Cancellations read as Reschedule now, so
-// a called-off date arrives here too: the outstanding thing is the new date.
+// The statuses that get the second date field on Customer Scheduling. Both are
+// customers whose original date no longer stands: a Reschedule has called it
+// off outright, and a Pending Complete is held up by something — wiring, a
+// battery — that will need a new day booked once it clears. Cancellations read
+// as Reschedule now, so a called-off date arrives here too.
 function awaitsNewDate(job: InstallationJob) {
-  return job.customerAvailabilityStatus === "reschedule";
+  return (
+    job.customerAvailabilityStatus === "reschedule" ||
+    job.customerAvailabilityStatus === "pending_complete"
+  );
 }
 
 // One of those customers with no replacement date yet. The whole point of the
 // status is to get that date agreed, so Customer Scheduling marks these rows
 // until one is.
+// Deliberately narrower than awaitsNewDate: only a Reschedule is chased for
+// the missing date. Getting a replacement agreed is the entire point of that
+// status, whereas a Pending Complete is usually waiting on wiring or a battery
+// rather than on the customer — flagging all of those amber would mark 34 of
+// the 36 rows for something that is not what is actually holding them up. They
+// still get the field, just not the marker.
 function needsNewDate(job: InstallationJob) {
-  return awaitsNewDate(job) && !job.secondPreferredInstallationDate;
+  return (
+    job.customerAvailabilityStatus === "reschedule" &&
+    !job.secondPreferredInstallationDate
+  );
 }
 
 // No availability status takes a customer out of planning any more. The two
@@ -8320,13 +8334,20 @@ function TeamPlanningView({
           ) : (
             <span className="run-field-readout">
               {formatDateOnly(job.preferredInstallationDate)}
-              {awaitsNewDate(job) && (
-                <span className="preferred-date-readout-second">
-                  {job.secondPreferredInstallationDate
-                    ? `→ ${formatDateOnly(job.secondPreferredInstallationDate)}`
-                    : "→ new date needed"}
-                </span>
-              )}
+              {/* The date once it exists, for either status. The "needed"
+                  prompt is only for a Reschedule, matching the amber marker:
+                  a Pending Complete has the field to fill in but is not being
+                  chased for it. */}
+              {awaitsNewDate(job) &&
+                (job.secondPreferredInstallationDate ? (
+                  <span className="preferred-date-readout-second">
+                    {`→ ${formatDateOnly(job.secondPreferredInstallationDate)}`}
+                  </span>
+                ) : needsNewDate(job) ? (
+                  <span className="preferred-date-readout-second">
+                    → new date needed
+                  </span>
+                ) : null)}
             </span>
           )}
         </td>
