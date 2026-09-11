@@ -5117,8 +5117,8 @@ function InstallationGroupsView({
       })
       // Crew first, date within it: every row a given crew works sits together
       // in the order they go out, which is how the schedule sheet itself is
-      // laid out. Rows with no team label sort last rather than first, so a
-      // blank does not head the table.
+      // laid out. Rows with no team label sort last within their week rather
+      // than first, so a blank does not head a week's block.
       .sort((a, b) => {
         const label = (row: typeof a) => row.group.teamLabel?.trim() ?? "";
         const unlabelled = (row: typeof a) => (label(row) ? 0 : 1);
@@ -5140,13 +5140,19 @@ function InstallationGroupsView({
         return (
           pinned(a) - pinned(b) ||
           pinnedWeek(a) - pinnedWeek(b) ||
-          unlabelled(a) - unlabelled(b) ||
           // Week is the outer grouping, exactly as the schedule sheet lays it
           // out: one week bar, every team's block underneath it. So the whole
           // of the current week sits at the top of the table, whichever team
           // each block belongs to, and older weeks follow. Newest first, so
           // b before a.
           weekStart(b).localeCompare(weekStart(a)) ||
+          // Inside the week, not above it. Sorting on this first split the
+          // table into two halves — every labelled crew by week, then every
+          // unlabelled one by week all over again — so a week holding both
+          // printed its heading twice, at opposite ends of the table. Weeks of
+          // 7 Sep and 31 Aug were each doing that off the back of two groups
+          // with no label. A blank still sorts last, just among its own week.
+          unlabelled(a) - unlabelled(b) ||
           // Numeric-aware so "Team 10" follows "Team 9" instead of "Team 1".
           label(a).localeCompare(label(b), undefined, { numeric: true }) ||
           a.group.installationTeam.localeCompare(b.group.installationTeam) ||
