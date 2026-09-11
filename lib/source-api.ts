@@ -411,6 +411,20 @@ function parsePanelQtyFromPackageLine(line: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
+// The wattage sits in the same package line as the quantity — "17X 650W
+// JinkoSolar TIGER NEO 3.0 Panel" — but only the quantity was ever read off
+// it, and invoice.panel_rating is empty on every one of the 2,702 live
+// invoices whose line states a wattage. So the record said "17 panels · rating
+// not provided" about a line that plainly says 650W.
+//
+// The column still wins where it is filled in; it never disagreed with the
+// text on any invoice, so this only fills blanks. Bounded to three or four
+// digits so a price or a model number cannot be read as a panel rating.
+function parsePanelRatingFromPackageLine(line: string): number | null {
+  const match = line.match(/^\d+\s*[xX]\s*(\d{3,4})\s*W(?:p|att)?\b/i);
+  return match ? Number(match[1]) : null;
+}
+
 // Matches "String Inverter"/"Hybrid Inverter" and the "Hybird Inverter"
 // typo that recurs throughout the source data (the word "Inverter" itself
 // is spelled correctly, so matching on it alone still catches it). NEP BDM
@@ -493,6 +507,8 @@ function rowToJob(row: ProxyRow): InstallationJob {
 
   const packageLine = firstPackageLine(row.package_item_description);
   const resolvedPanelQty = parsePanelQtyFromPackageLine(packageLine) ?? row.panel_qty;
+  const resolvedPanelRating =
+    row.panel_rating ?? parsePanelRatingFromPackageLine(packageLine);
   const parsedInverter = parseInverterFromText(row.package_item_description);
   const parsedPhase = parsePhaseFromText(row.package_item_description);
   const ballastText = linesMatching(row.ballast_details, /ballast/i);
@@ -514,7 +530,7 @@ function rowToJob(row: ProxyRow): InstallationJob {
     firstPaymentDate: toDateOnly(row.first_payment_date),
     secondPaymentDate: toDateOnly(row.second_payment_date),
     panelQuantity: resolvedPanelQty,
-    panelRating: row.panel_rating,
+    panelRating: resolvedPanelRating,
     inverter:
       parsedInverter ||
       row.inverter_name ||
@@ -554,7 +570,7 @@ function rowToJob(row: ProxyRow): InstallationJob {
     deliveryContactNumber: row.phone || "",
     warehouseLocation: "",
     panelDetails: `${resolvedPanelQty ?? "—"} panels${
-      row.panel_rating ? ` × ${row.panel_rating}W` : ""
+      resolvedPanelRating ? ` × ${resolvedPanelRating}W` : ""
     }`,
     wiringDetails: "",
     batteryDetails: batteryText || "Not available",
