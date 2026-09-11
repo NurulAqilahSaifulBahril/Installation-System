@@ -9266,16 +9266,25 @@ function DeliveryPlanningView({
     // of 145. Week first because that is what the heading leads with, then the
     // PIC named beside it, then the date inside the week.
     //
-    // Undated runs sort to the very top: a run with no date yet is one being
-    // built, and burying it at the bottom of a hundred-odd rows would lose it.
+    // A run still being filled in stays at the top until it is closed, and
+    // only then drops into its week. The filter above already refuses to hide
+    // an open run for the same reason — "changing an open run's date would
+    // yank it off screen mid-edit" — and sorting on the date alone brought
+    // that straight back: typing 16 Mar into a new run sent it to position 123
+    // of 146 while the PIC and warehouse were still blank.
+    //
+    // An undated run is treated the same way even when closed. It has no week
+    // to sort into, and burying it at the bottom of a hundred-odd rows would
+    // lose a run somebody had just created.
     .sort((a, b) => {
       const week = (entry: typeof a) =>
         entry.run.deliveryDate
           ? (weekBounds(entry.run.deliveryDate)?.start ?? "")
           : "";
-      const undated = (entry: typeof a) => (entry.run.deliveryDate ? 1 : 0);
+      const held = (entry: typeof a) =>
+        editingRunIds.has(entry.run.id) || !entry.run.deliveryDate ? 0 : 1;
       return (
-        undated(a) - undated(b) ||
+        held(a) - held(b) ||
         // Newest week first, matching Installation groups.
         week(b).localeCompare(week(a)) ||
         (a.run.deliveryPic ?? "").localeCompare(b.run.deliveryPic ?? "") ||
