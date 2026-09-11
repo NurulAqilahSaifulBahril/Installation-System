@@ -5235,13 +5235,22 @@ function InstallationGroupsView({
   );
 
   // Who can be picked into a crew row's customer cell: financially eligible,
-  // not out of planning (unless a reschedule/cancel/pending signal says they
-  // are still being chased), not already read as a finished install, and not
-  // sitting in a *different* group already — the last guard exempts the same
-  // reschedule/cancel/pending signal, since that is exactly the customer a
-  // stale old group is holding onto after their date fell through. The row's
-  // own current customer is always included, matching the equivalent picker
-  // on Stock delivery.
+  // and not already read as a finished install. The row's own current customer
+  // is always included, matching the equivalent picker on Stock delivery.
+  //
+  // Being in another group is no longer a reason to hide anyone. The picker
+  // used to allow it only for a customer signalling reschedule/cancel/pending,
+  // on the reasoning that a stale old group is what holds a customer whose
+  // date fell through — but a job can genuinely need two bookings for reasons
+  // that have nothing to do with a date falling through: a two-day install, a
+  // return trip, work split across crews. Everything downstream already
+  // expects it, and deliberately so: the calendar draws one entry per group
+  // rather than picking a winner, precisely so a customer in two groups shows
+  // on both days.
+  //
+  // The same customer twice in one group is still refused. A group's members
+  // are a list of job ids, so a repeat would be an identical row keyed the
+  // same way, not a second booking.
   function eligibleCustomersForRow(
     group: InstallationGroup,
     currentJobId: string,
@@ -5256,13 +5265,7 @@ function InstallationGroupsView({
           return false;
         }
         if (!hasPlanningEligibility(job)) return false;
-        if (!jobMatchesSearch(job, search)) return false;
-        const existingGroup = groupByJobId.get(job.id);
-        return (
-          !existingGroup ||
-          existingGroup.id === group.id ||
-          signalsPendingComplete(job)
-        );
+        return jobMatchesSearch(job, search);
       })
       .sort((a, b) => a.customerName.localeCompare(b.customerName));
   }
