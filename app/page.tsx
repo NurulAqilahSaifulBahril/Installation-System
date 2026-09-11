@@ -1852,8 +1852,13 @@ function useCalendarWeather(
   useEffect(() => {
     let cancelled = false;
     const locations = new Map<string, { latitude: number; longitude: number }>();
+    // Indexed once for the whole pass rather than scanning every customer per
+    // group. This effect re-runs whenever jobs change — which is every save —
+    // and at 515 groups a scan apiece was several million comparisons each
+    // time, for the sake of one postcode per group.
+    const byId = new Map(jobs.map((job) => [job.id, job]));
     groups.forEach((group) => {
-      const firstJob = jobs.find((job) => group.jobIds.includes(job.id));
+      const firstJob = group.jobIds.map((id) => byId.get(id)).find(Boolean);
       if (!firstJob) return;
       const match = weatherCoordinatesForPostcode(postcodeForJob(firstJob));
       if (match) locations.set(match.prefix, match.coordinates);
@@ -4881,6 +4886,14 @@ function InstallationGroupsView({
   onTogglePin: (id: string) => void;
 }) {
   const todayIso = malaysiaToday();
+  // Every customer by id, built once per jobs change and shared with the group
+  // cards and the drawer below. They are all keyed by job id, and each of them
+  // scanning the whole customer list for its own members was the bulk of the
+  // lag when editing anything on this page.
+  const jobById = useMemo(
+    () => new Map(jobs.map((job) => [job.id, job])),
+    [jobs],
+  );
   // Which group (if any) already holds each job — needed to tell whether a
   // customer offered in the picker below is free, already in this same group,
   // or booked into a different one.
@@ -5074,7 +5087,6 @@ function InstallationGroupsView({
   } | null>(null);
 
   const scheduleRows = useMemo(() => {
-    const jobById = new Map(jobs.map((job) => [job.id, job]));
     return groups
       .filter((group) => group.installationDate)
       .filter((group) => matchesDateSearch(group.installationDate, periodFilter))
@@ -5672,7 +5684,7 @@ function InstallationGroupsView({
     if (!group) return [] as string[];
     return group.jobIds
       .map((jobId) => {
-        const job = jobs.find((j) => j.id === jobId);
+        const job = jobById.get(jobId);
         if (!job) return null;
         const name = formatPersonName(job.customerName);
         return pinnedJobIds.has(jobId) ? `📌 ${name}` : name;
@@ -7298,6 +7310,7 @@ function InstallationGroupsView({
                       group={group}
                       weekDates={weekDates}
                       jobs={jobs}
+                      jobById={jobById}
                       calendarWeather={calendarWeather}
                       deliveryRunsForGroup={deliveryRunsForGroup}
                       onOpenDrawer={() => setOpenGroupId(group.id)}
@@ -7336,6 +7349,7 @@ function InstallationGroupsView({
         <GroupDrawer
           group={openGroup}
           jobs={jobs}
+          jobById={jobById}
           installationOptions={installationOptions}
           wiringOptions={wiringOptions}
           calendarWeather={calendarWeather}
@@ -7356,6 +7370,7 @@ function InstallationGroupsView({
 
 function WeekGroupCard({
   group,
+  jobById,
   weekDates,
   jobs,
   calendarWeather,
@@ -7368,6 +7383,7 @@ function WeekGroupCard({
   group: InstallationGroup;
   weekDates: Date[];
   jobs: InstallationJob[];
+  jobById: Map<string, InstallationJob>;
   calendarWeather: Record<string, { rainProbability: number; weatherCode: number }>;
   deliveryRunsForGroup: (groupId: string) => DeliveryRun[];
   onOpenDrawer: () => void;
@@ -7379,11 +7395,14 @@ function WeekGroupCard({
   // Pinned customers lead the list; everyone else holds their existing order,
   // which Array.sort preserves. filter has already made a new array, so this
   // sorts a copy rather than the jobs prop.
-  const linkedJobs = jobs
+  // Walks the group's own members rather than the whole customer list. A card
+  // per group each scanning 8,000-odd jobs came to ~157ms every render, and a
+  // render happens on every keystroke.
+  const linkedJobs = group.jobIds
+    .map((id) => jobById.get(id))
     .filter(
-      (job) =>
-        group.jobIds.includes(job.id) &&
-        !isCompleteInstallation(job, malaysiaToday(), group),
+      (job): job is InstallationJob =>
+        Boolean(job) && !isCompleteInstallation(job!, malaysiaToday(), group),
     )
     .sort(
       (a, b) => Number(pinnedJobIds.has(b.id)) - Number(pinnedJobIds.has(a.id)),
@@ -7522,6 +7541,7 @@ function WeekGroupCard({
 
 function GroupDrawer({
   group,
+  jobById,
   jobs,
   installationOptions,
   wiringOptions,
@@ -7536,6 +7556,7 @@ function GroupDrawer({
 }: {
   group: InstallationGroup;
   jobs: InstallationJob[];
+  jobById: Map<string, InstallationJob>;
   installationOptions: TeamResource[];
   wiringOptions: TeamResource[];
   calendarWeather: Record<string, { rainProbability: number; weatherCode: number }>;
@@ -7552,11 +7573,14 @@ function GroupDrawer({
   // Pinned customers lead the list; everyone else holds their existing order,
   // which Array.sort preserves. filter has already made a new array, so this
   // sorts a copy rather than the jobs prop.
-  const linkedJobs = jobs
+  // Walks the group's own members rather than the whole customer list. A card
+  // per group each scanning 8,000-odd jobs came to ~157ms every render, and a
+  // render happens on every keystroke.
+  const linkedJobs = group.jobIds
+    .map((id) => jobById.get(id))
     .filter(
-      (job) =>
-        group.jobIds.includes(job.id) &&
-        !isCompleteInstallation(job, malaysiaToday(), group),
+      (job): job is InstallationJob =>
+        Boolean(job) && !isCompleteInstallation(job!, malaysiaToday(), group),
     )
     .sort(
       (a, b) => Number(pinnedJobIds.has(b.id)) - Number(pinnedJobIds.has(a.id)),
@@ -7819,6 +7843,13 @@ function TeamPlanningView({
   availableTeams: TeamResource[];
   saving: boolean;
 }) {
+  // Every customer by id. The rows here look customers up constantly — once
+  // per suggestion member and again per rendered row — and each of those was a
+  // scan of the whole customer list.
+  const jobById = useMemo(
+    () => new Map(jobs.map((job) => [job.id, job])),
+    [jobs],
+  );
   const [rangeKm, setRangeKm] = useState(20);
   // The Installation record, opened from a customer's name once their row is
   // being edited. Held as an id rather than the job itself so an edit made
@@ -7995,7 +8026,7 @@ function TeamPlanningView({
         return {
           ...suggestion,
           customers: customerIds
-            .map((jobId) => jobs.find((job) => job.id === jobId))
+            .map((jobId) => jobById.get(jobId))
             .filter(
               (job): job is InstallationJob =>
                 Boolean(job) && filteredPlanningJobIds.has(job!.id),
@@ -8553,9 +8584,7 @@ function TeamPlanningView({
                 // Same live-lookup as the grouped rows below: an edit made
                 // elsewhere on the page may not have flowed through the
                 // suggestion memo yet.
-                const job =
-                  jobs.find((candidate) => candidate.id === snapshotJob.id) ||
-                  snapshotJob;
+                const job = jobById.get(snapshotJob.id) || snapshotJob;
                 return (
                   <tr
                     key={job.id}
@@ -8617,8 +8646,7 @@ function TeamPlanningView({
                   // through the suggestion memo yet — look it up fresh so an
                   // edit never appears to revert for a render or two.
                   const job =
-                    jobs.find((candidate) => candidate.id === snapshotJob.id) ||
-                    snapshotJob;
+                    jobById.get(snapshotJob.id) || snapshotJob;
                   return (
                     <tr
                       key={job.id}
@@ -8854,6 +8882,13 @@ function DeliveryPlanningView({
   onTogglePin: (id: string) => void;
 }) {
   const todayIso = malaysiaToday();
+  // Every customer by id, built once per jobs change. The tables here are
+  // keyed by job id throughout, and looking each one up by scanning the whole
+  // customer list is what made typing into a field feel slow.
+  const jobById = useMemo(
+    () => new Map(jobs.map((job) => [job.id, job])),
+    [jobs],
+  );
   const [stockDraft, setStockDraft] = useState<Record<string, string>>({});
   // Each run's fields start read-only; clicking its row (on anything but an
   // input/select/button, which stop the click from bubbling) toggles that one
@@ -9230,7 +9265,12 @@ function DeliveryPlanningView({
   const stopFiltered = Boolean(query) || planningFilter !== ALL_JOBS;
   const visibleRuns = runs
     .map((run) => {
-      const runJobs = jobs.filter((job) => run.jobIds.includes(job.id));
+      // Walk the run's own stops rather than the whole customer list. Scanning
+      // all 8,000-odd jobs once per run cost ~45ms of every render — and every
+      // render is every keystroke, because editing a field re-renders the page.
+      const runJobs = run.jobIds
+        .map((id) => jobById.get(id))
+        .filter((job): job is InstallationJob => Boolean(job));
       const matching = runJobs.filter(
         (job) =>
           (!query || jobMatchesSearch(job, query)) &&
