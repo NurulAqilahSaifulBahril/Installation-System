@@ -9,6 +9,16 @@ cd /d "%~dp0"
 echo Stopping the running dashboard (if any)...
 netstat -ano | findstr /R /C:":3000 .*LISTENING" >nul 2>&1
 if %errorlevel%==0 (
+  REM Only kill what's on port 3000 if it's actually this dashboard - a
+  REM different app (e.g. Agent CRM) can end up on port 3000 too, and killing
+  REM whatever PID happens to be there without checking would take it down.
+  call "%~dp0is-our-dashboard.bat"
+  if errorlevel 1 (
+    echo ERROR: Port 3000 is being used by a different app - not stopping it.
+    echo Close that app first, or free the port, then re-run this script.
+    pause
+    exit /b 1
+  )
   for /f "tokens=5" %%a in ('netstat -ano ^| findstr /R /C:":3000 .*LISTENING"') do (
     taskkill /PID %%a /F >nul 2>&1
   )

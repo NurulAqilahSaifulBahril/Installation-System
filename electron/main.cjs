@@ -7,9 +7,15 @@ const net = require('net');
 const path = require('path');
 
 const HOST = process.env.ELECTRON_HOST || '127.0.0.1';
-const PORT = Number(process.env.PORT || 3000);
-const START_URL = process.env.ELECTRON_START_URL || `http://${HOST}:${PORT}`;
+const PREFERRED_PORT = Number(process.env.PORT || 3000);
+const EXPLICIT_START_URL = process.env.ELECTRON_START_URL || null;
 const ROOT_DIR = path.resolve(__dirname, '..');
+
+// Must match middleware.ts's APP_ID_HEADER/APP_ID. Duplicated rather than
+// imported: this file runs as plain CommonJS outside the Next build, and the
+// two only need to agree on two string literals.
+const APP_ID_HEADER = 'x-eternalgy-app';
+const APP_ID = 'installation-ops';
 
 // Load connection settings from the bundled .env.local before Next starts.
 // Next reads env files itself, but doing it explicitly means a packaged build
@@ -261,6 +267,9 @@ let mainWindow = null;
 let shuttingDown = false;
 let installRequested = false;
 let updateDownloaded = false;
+// The port this run actually ended up on - equals PREFERRED_PORT unless that
+// one was already held by something else, see ensureServer().
+let activePort = PREFERRED_PORT;
 
 // Auto-update: checks the app-update.yml embedded at build time (points at
 // the Installation-System GitHub releases feed). Downloads only happen when
@@ -476,13 +485,53 @@ function waitForServer(host, port, timeoutMs = 120000) {
   });
 }
 
-async function startServer() {
+// Confirms whatever is listening on host:port is actually this app, via the
+// header middleware.ts stamps on every response. Without this, a port that
+// merely answers HTTP is treated as "our server already running" - which is
+// how this shell ended up loading Agent CRM's window when that app happened
+// to be sitting on the same default port 3000.
+async function isOurServer(host, port) {
+  try {
+    const response = await fetch(`http://${host}:${port}/api/auth/me`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    return response.headers.get(APP_ID_HEADER) === APP_ID;
+  } catch {
+    return false;
+  }
+}
+
+// Preferred port is already taken by something that isn't us - find a free
+// one nearby rather than fail to start. Probing by actually binding (not by
+// asking isPortOpen for "false") is what makes this safe against the same
+// race a second launch could hit.
+function findFreePort(host, startPort, maxAttempts = 50) {
+  return new Promise((resolve, reject) => {
+    const tryPort = (port, attemptsLeft) => {
+      if (attemptsLeft <= 0) {
+        reject(new Error(`No free port found starting at ${startPort}`));
+        return;
+      }
+      const tester = net.createServer();
+      tester.once('error', () => {
+        tester.close(() => tryPort(port + 1, attemptsLeft - 1));
+      });
+      tester.once('listening', () => {
+        tester.close(() => resolve(port));
+      });
+      tester.listen(port, host);
+    };
+    tryPort(startPort, maxAttempts);
+  });
+}
+
+async function startServer(port) {
   if (server || process.env.ELECTRON_SKIP_SERVER === '1') {
     return;
   }
 
   const dev = !app.isPackaged;
-  nextApp = next({ dev, dir: ROOT_DIR, hostname: HOST, port: PORT });
+  nextApp = next({ dev, dir: ROOT_DIR, hostname: HOST, port });
   const handle = nextApp.getRequestHandler();
 
   await nextApp.prepare();
@@ -493,7 +542,7 @@ async function startServer() {
 
   await new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(PORT, HOST, () => {
+    server.listen(port, HOST, () => {
       server.off('error', reject);
       resolve();
     });
@@ -501,15 +550,33 @@ async function startServer() {
 }
 
 async function ensureServer() {
-  if (!(await isPortOpen(HOST, PORT, 300))) {
-    await startServer();
+  if (await isPortOpen(HOST, PREFERRED_PORT, 300)) {
+    if (await isOurServer(HOST, PREFERRED_PORT)) {
+      // A previous launch (or the background watchdog) is already serving -
+      // reuse it rather than starting a second instance.
+      activePort = PREFERRED_PORT;
+      await waitForServer(HOST, activePort);
+      return;
+    }
+
+    console.warn(
+      `Port ${PREFERRED_PORT} is in use by a different app - starting on a fallback port instead.`,
+    );
+    activePort = await findFreePort(HOST, PREFERRED_PORT + 1);
+  } else {
+    activePort = PREFERRED_PORT;
   }
 
-  await waitForServer(HOST, PORT);
+  await startServer(activePort);
+  await waitForServer(HOST, activePort);
 }
 
 async function createWindow() {
-  await ensureServer();
+  let startUrl = EXPLICIT_START_URL;
+  if (!startUrl) {
+    await ensureServer();
+    startUrl = `http://${HOST}:${activePort}`;
+  }
 
   mainWindow = new BrowserWindow({
     width: 1600,
@@ -532,7 +599,7 @@ async function createWindow() {
     mainWindow = null;
   });
 
-  await mainWindow.loadURL(START_URL);
+  await mainWindow.loadURL(startUrl);
   checkForUpdates();
 }
 

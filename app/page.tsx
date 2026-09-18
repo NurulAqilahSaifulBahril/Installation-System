@@ -15,7 +15,6 @@ import {
   Columns,
   Download,
   FileSearch,
-  Filter,
   LoaderCircle,
   LogOut,
   MapPin,
@@ -30,6 +29,7 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  Snowflake,
   Sun,
   Truck,
   Users,
@@ -95,9 +95,29 @@ type JobsResponse = {
 
 type DashboardView = "pipeline" | "groups" | "teams" | "delivery";
 
+const DASHBOARD_PAGES: Record<DashboardView, { title: string; blurb: string }> = {
+  pipeline: {
+    title: "Customer details",
+    blurb: "Plan customer dates, stock delivery, SEDA approval, and installation teams.",
+  },
+  teams: {
+    title: "Customer Scheduling",
+    blurb: "Find ready customers and suggest location groups for team planning.",
+  },
+  groups: {
+    title: "Installation groups",
+    blurb: "Customers grouped by location and installation date.",
+  },
+  delivery: {
+    title: "Stock delivery",
+    blurb: "Group customer materials into warehouse delivery routes.",
+  },
+};
+
 // A skylift booked for the crew — either a single day (until empty) or a
-// from/until range. Kept per group so each day's row shows only the machine
-// actually on site that day.
+// from/until range. Retired along with the Skylift column it was kept for;
+// the type stays only so migrateGroupSkylift below can still type-check
+// reading a booking left over from before the column was removed.
 type SkyliftBooking = {
   name: string;
   from: string;
@@ -121,6 +141,9 @@ type InstallationGroup = {
   wiringMembers?: string[];
   // Vehicles the crew takes out — more than one is normal ("Van + Myvi").
   cars?: string[];
+  // Retired — see SkyliftBooking and migrateGroupSkylift. Never written to
+  // by anything still in the app; only ever read from an older saved group
+  // on its way to being folded into remark.
   skylifts?: SkyliftBooking[];
   // Only ever the starting note for a crew booking that has nobody on it yet —
   // "Add Team" makes such a row, and there is no customer to hang a remark on
@@ -130,6 +153,29 @@ type InstallationGroup = {
   // every booking whose note was typed against a customer, have no value here.
   remark?: string;
 };
+
+function skyliftBookingLabel(entry: SkyliftBooking) {
+  const from = entry.from ? formatDateOnly(entry.from) : "";
+  const until = entry.until ? ` – ${formatDateOnly(entry.until)}` : "";
+  return [entry.name, from ? `${from}${until}` : ""].filter(Boolean).join(" · ");
+}
+
+// One-time migration off the retired Skylift column: any booking a group
+// still carries is folded into its remark instead of quietly disappearing
+// once the column stops reading it, using the same text the column itself
+// used to show. Idempotent — a group with nothing left in skylifts (already
+// migrated, or never had any) is returned as-is rather than a new object, so
+// callers can tell whether anything actually changed by comparing reference.
+function migrateGroupSkylift(group: InstallationGroup): InstallationGroup {
+  const skylifts = group.skylifts ?? [];
+  if (skylifts.length === 0) return group;
+  const { skylifts: _retired, ...rest } = group;
+  const skyliftNote = `Skylift: ${skylifts.map(skyliftBookingLabel).join("; ")}`;
+  return {
+    ...rest,
+    remark: [group.remark, skyliftNote].filter(Boolean).join(" · "),
+  };
+}
 
 type DeliveryRun = {
   id: string;
@@ -354,6 +400,11 @@ const PINNED_JOBS_STORAGE_KEY = "installation-ops-pinned-jobs-v1";
 const PINNED_WEEKS_STORAGE_KEY = "installation-ops-pinned-weeks-v1";
 const HIDDEN_CREW_COLUMNS_STORAGE_KEY =
   "installation-ops-hidden-crew-columns-v1";
+// Unlike the pin keys above, frozen rows are shared ops data (see
+// SharedOpsState) — this key only caches the last-known set locally so the
+// page has something to show before the shared store answers, or if it
+// cannot be reached at all.
+const FROZEN_JOBS_STORAGE_KEY = "installation-ops-frozen-jobs-v1";
 
 function formatPersonName(name: string) {
   return name
@@ -992,7 +1043,6 @@ function postcodeForJob(job: InstallationJob) {
 // mutates) misses the cache and is rebuilt. There is no way to read a stale
 // haystack for a job whose fields have changed.
 const locationHaystacks = new WeakMap<InstallationJob, string>();
-const pipelineHaystacks = new WeakMap<InstallationJob, string>();
 
 function locationHaystack(job: InstallationJob) {
   let text = locationHaystacks.get(job);
@@ -1014,23 +1064,7 @@ function locationHaystack(job: InstallationJob) {
 }
 
 function pipelineHaystack(job: InstallationJob) {
-  let text = pipelineHaystacks.get(job);
-  if (text === undefined) {
-    // Not .filter(Boolean) — the original joined these raw, so a null field
-    // contributed an empty slot rather than being dropped. Kept identical so
-    // a search for a two-word span across a blank field behaves as before.
-    text = [
-      job.customerName,
-      job.invoiceNumber,
-      job.address,
-      job.agentName,
-      job.inverter,
-    ]
-      .join(" ")
-      .toLowerCase();
-    pipelineHaystacks.set(job, text);
-  }
-  return text;
+  return locationHaystack(job);
 }
 
 function jobMatchesSearch(job: InstallationJob, search: string) {
@@ -1340,6 +1374,13 @@ function hasCountedSecondPayment(job: InstallationJob) {
 // starts, but it gets no summary card — the cards are the stages, and none of
 // them is highlighted while this is selected.
 const ALL_JOBS = "all";
+
+const WORK_CATEGORIES = [
+  { value: "residential", label: "Residential / Shoplots" },
+  { value: "commercial", label: "Commercial" },
+  { value: "ev", label: "EV" },
+  { value: "om", label: "O&M" },
+] as const;
 
 // How many pipeline rows to build DOM for at once, and how many more each
 // "Show more" adds. The pipeline is ~8,000 jobs since every live invoice
@@ -1724,6 +1765,7 @@ type SharedOpsState = {
   teamResources: TeamResource[];
   teamWeekAssignments: TeamWeekAssignment[];
   jobUpdates: Record<string, JobUpdate>;
+  frozenJobIds: string[];
 };
 
 function readLocalJson<T>(key: string, fallback: T): T {
@@ -2175,6 +2217,96 @@ function specFallback(value: string | null | undefined): string | null {
   return SPEC_PLACEHOLDERS.has(text.toLowerCase()) ? null : text;
 }
 
+// Some invoices are for a service with no solar array to describe — panels,
+// inverter, battery, phase, SEDA status all read as noise on those, filled
+// with "Not provided" placeholders for a system that was never sold.
+// lib/source-api.ts leaves packageName blank exactly for this case — no
+// is_a_package line on the invoice at all — so an empty string is read as
+// "not solar" rather than as missing data. It is never blank for any other
+// reason: every other path through rowToJob falls back to "Not available".
+function isCleaningServiceJob(job: Pick<InstallationJob, "packageName">) {
+  return job.packageName.trim() === "";
+}
+
+function jobCategoryText(job: InstallationJob): string {
+  return [
+    job.packageType,
+    job.packageName,
+    job.evDetails,
+    job.focDetails,
+    job.remarks,
+    job.customerName,
+    ...(job.visits ?? []).map((visit) => visit.kind ?? ""),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function jobHasEv(job: InstallationJob): boolean {
+  if (/^ev charger$/i.test((job.packageType ?? "").trim())) return true;
+  return /ev\s*charger|ev\s*wallbox|wallbox|ev charger installation/i.test(
+    jobCategoryText(job),
+  );
+}
+
+function jobHasOm(job: InstallationJob): boolean {
+  if (isCleaningServiceJob(job)) return true;
+  if (job.visits?.some((visit) => /o\s*&\s*m/i.test(visit.kind ?? ""))) {
+    return true;
+  }
+  return /o\s*&\s*m|cleaning and inspection/i.test(jobCategoryText(job));
+}
+
+function jobIsCommercial(job: InstallationJob): boolean {
+  if (/tariff\s*b/i.test(job.packageType ?? "")) return true;
+  return /\bselco\b/i.test(job.customerName);
+}
+
+function jobIsResidential(job: InstallationJob): boolean {
+  const packageType = job.packageType ?? "";
+  if (/residential/i.test(packageType)) return true;
+  if (/shop[\s-]*lot/i.test(job.customerName)) return true;
+  return (
+    !jobIsCommercial(job) &&
+    !isCleaningServiceJob(job) &&
+    !/^ev charger$/i.test(packageType.trim()) &&
+    job.packageName.trim() !== ""
+  );
+}
+
+function matchesWorkCategory(job: InstallationJob, filter: string): boolean {
+  if (filter === ALL_JOBS) return true;
+  if (filter === "ev") return jobHasEv(job);
+  if (filter === "om") return jobHasOm(job);
+  if (filter === "commercial") return jobIsCommercial(job);
+  if (filter === "residential") return jobIsResidential(job);
+  return true;
+}
+
+function WorkCategorySelect({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  return (
+    <select
+      className="work-category-filter"
+      aria-label="Filter by job type"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      <option value={ALL_JOBS}>All jobs</option>
+      {WORK_CATEGORIES.map((item) => (
+        <option key={item.value} value={item.value}>
+          {item.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function JobDetail({
   job,
   locationGroupLabel,
@@ -2370,60 +2502,66 @@ function JobDetail({
           />
         </SpecBlock>
 
-        <SpecBlock title="System specification">
-          <SpecRow label="Package" value={job.packageName || "Not recorded"} />
-          <SpecRow
-            label="Solar panels"
-            value={
-              job.panelQuantity && job.panelRating
-                ? `${job.panelQuantity} panels · ${job.panelRating}W each`
-                : job.panelQuantity
-                  ? `${job.panelQuantity} panels · rating not provided`
-                  : job.panelRating
-                    ? `Quantity not provided · ${job.panelRating}W each`
-                    : specFallback(job.panelDetails) ??
-                      "Panel specification not provided"
-            }
-          />
-          <SpecRow
-            label="Inverter"
-            value={
-              specFallback(job.inverter) ??
-              specFallback(job.inverterBattery) ??
-              job.inverter
-            }
-          />
-          <SpecRow
-            label="Electrical phase"
-            value={job.phase === "Unknown" ? "Not provided" : job.phase}
-          />
-          <SpecRow
-            label="Battery"
-            value={
-              specFallback(job.battery) ??
-              specFallback(job.batteryDetails) ??
-              "Not provided"
-            }
-          />
-          {/* Ops-owned and absent from the invoice feed entirely, so they only
-              earn a row once someone has actually typed one in. */}
-          {specFallback(job.powerOutput) && (
-            <SpecRow label="Power output" value={job.powerOutput} />
-          )}
-          {specFallback(job.wiringDetails) && (
-            <SpecRow label="Wiring" value={job.wiringDetails} />
-          )}
-          <SpecRow
-            label="Ballast"
-            value={job.ballastDetails || "None recorded"}
-          />
-          <SpecRow label="FOC items" value={job.focDetails || "None recorded"} />
-          <SpecRow label="SEDA status" value={normalizeSeda(job.sedaStatus)} />
-          <SpecRow
-            label="SLD drawing"
-            value={job.sldUrl ? "Available from source" : "Not available"}
-          />
-        </SpecBlock>
+        {/* Nothing here applies to a cleaning-service invoice — there is no
+            array, inverter or SEDA filing behind it — so the block is left
+            out entirely rather than filled with placeholders for a system
+            that was never sold. */}
+        {!isCleaningServiceJob(job) && (
+          <SpecBlock title="System specification">
+            <SpecRow label="Package" value={job.packageName || "Not recorded"} />
+            <SpecRow
+              label="Solar panels"
+              value={
+                job.panelQuantity && job.panelRating
+                  ? `${job.panelQuantity} panels · ${job.panelRating}W each`
+                  : job.panelQuantity
+                    ? `${job.panelQuantity} panels · rating not provided`
+                    : job.panelRating
+                      ? `Quantity not provided · ${job.panelRating}W each`
+                      : specFallback(job.panelDetails) ??
+                        "Panel specification not provided"
+              }
+            />
+            <SpecRow
+              label="Inverter"
+              value={
+                specFallback(job.inverter) ??
+                specFallback(job.inverterBattery) ??
+                job.inverter
+              }
+            />
+            <SpecRow
+              label="Electrical phase"
+              value={job.phase === "Unknown" ? "Not provided" : job.phase}
+            />
+            <SpecRow
+              label="Battery"
+              value={
+                specFallback(job.battery) ??
+                specFallback(job.batteryDetails) ??
+                "Not provided"
+              }
+            />
+            {/* Ops-owned and absent from the invoice feed entirely, so they only
+                earn a row once someone has actually typed one in. */}
+            {specFallback(job.powerOutput) && (
+              <SpecRow label="Power output" value={job.powerOutput} />
+            )}
+            {specFallback(job.wiringDetails) && (
+              <SpecRow label="Wiring" value={job.wiringDetails} />
+            )}
+            <SpecRow
+              label="Ballast"
+              value={job.ballastDetails || "None recorded"}
+            />
+            <SpecRow label="FOC items" value={job.focDetails || "None recorded"} />
+            <SpecRow label="SEDA status" value={normalizeSeda(job.sedaStatus)} />
+            <SpecRow
+              label="SLD drawing"
+              value={job.sldUrl ? "Available from source" : "Not available"}
+            />
+          </SpecBlock>
+        )}
 
         <section className="spec-roof">
           <h3>Installation</h3>
@@ -2776,6 +2914,14 @@ export default function DashboardPage() {
   // preference rather than shared job data, so it lives in localStorage only.
   // Starts empty on the server render; the mount effect below fills it in.
   const [pinnedJobIds, setPinnedJobIds] = useState<Set<string>>(new Set());
+  // Frozen rows on Customer details — the opposite of the pin above: shared
+  // ops data rather than a personal preference, because freezing a customer
+  // off the active pipeline is a decision about the row that should hold for
+  // everyone, not just the browser that clicked it. The job itself is never
+  // touched — freezing only drops it from the summary cards, Customer
+  // Scheduling, Installation groups and Stock delivery; it keeps listing here
+  // on Customer details so it can be found again and unfrozen.
+  const [frozenJobIds, setFrozenJobIds] = useState<Set<string>>(new Set());
   // Lifted out of Team planning so the summary cards above it can be scoped to
   // the same filters while that page is active — see planningScopedJobs below.
   const [planningFilter, setPlanningFilter] = useState<string>(ALL_JOBS);
@@ -2783,6 +2929,7 @@ export default function DashboardPage() {
   const [planningMonthFilter, setPlanningMonthFilter] = useState("");
   const [planningCustomerNameFilter, setPlanningCustomerNameFilter] =
     useState("");
+  const [workCategoryFilter, setWorkCategoryFilter] = useState<string>(ALL_JOBS);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -2908,28 +3055,41 @@ export default function DashboardPage() {
     [markStore],
   );
 
-  const applySharedState = useCallback((state: SharedOpsState) => {
-    setGroups(state.groups);
-    setDeliveryRuns(state.deliveryRuns);
-    // Older saved states predate the warehouse list, so it can be absent.
-    setWarehouses(state.warehouses ?? []);
-    setTeamResources(
-      state.teamResources.length ? state.teamResources : defaultTeamResources,
-    );
-    setTeamWeekAssignments(state.teamWeekAssignments);
-    jobUpdatesRef.current = state.jobUpdates;
-    groupsRef.current = state.groups;
-    setJobs((current) =>
-      current.length
-        ? applyJobUpdates(
-            current,
-            state.jobUpdates,
-            state.groups,
-            malaysiaToday(),
-          )
-        : current,
-    );
-  }, []);
+  const applySharedState = useCallback(
+    (state: SharedOpsState) => {
+      // Runs on every load, not just once — cheap (a no-op map once nothing
+      // has skylifts left) and it means a group edited on a device that
+      // missed this migration still gets caught the next time anyone loads
+      // it, rather than depending on every client having upgraded first.
+      const migratedGroups = state.groups.map(migrateGroupSkylift);
+      setGroups(migratedGroups);
+      setDeliveryRuns(state.deliveryRuns);
+      // Older saved states predate the warehouse list, so it can be absent.
+      setWarehouses(state.warehouses ?? []);
+      setTeamResources(
+        state.teamResources.length ? state.teamResources : defaultTeamResources,
+      );
+      setTeamWeekAssignments(state.teamWeekAssignments);
+      // Older saved states predate freezing, so it can be absent.
+      setFrozenJobIds(new Set(state.frozenJobIds ?? []));
+      jobUpdatesRef.current = state.jobUpdates;
+      groupsRef.current = migratedGroups;
+      setJobs((current) =>
+        current.length
+          ? applyJobUpdates(
+              current,
+              state.jobUpdates,
+              migratedGroups,
+              malaysiaToday(),
+            )
+          : current,
+      );
+      if (migratedGroups.some((group, index) => group !== state.groups[index])) {
+        persistOps({ groups: migratedGroups });
+      }
+    },
+    [persistOps],
+  );
 
   const loadSharedState = useCallback(
     // `silent` is for the background reconnect below: it retries on a timer, so
@@ -2944,6 +3104,7 @@ export default function DashboardPage() {
         teamResources: readLocalJson(TEAMS_STORAGE_KEY, defaultTeamResources),
         teamWeekAssignments: readLocalJson(TEAM_WEEKS_STORAGE_KEY, []),
         jobUpdates: readLocalJson(STORAGE_KEY, {}),
+        frozenJobIds: readLocalJson(FROZEN_JOBS_STORAGE_KEY, []),
       };
       try {
         const response = await fetchWithRetry("/api/ops-state", {
@@ -3215,6 +3376,17 @@ export default function DashboardPage() {
     [jobs, groups, teamWeekAssignments, deliveryRuns],
   );
 
+  // Everything but the jobs someone has frozen off the active pipeline. Used
+  // everywhere that stands for "active work" — the summary cards, Customer
+  // Scheduling, Installation groups and Stock delivery — but deliberately not
+  // by pipelineScopedJobs below: a frozen row still has to show up on
+  // Customer details, unhighlighted, or there would be no way back to
+  // unfreeze it.
+  const activeJobs = useMemo(
+    () => jobs.filter((job) => !frozenJobIds.has(job.id)),
+    [jobs, frozenJobIds],
+  );
+
   // The pipeline narrowed by every filter except the status one: search, state
   // and 2nd payment month. Deliberately excludes status — that is the per-card
   // axis stageCounts computes, and folding it in here would zero every card
@@ -3244,7 +3416,8 @@ export default function DashboardPage() {
         matchesQuery &&
         matchesState &&
         matchesSecondPaymentMonth &&
-        matchesInstallationDate
+        matchesInstallationDate &&
+        matchesWorkCategory(job, workCategoryFilter)
       );
     });
   }, [
@@ -3253,6 +3426,7 @@ export default function DashboardPage() {
     stateFilter,
     secondPaymentMonthFilter,
     installationDateFilter,
+    workCategoryFilter,
   ]);
 
   // Computed once per render rather than memoized — it is a cheap
@@ -3293,16 +3467,17 @@ export default function DashboardPage() {
     // Installation card shows its real number instead of a nought that only
     // fills in once clicked. Every other stage carries its own !installed
     // guard, so admitting them here cannot inflate any other card.
-    return jobs.filter(
+    return activeJobs.filter(
       (job) =>
         belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
         matchesSecondPaymentSearch(job, planningMonthFilter) &&
         (!postcodeSearch ||
           postcodeForJob(job).toLowerCase().includes(postcodeSearch)) &&
-        jobMatchesSearch(job, nameSearch),
+        jobMatchesSearch(job, nameSearch) &&
+        matchesWorkCategory(job, workCategoryFilter),
     );
   }, [
-    jobs,
+    activeJobs,
     groups,
     groupByJobId,
     planningLookup,
@@ -3310,6 +3485,7 @@ export default function DashboardPage() {
     planningPostcodeFilter,
     planningMonthFilter,
     planningCustomerNameFilter,
+    workCategoryFilter,
   ]);
 
   // One count per pipeline stage, produced by the same predicate the status
@@ -3318,7 +3494,13 @@ export default function DashboardPage() {
   // pipeline's search/state/month narrowing — so the cards always describe the
   // list underneath them rather than a global total the filters never touch.
   const stageCounts = useMemo(() => {
-    const pool = view === "teams" ? planningScopedJobs : pipelineScopedJobs;
+    // planningScopedJobs is already built from activeJobs, so this filter is
+    // a no-op there; pipelineScopedJobs is not (Customer details keeps
+    // frozen rows visible), so it has to be dropped here instead — the cards
+    // are the one place on that tab a frozen row must not count.
+    const pool = (view === "teams" ? planningScopedJobs : pipelineScopedJobs).filter(
+      (job) => !frozenJobIds.has(job.id),
+    );
     const counts = {} as Record<StageValue, number>;
     PIPELINE_STAGES.forEach((stage) => {
       counts[stage.value] = pool.filter((job) =>
@@ -3326,7 +3508,14 @@ export default function DashboardPage() {
       ).length;
     });
     return counts;
-  }, [view, planningScopedJobs, pipelineScopedJobs, todayIso, planningLookup]);
+  }, [
+    view,
+    planningScopedJobs,
+    pipelineScopedJobs,
+    frozenJobIds,
+    todayIso,
+    planningLookup,
+  ]);
 
   // The report reads the whole customer list, not the filtered pipeline: it
   // answers "where does the business stand", which a search box left open on
@@ -3402,6 +3591,27 @@ export default function DashboardPage() {
         PINNED_JOBS_STORAGE_KEY,
         JSON.stringify(Array.from(next)),
       );
+      return next;
+    });
+  }
+
+  // Unlike togglePinJob above, this is shared: everyone should see the same
+  // row drop from the active pipeline, so the change is written to ops-state
+  // rather than kept on this device alone.
+  function toggleFreezeJob(jobId: string) {
+    setFrozenJobIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(jobId)) {
+        next.delete(jobId);
+      } else {
+        next.add(jobId);
+      }
+      const nextIds = Array.from(next);
+      window.localStorage.setItem(
+        FROZEN_JOBS_STORAGE_KEY,
+        JSON.stringify(nextIds),
+      );
+      persistOps({ frozenJobIds: nextIds });
       return next;
     });
   }
@@ -3827,8 +4037,8 @@ export default function DashboardPage() {
       <section className="page-heading">
         <div>
           <p className="eyebrow">{malaysiaTodayLabel()} · Malaysia time</p>
-          <h1>Installation dashboard</h1>
-          <p>Plan customer dates, stock delivery, SEDA approval, and installation teams.</p>
+          <h1>{DASHBOARD_PAGES[view].title}</h1>
+          <p>{DASHBOARD_PAGES[view].blurb}</p>
         </div>
       </section>
 
@@ -3923,18 +4133,28 @@ export default function DashboardPage() {
       <section className="workspace">
         {view === "pipeline" && (
         <div className="pipeline-panel">
-          <div className="toolbar">
-            <div className="search-field">
-              <Search size={17} />
-              <input
-                aria-label="Search installations"
-                placeholder="Search customer, invoice, address…"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
+          <div className="toolbar pipeline-toolbar schedule-filters">
+            <label className="schedule-search">
+              <span>Job type</span>
+              <WorkCategorySelect
+                value={workCategoryFilter}
+                onChange={setWorkCategoryFilter}
               />
-            </div>
-            <div className="filters">
-              <Filter size={16} />
+            </label>
+            <label className="schedule-search pipeline-customer-search">
+              <span>Customer</span>
+              <div className="search-field">
+                <Search size={17} />
+                <input
+                  aria-label="Search customer name, invoice number or address"
+                  placeholder="Search customer, invoice, address…"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+              </div>
+            </label>
+            <label className="schedule-search">
+              <span>Status</span>
               <select
                 aria-label="Filter by status"
                 value={status}
@@ -3947,6 +4167,9 @@ export default function DashboardPage() {
                   </option>
                 ))}
               </select>
+            </label>
+            <label className="schedule-search">
+              <span>State</span>
               <select
                 aria-label="Filter by state"
                 value={stateFilter}
@@ -3959,28 +4182,28 @@ export default function DashboardPage() {
                   </option>
                 ))}
               </select>
-              <label className="second-payment-month-filter">
-                <span>2nd payment</span>
-                <input
-                  type="search"
-                  className="second-payment-search"
-                  placeholder="August, 2026, August 2026…"
-                  value={secondPaymentMonthFilter}
-                  onChange={(event) =>
-                    setSecondPaymentMonthFilter(event.target.value)
-                  }
-                />
-              </label>
-              {secondPaymentMonthFilter && (
-                <button
-                  className="icon-button"
-                  aria-label="Clear 2nd payment month filter"
-                  onClick={() => setSecondPaymentMonthFilter("")}
-                >
-                  <X size={14} />
-                </button>
-              )}
-            </div>
+            </label>
+            <label className="schedule-search">
+              <span>2nd payment</span>
+              <input
+                type="search"
+                className="second-payment-search"
+                placeholder="August, 2026, August 2026…"
+                value={secondPaymentMonthFilter}
+                onChange={(event) =>
+                  setSecondPaymentMonthFilter(event.target.value)
+                }
+              />
+            </label>
+            {secondPaymentMonthFilter && (
+              <button
+                className="button secondary"
+                aria-label="Clear 2nd payment month filter"
+                onClick={() => setSecondPaymentMonthFilter("")}
+              >
+                Clear
+              </button>
+            )}
           </div>
 
           {installationDateFilter && (
@@ -4002,7 +4225,7 @@ export default function DashboardPage() {
 
           <div className="pipeline-heading">
             <div>
-              <h2>Active installation pipeline</h2>
+              <h2>Customer details</h2>
               <p>
                 {pipelineJobs.length === visiblePipelineJobs.length
                   ? `${pipelineJobs.length} jobs shown`
@@ -4068,11 +4291,13 @@ export default function DashboardPage() {
                     <th>Remark</th>
                     <th aria-label="Open" />
                     <th aria-label="Pin" />
+                    <th aria-label="Freeze" />
                   </tr>
                 </thead>
                 <tbody>
                   {visiblePipelineJobs.map((job) => {
                     const isPinned = pinnedJobIds.has(job.id);
+                    const isFrozen = frozenJobIds.has(job.id);
                     return (
                     <tr
                       key={job.id}
@@ -4238,6 +4463,25 @@ export default function DashboardPage() {
                           {isPinned ? <Pin size={14} /> : <PinOff size={14} />}
                         </button>
                       </td>
+                      <td className="freeze-cell">
+                        <button
+                          type="button"
+                          className={`icon-button freeze-toggle ${isFrozen ? "is-frozen" : ""}`}
+                          title={
+                            isFrozen
+                              ? "Unfreeze — bring this row back into the active pipeline"
+                              : "Freeze — drop this row from the summary cards, Customer Scheduling, Installation groups and Stock delivery without deleting it"
+                          }
+                          aria-label={isFrozen ? "Unfreeze row" : "Freeze row"}
+                          aria-pressed={isFrozen}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleFreezeJob(job.id);
+                          }}
+                        >
+                          <Snowflake size={14} />
+                        </button>
+                      </td>
                     </tr>
                     );
                   })}
@@ -4280,11 +4524,10 @@ export default function DashboardPage() {
         {view === "groups" && (
           <InstallationGroupsView
             groups={groups}
-            jobs={jobs}
+            jobs={activeJobs}
             teams={teamResources}
             weekAssignments={teamWeekAssignments}
             deliveryRuns={deliveryRuns}
-            onOpenJob={setSelectedId}
             onSaveJob={saveJob}
             onGroupsChange={saveGroups}
             onTeamsChange={saveTeamResources}
@@ -4301,6 +4544,8 @@ export default function DashboardPage() {
             onOpenSchedule={() => setShowScheduleModal(true)}
             pinnedJobIds={pinnedJobIds}
             onTogglePin={togglePinJob}
+            workCategoryFilter={workCategoryFilter}
+            onWorkCategoryFilterChange={setWorkCategoryFilter}
           />
         )}
 
@@ -4309,7 +4554,7 @@ export default function DashboardPage() {
             groups={groups}
             weekAssignments={teamWeekAssignments}
             deliveryRuns={deliveryRuns}
-            jobs={jobs}
+            jobs={activeJobs}
             planningFilter={planningFilter}
             onPlanningFilterChange={setPlanningFilter}
             postcodeFilter={planningPostcodeFilter}
@@ -4318,6 +4563,8 @@ export default function DashboardPage() {
             onSecondPaymentMonthFilterChange={setPlanningMonthFilter}
             customerNameFilter={planningCustomerNameFilter}
             onCustomerNameFilterChange={setPlanningCustomerNameFilter}
+            workCategoryFilter={workCategoryFilter}
+            onWorkCategoryFilterChange={setWorkCategoryFilter}
             onUpdateJob={(job) => void saveAvailability(job)}
             manuallyPinnedJobIds={pinnedJobIds}
             onTogglePin={togglePinJob}
@@ -4329,7 +4576,7 @@ export default function DashboardPage() {
         {view === "delivery" && (
           <DeliveryPlanningView
             runs={deliveryRuns}
-            jobs={jobs}
+            jobs={activeJobs}
             groupByJobId={groupByJobId}
             warehouses={warehouses}
             onChangeWarehouses={saveWarehouses}
@@ -4337,6 +4584,8 @@ export default function DashboardPage() {
             onUpdateJob={(job) => void saveJob(job)}
             pinnedJobIds={pinnedJobIds}
             onTogglePin={togglePinJob}
+            workCategoryFilter={workCategoryFilter}
+            onWorkCategoryFilterChange={setWorkCategoryFilter}
           />
         )}
 
@@ -4758,11 +5007,10 @@ export default function DashboardPage() {
             <div className="schedule-modal-content">
               <InstallationGroupsView
                 groups={groups}
-                jobs={jobs}
+                jobs={activeJobs}
                 teams={teamResources}
                 weekAssignments={teamWeekAssignments}
                 deliveryRuns={deliveryRuns}
-                onOpenJob={setSelectedId}
                 onSaveJob={saveJob}
                 onGroupsChange={saveGroups}
                 onTeamsChange={saveTeamResources}
@@ -4780,6 +5028,8 @@ export default function DashboardPage() {
                 }}
                 pinnedJobIds={pinnedJobIds}
                 onTogglePin={togglePinJob}
+                workCategoryFilter={workCategoryFilter}
+                onWorkCategoryFilterChange={setWorkCategoryFilter}
               />
             </div>
           </div>
@@ -4848,13 +5098,36 @@ function Metric({
   );
 }
 
+// Best-effort read of the invoice's own package line — "12X 650W JinkoSolar
+// TIGER NEO 3.0 Panel N-Type TOPCon", "20X Astronergy Astro 5 Twins…" — into
+// the same shape ops has always typed by hand on Installation groups: "12
+// Jinko 650W". Brand is only ever read immediately after the line's leading
+// "12X " (and the wattage, when the line states one there too) — the same
+// lead-in lib/source-api.ts already requires to read the quantity off this
+// exact line — so a brand is never guessed at from a differently-shaped
+// line, just left out. Quantity and wattage come from the job's own already-
+// resolved fields, not reparsed here, since those already fall back to the
+// invoice's panel_qty/panel_rating columns when the text does not state them.
+function derivedPowerOutput(job: InstallationJob): string {
+  const qty = job.panelQuantity;
+  const rating = job.panelRating;
+  const brand = job.packageName.match(
+    /^\d+\s*[xX]\s*(?:\d{3,4}\s*W(?:p|att)?\b\s*)?([A-Za-z][A-Za-z-]*)/,
+  )?.[1];
+  if (qty && brand && rating) return `${qty} ${brand} ${rating}W`;
+  if (qty && brand) return `${qty} ${brand}`;
+  if (qty && rating) return `${qty} panels × ${rating}W`;
+  if (qty) return `${qty} panels`;
+  if (rating) return `${rating}W`;
+  return "";
+}
+
 function InstallationGroupsView({
   groups,
   jobs,
   teams,
   weekAssignments,
   deliveryRuns,
-  onOpenJob,
   onSaveJob,
   onGroupsChange,
   onTeamsChange,
@@ -4866,13 +5139,14 @@ function InstallationGroupsView({
   onOpenSchedule,
   pinnedJobIds,
   onTogglePin,
+  workCategoryFilter,
+  onWorkCategoryFilterChange,
 }: {
   groups: InstallationGroup[];
   jobs: InstallationJob[];
   teams: TeamResource[];
   weekAssignments: TeamWeekAssignment[];
   deliveryRuns: DeliveryRun[];
-  onOpenJob: (id: string) => void;
   onSaveJob: (job: InstallationJob) => void;
   onGroupsChange: (groups: InstallationGroup[]) => void;
   onTeamsChange: (teams: TeamResource[]) => void;
@@ -4884,6 +5158,8 @@ function InstallationGroupsView({
   onOpenSchedule?: () => void;
   pinnedJobIds: Set<string>;
   onTogglePin: (id: string) => void;
+  workCategoryFilter: string;
+  onWorkCategoryFilterChange: (next: string) => void;
 }) {
   const todayIso = malaysiaToday();
   // Every customer by id, built once per jobs change and shared with the group
@@ -4968,6 +5244,16 @@ function InstallationGroupsView({
   const [openCustomerRowKey, setOpenCustomerRowKey] = useState<string | null>(
     null,
   );
+  // The open row's search text, deferred: eligibleCustomersForRow filters the
+  // whole ~8,000-job list on every keystroke, and doing that synchronously
+  // was what made typing into the box feel laggy. Deferring it lets the
+  // character land immediately (the input below still reads the un-deferred
+  // text) while React catches up on the match list a moment later, the same
+  // trade the pipeline's own search box makes with deferredQuery.
+  const openCustomerSearchText = openCustomerRowKey
+    ? (customerSearchByRow[openCustomerRowKey] ?? "")
+    : "";
+  const deferredCustomerSearchText = useDeferredValue(openCustomerSearchText);
   // Groups added from this table in this session, newest first. Only affects
   // ordering — nothing about them is stored differently.
   const [newRowGroupIds, setNewRowGroupIds] = useState<string[]>([]);
@@ -5049,10 +5335,12 @@ function InstallationGroupsView({
   const anyRowEditing = editingRowKeys.size > 0;
   const isCrewColumnVisible = (key: CrewColumnKey) =>
     anyRowEditing || !hiddenCrewColumns.has(key);
-  // Customer, Car, Skylift, Date & time, Inverter / Battery, Remark, Actions
-  // are always there; only the five crew columns come and go.
+  // Customer, Agent, Address, Date & time, Package, Inverter, Power Output,
+  // Power Supply, Remark, Actions are always there; only the five crew
+  // columns come and go. Car moved into the band header, so it no longer
+  // counts as a column of its own.
   const visibleColumnCount =
-    8 + CREW_COLUMNS.filter((column) => isCrewColumnVisible(column.key)).length;
+    10 + CREW_COLUMNS.filter((column) => isCrewColumnVisible(column.key)).length;
 
   function togglePinnedWeek(blockKey: string) {
     setPinnedWeekKeys((previous) => {
@@ -5127,6 +5415,12 @@ function InstallationGroupsView({
           ? matchesPipelineStage(row.job, planningFilter, todayIso, planningLookup)
           : false;
       })
+      .filter((row) => {
+        if (workCategoryFilter === ALL_JOBS) return true;
+        return row.job
+          ? matchesWorkCategory(row.job, workCategoryFilter)
+          : false;
+      })
       // Crew first, date within it: every row a given crew works sits together
       // in the order they go out, which is how the schedule sheet itself is
       // laid out. Rows with no team label sort last within their week rather
@@ -5190,6 +5484,7 @@ function InstallationGroupsView({
     periodFilter,
     customerQuery,
     planningFilter,
+    workCategoryFilter,
     planningLookup,
     todayIso,
     pinnedWeekKeys,
@@ -5234,19 +5529,21 @@ function InstallationGroupsView({
     [groups],
   );
 
-  // Who can be picked into a crew row's customer cell: financially eligible,
-  // and not already read as a finished install. The row's own current customer
-  // is always included, matching the equivalent picker on Stock delivery.
+  // Who can be picked into a crew row's customer cell: any customer,
+  // regardless of stage — Deposit, Ready to Install, Pending Complete and
+  // Complete Installation are all fair game, not just the ones financially
+  // cleared or not yet installed. The row's own current customer is always
+  // included, matching the equivalent picker on Stock delivery.
   //
-  // Being in another group is no longer a reason to hide anyone. The picker
-  // used to allow it only for a customer signalling reschedule/cancel/pending,
-  // on the reasoning that a stale old group is what holds a customer whose
-  // date fell through — but a job can genuinely need two bookings for reasons
-  // that have nothing to do with a date falling through: a two-day install, a
-  // return trip, work split across crews. Everything downstream already
-  // expects it, and deliberately so: the calendar draws one entry per group
-  // rather than picking a winner, precisely so a customer in two groups shows
-  // on both days.
+  // Being in another group is no longer a reason to hide anyone either. The
+  // picker used to allow it only for a customer signalling
+  // reschedule/cancel/pending, on the reasoning that a stale old group is
+  // what holds a customer whose date fell through — but a job can genuinely
+  // need two bookings for reasons that have nothing to do with a date
+  // falling through: a two-day install, a return trip, work split across
+  // crews. Everything downstream already expects it, and deliberately so:
+  // the calendar draws one entry per group rather than picking a winner,
+  // precisely so a customer in two groups shows on both days.
   //
   // The same customer twice in one group is still refused. A group's members
   // are a list of job ids, so a repeat would be an identical row keyed the
@@ -5261,13 +5558,14 @@ function InstallationGroupsView({
         if (job.id !== currentJobId && group.jobIds.includes(job.id)) {
           return false;
         }
-        if (isHiddenAsCompleted(job, todayIso, groupByJobId.get(job.id))) {
-          return false;
-        }
-        if (!hasPlanningEligibility(job)) return false;
         return jobMatchesSearch(job, search);
       })
-      .sort((a, b) => a.customerName.localeCompare(b.customerName));
+      .sort((a, b) => a.customerName.localeCompare(b.customerName))
+      // A short or common search can still match hundreds of the ~8,000
+      // jobs; nobody scrolls a dropdown that long, and turning each one into
+      // a row is itself part of what made the box feel slow. Narrowing the
+      // search is how you get past 30 results, not scrolling.
+      .slice(0, 30);
   }
 
   function updateGroupFields(
@@ -5320,8 +5618,8 @@ function InstallationGroupsView({
    *   booking outright.
    *
    * Removing the last customer therefore leaves the crew behind as an empty
-   * row rather than silently discarding the week's crew, car and skylift. A
-   * second Remove on that row clears it.
+   * row rather than silently discarding the week's crew and car. A second
+   * Remove on that row clears it.
    */
   function removeScheduleRow(group: InstallationGroup, jobId: string) {
     if (jobId) {
@@ -5468,24 +5766,6 @@ function InstallationGroupsView({
       updateGroupFields(group.id, { [field]: trimmed });
     }
     setNewTeamDraft(null);
-  }
-
-  function updateSkylift(
-    group: InstallationGroup,
-    index: number,
-    patch: Partial<SkyliftBooking>,
-  ) {
-    const list = [...(group.skylifts ?? [])];
-    list[index] = { ...list[index], ...patch };
-    updateGroupFields(group.id, { skylifts: list });
-  }
-
-  function skyliftLabel(entry: SkyliftBooking) {
-    const from = entry.from ? formatDateOnly(entry.from) : "";
-    const until = entry.until ? ` – ${formatDateOnly(entry.until)}` : "";
-    return [entry.name, from ? `${from}${until}` : ""]
-      .filter(Boolean)
-      .join(" · ");
   }
 
   function toggleTeamEdit(teamId: string) {
@@ -5985,9 +6265,17 @@ function InstallationGroupsView({
           <div className="planning-heading-actions">
             <div className="schedule-filters">
               <label className="schedule-search">
+                <span>Job type</span>
+                <WorkCategorySelect
+                  value={workCategoryFilter}
+                  onChange={onWorkCategoryFilterChange}
+                />
+              </label>
+              <label className="schedule-search">
                 <span>Customer</span>
                 <input
                   type="search"
+                  className="customer-invoice-search"
                   value={customerQuery}
                   onChange={(event) => setCustomerQuery(event.target.value)}
                   placeholder="Search customer, invoice, address…"
@@ -6020,7 +6308,10 @@ function InstallationGroupsView({
                   ))}
                 </select>
               </label>
-              {(periodFilter || customerQuery || planningFilter !== ALL_JOBS) && (
+              {(periodFilter ||
+                customerQuery ||
+                planningFilter !== ALL_JOBS ||
+                workCategoryFilter !== ALL_JOBS) && (
                 <button
                   type="button"
                   className="button secondary"
@@ -6028,6 +6319,7 @@ function InstallationGroupsView({
                     setPeriodFilter("");
                     setCustomerQuery("");
                     setPlanningFilter(ALL_JOBS);
+                    onWorkCategoryFilterChange(ALL_JOBS);
                   }}
                 >
                   Clear
@@ -6048,10 +6340,10 @@ function InstallationGroupsView({
             <div>
               <h3>Installation teams</h3>
               <p>
-                One row per scheduled customer — team, crews, members, car and
-                skylift, the way the schedule sheet lays them out. Grouped by
-                week, newest first, then by team and crew. Team fields are
-                shared by every customer under the same crew and day.
+                One row per scheduled customer — team, crews, members and car,
+                the way the schedule sheet lays them out. Grouped by week,
+                newest first, then by team and crew. Team fields are shared by
+                every customer under the same crew and day.
               </p>
             </div>
           </div>
@@ -6059,6 +6351,13 @@ function InstallationGroupsView({
             <table>
               <colgroup>
                 <col className="col-customer" />
+                <col className="col-datetime" />
+                <col className="col-address" />
+                <col className="col-power-supply" />
+                <col className="col-power-output" />
+                <col className="col-inverter-battery" />
+                <col className="col-inverter-type" />
+                <col className="col-agent" />
                 {isCrewColumnVisible("team") && <col className="col-team" />}
                 {isCrewColumnVisible("installationTeam") && (
                   <col className="col-install" />
@@ -6072,17 +6371,19 @@ function InstallationGroupsView({
                 {isCrewColumnVisible("supervisor") && (
                   <col className="col-supervisor" />
                 )}
-                <col className="col-car" />
-                <col className="col-skylift" />
-                <col className="col-datetime" />
-                <col className="col-inverter-battery" />
-                <col className="col-power-output" />
                 <col className="col-remark" />
                 <col className="col-actions" />
               </colgroup>
               <thead>
                 <tr>
                   <th>Customer</th>
+                  <th>Date &amp; time</th>
+                  <th>Address</th>
+                  <th>Power Supply</th>
+                  <th>Power Output</th>
+                  <th>Package</th>
+                  <th>Inverter</th>
+                  <th>Agent</th>
                   {isCrewColumnVisible("team") && <th>Team</th>}
                   {isCrewColumnVisible("installationTeam") && (
                     <th>Installation Team</th>
@@ -6094,11 +6395,6 @@ function InstallationGroupsView({
                   {isCrewColumnVisible("supervisor") && (
                     <th>Site supervisor</th>
                   )}
-                  <th>Car</th>
-                  <th>Skylift</th>
-                  <th>Date &amp; time</th>
-                  <th>Inverter / Battery</th>
-                  <th>Power Output</th>
                   <th>Remark</th>
                   <th aria-label="Actions" />
                 </tr>
@@ -6120,9 +6416,16 @@ function InstallationGroupsView({
                   const stopWhenEditing = isEditing
                     ? (event: React.MouseEvent) => event.stopPropagation()
                     : undefined;
+                  // Car moved out of its own column and into the band
+                  // header, which is shared by every row in this crew's
+                  // block — so it goes editable there whenever any one of
+                  // this group's own rows is, not just the row that happens
+                  // to start the block.
+                  const isGroupEditing = Array.from(editingRowKeys).some((key) =>
+                    key.startsWith(`${group.id}|`),
+                  );
                   const wiringMembers = group.wiringMembers ?? [];
                   const cars = group.cars ?? [];
-                  const skylifts = group.skylifts ?? [];
                   const startTime = groupStartTime(group.id);
                   // Null on the customer's primary installation day; the
                   // return trip itself on any later day the crew goes back.
@@ -6182,6 +6485,85 @@ function InstallationGroupsView({
                           <span className="schedule-band-crew">
                             {bandCrew}
                           </span>
+                          {/* Car used to be its own column; it moved here
+                              because — like Team, Install and Wiring — it is
+                              one value for the whole crew, not one per
+                              customer row. Editable whenever any row in this
+                              block is, same as those. */}
+                          {isGroupEditing ? (
+                            <span className="schedule-band-car-editor">
+                              <div className="member-tag-input">
+                                <div className="member-tag-list">
+                                  {cars.map((car) => (
+                                    <span className="member-tag" key={car}>
+                                      {car}
+                                      <button
+                                        type="button"
+                                        aria-label={`Remove ${car}`}
+                                        onClick={() =>
+                                          removeGroupListItem(group, "cars", car)
+                                        }
+                                      >
+                                        <X size={12} />
+                                      </button>
+                                    </span>
+                                  ))}
+                                </div>
+                                <div className="member-tag-add">
+                                  <input
+                                    list="car-options"
+                                    value={groupCarDraft[group.id] ?? ""}
+                                    onChange={(event) =>
+                                      setGroupCarDraft((prev) => ({
+                                        ...prev,
+                                        [group.id]: event.target.value,
+                                      }))
+                                    }
+                                    onKeyDown={(event) => {
+                                      if (event.key === "Enter") {
+                                        event.preventDefault();
+                                        addGroupListItem(
+                                          group,
+                                          "cars",
+                                          groupCarDraft[group.id] ?? "",
+                                        );
+                                        setGroupCarDraft((prev) => ({
+                                          ...prev,
+                                          [group.id]: "",
+                                        }));
+                                      }
+                                    }}
+                                    placeholder="Add car"
+                                    aria-label="Add car"
+                                  />
+                                  <button
+                                    type="button"
+                                    className="icon-button"
+                                    aria-label="Add car"
+                                    onClick={() => {
+                                      addGroupListItem(
+                                        group,
+                                        "cars",
+                                        groupCarDraft[group.id] ?? "",
+                                      );
+                                      setGroupCarDraft((prev) => ({
+                                        ...prev,
+                                        [group.id]: "",
+                                      }));
+                                    }}
+                                  >
+                                    <Plus size={14} />
+                                  </button>
+                                </div>
+                              </div>
+                            </span>
+                          ) : (
+                            cars.length > 0 && (
+                              <span className="schedule-band-car">
+                                Car: {cars.join(", ")}
+                              </span>
+                            )
+                          )}
                           {/* The band already names the crew, so the five
                               columns repeating it can be folded away. The
                               control lives here rather than in the toolbar
@@ -6249,9 +6631,19 @@ function InstallationGroupsView({
                               customerSearchByRow[rowKey] ??
                               (job ? formatPersonName(job.customerName) : "");
                             const isOpen = openCustomerRowKey === rowKey;
-                            const matches = searchText.trim()
-                              ? eligibleCustomersForRow(group, jobId, searchText)
-                              : [];
+                            // Only the open row's matches are ever shown, so
+                            // only it is worth computing — and off the
+                            // deferred text (see openCustomerSearchText
+                            // above), not the immediate one, to keep the
+                            // keystroke itself from waiting on it.
+                            const matches =
+                              isOpen && deferredCustomerSearchText.trim()
+                                ? eligibleCustomersForRow(
+                                    group,
+                                    jobId,
+                                    deferredCustomerSearchText,
+                                  )
+                                : [];
                             function pickCustomer(nextJobId: string, name: string) {
                               const withoutCurrent = group.jobIds.filter(
                                 (id) => id !== jobId,
@@ -6339,16 +6731,9 @@ function InstallationGroupsView({
                             );
                           })()
                         ) : job ? (
-                          <button
-                            type="button"
-                            className="link-button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onOpenJob(jobId);
-                            }}
-                          >
+                          <span className="run-field-readout">
                             {formatPersonName(job.customerName)}
-                          </button>
+                          </span>
                         ) : (
                           // Either a crew booked before anyone was assigned to
                           // it, or a customer that has since dropped out of the
@@ -6356,6 +6741,166 @@ function InstallationGroupsView({
                           <span className="run-field-readout is-empty">
                             {jobId ? "Customer not in pipeline" : "No customer yet"}
                           </span>
+                        )}
+                      </td>
+                      <td onClick={stopWhenEditing}>
+                        {isEditing ? (
+                          <div className="schedule-datetime">
+                            <input
+                              type="date"
+                              value={group.installationDate}
+                              onChange={(event) =>
+                                setGroupSchedule(
+                                  group,
+                                  event.target.value,
+                                  startTime,
+                                )
+                              }
+                              aria-label="Installation date"
+                            />
+                            <input
+                              type="time"
+                              value={startTime}
+                              onChange={(event) =>
+                                setGroupSchedule(group, "", event.target.value)
+                              }
+                              aria-label="Installation time"
+                            />
+                          </div>
+                        ) : (
+                          <span className="run-field-readout">
+                            {formatDateOnly(group.installationDate)}
+                            {startTime ? ` @ ${startTime}` : ""}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {job && job.address ? (
+                          <span className="run-field-readout">
+                            {formatCustomerAddress(job.address)}
+                          </span>
+                        ) : (
+                          <span className="run-field-readout is-empty">—</span>
+                        )}
+                      </td>
+                      <td>
+                        {/* Read off the invoice's own package line — "[3P]"
+                            or "[1P]" — the same parsing lib/source-api.ts
+                            already does for job.phase, so there is nothing
+                            left to derive here beyond relabelling it to match
+                            what this column is called. Not editable: unlike
+                            Power Output this is a clean two-value fact off
+                            the invoice, not free text ops fill in. */}
+                        {job && job.phase !== "Unknown" ? (
+                          <span className="run-field-readout">
+                            {job.phase.replace("phase", "Phase")}
+                          </span>
+                        ) : (
+                          <span className="run-field-readout is-empty">—</span>
+                        )}
+                      </td>
+                      <td onClick={stopWhenEditing}>
+                        {/* Column F of the ops schedule sheet — panel count,
+                            brand and rating as one phrase ("16 Jinko 650W").
+                            Pulled from the invoice via derivedPowerOutput
+                            until someone types over it — see there for what
+                            it can and cannot read off the invoice text. */}
+                        {isEditing && job ? (
+                          (() => {
+                            const effective =
+                              job.powerOutput.trim() || derivedPowerOutput(job);
+                            return (
+                              <textarea
+                                className="schedule-remark"
+                                rows={3}
+                                defaultValue={effective}
+                                onBlur={(event) => {
+                                  const text = event.target.value;
+                                  if (text === effective) return;
+                                  onSaveJob({ ...job, powerOutput: text });
+                                }}
+                                placeholder="e.g. 16 Jinko 650W"
+                                aria-label={`Power output for ${job.customerName}`}
+                              />
+                            );
+                          })()
+                        ) : (
+                          <span className="run-field-readout">
+                            {(job &&
+                              (job.powerOutput.trim() ||
+                                derivedPowerOutput(job))) ||
+                              "—"}
+                          </span>
+                        )}
+                      </td>
+                      <td onClick={stopWhenEditing}>
+                        {/* Column G of the ops schedule sheet, kept as the
+                            prose ops write rather than parsed into model and
+                            quantity: one cell routinely carries the inverter,
+                            an "ADD ON 1 X ATS", a ballast count and an FOC
+                            note, and they only make sense read together.
+                            Pulled from the invoice via derivedInverterModel
+                            until someone types over it, same as Power Output
+                            beside it — see lib/source-api.ts for what it can
+                            and cannot read off the invoice text.
+
+                            A crew booking with no customer on it yet has no
+                            job to store this against, so it reads as empty
+                            until one is assigned. Same uncontrolled
+                            save-on-blur as the Remark cell beside it. */}
+                        {isEditing && job ? (
+                          (() => {
+                            const effective =
+                              job.inverterBattery.trim() ||
+                              job.derivedInverterModel;
+                            return (
+                              <textarea
+                                className="schedule-remark"
+                                rows={3}
+                                defaultValue={effective}
+                                onBlur={(event) => {
+                                  const text = event.target.value;
+                                  if (text === effective) return;
+                                  onSaveJob({ ...job, inverterBattery: text });
+                                }}
+                                placeholder="e.g. 1 X R6-10K-T2"
+                                aria-label={`Package for ${job.customerName}`}
+                              />
+                            );
+                          })()
+                        ) : (
+                          <span className="run-field-readout">
+                            {(job &&
+                              (job.inverterBattery.trim() ||
+                                job.derivedInverterModel)) ||
+                              "—"}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {/* Which inverter types the invoice carries — String,
+                            Hybrid, Micro, or a combination when a micro
+                            inverter add-on rides alongside the package's own
+                            string or hybrid unit. Read off every line item
+                            mentioning "inverter" at all, not just the
+                            package's — see parseInverterTypesFromText in
+                            lib/source-api.ts. Not editable, same reasoning as
+                            Power Supply beside it. */}
+                        {job && job.inverterType ? (
+                          <span className="run-field-readout">
+                            {job.inverterType}
+                          </span>
+                        ) : (
+                          <span className="run-field-readout is-empty">—</span>
+                        )}
+                      </td>
+                      <td>
+                        {job ? (
+                          <span className="run-field-readout">
+                            {formatPersonName(job.agentName)}
+                          </span>
+                        ) : (
+                          <span className="run-field-readout is-empty">—</span>
                         )}
                       </td>
                       {isCrewColumnVisible("team") && (
@@ -6616,246 +7161,6 @@ function InstallationGroupsView({
                         )}
                       </td>
                       )}
-                      <td onClick={stopWhenEditing}>
-                        {isEditing ? (
-                          <div className="member-tag-input">
-                            <div className="member-tag-list">
-                              {cars.map((car) => (
-                                <span className="member-tag" key={car}>
-                                  {car}
-                                  <button
-                                    type="button"
-                                    aria-label={`Remove ${car}`}
-                                    onClick={() =>
-                                      removeGroupListItem(group, "cars", car)
-                                    }
-                                  >
-                                    <X size={12} />
-                                  </button>
-                                </span>
-                              ))}
-                            </div>
-                            <div className="member-tag-add">
-                              <input
-                                list="car-options"
-                                value={groupCarDraft[group.id] ?? ""}
-                                onChange={(event) =>
-                                  setGroupCarDraft((prev) => ({
-                                    ...prev,
-                                    [group.id]: event.target.value,
-                                  }))
-                                }
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter") {
-                                    event.preventDefault();
-                                    addGroupListItem(
-                                      group,
-                                      "cars",
-                                      groupCarDraft[group.id] ?? "",
-                                    );
-                                    setGroupCarDraft((prev) => ({
-                                      ...prev,
-                                      [group.id]: "",
-                                    }));
-                                  }
-                                }}
-                                placeholder="Add car"
-                                aria-label="Add car"
-                              />
-                              <button
-                                type="button"
-                                className="icon-button"
-                                aria-label="Add car"
-                                onClick={() => {
-                                  addGroupListItem(
-                                    group,
-                                    "cars",
-                                    groupCarDraft[group.id] ?? "",
-                                  );
-                                  setGroupCarDraft((prev) => ({
-                                    ...prev,
-                                    [group.id]: "",
-                                  }));
-                                }}
-                              >
-                                <Plus size={14} />
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <span className="run-field-readout">
-                            {cars.length > 0 ? cars.join(", ") : "—"}
-                          </span>
-                        )}
-                      </td>
-                      <td onClick={stopWhenEditing}>
-                        {isEditing ? (
-                          <div className="skylift-editor">
-                            {skylifts.map((entry, index) => (
-                              <div className="skylift-entry" key={index}>
-                                <input
-                                  name="skylift-name"
-                                  value={entry.name}
-                                  onChange={(event) =>
-                                    updateSkylift(group, index, {
-                                      name: event.target.value,
-                                    })
-                                  }
-                                  placeholder="Operator / plate"
-                                  aria-label="Skylift name"
-                                />
-                                <div className="skylift-dates">
-                                  <input
-                                    type="date"
-                                    value={entry.from}
-                                    onChange={(event) =>
-                                      updateSkylift(group, index, {
-                                        from: event.target.value,
-                                      })
-                                    }
-                                    aria-label="Skylift from date"
-                                  />
-                                  <input
-                                    type="date"
-                                    value={entry.until ?? ""}
-                                    onChange={(event) =>
-                                      updateSkylift(group, index, {
-                                        until: event.target.value || undefined,
-                                      })
-                                    }
-                                    aria-label="Skylift until date (optional)"
-                                    title="Leave empty for a single-day booking"
-                                  />
-                                </div>
-                                <button
-                                  type="button"
-                                  className="icon-button"
-                                  aria-label="Remove skylift"
-                                  onClick={() =>
-                                    updateGroupFields(group.id, {
-                                      skylifts: skylifts.filter(
-                                        (_, i) => i !== index,
-                                      ),
-                                    })
-                                  }
-                                >
-                                  <X size={14} />
-                                </button>
-                              </div>
-                            ))}
-                            <button
-                              type="button"
-                              className="button secondary"
-                              onClick={() =>
-                                updateGroupFields(group.id, {
-                                  skylifts: [
-                                    ...skylifts,
-                                    {
-                                      name: "",
-                                      from: group.installationDate,
-                                    },
-                                  ],
-                                })
-                              }
-                            >
-                              <Plus size={14} />
-                              Add skylift
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="run-field-readout">
-                            {skylifts.length > 0
-                              ? skylifts.map(skyliftLabel).join("; ")
-                              : "—"}
-                          </span>
-                        )}
-                      </td>
-                      <td onClick={stopWhenEditing}>
-                        {isEditing ? (
-                          <div className="schedule-datetime">
-                            <input
-                              type="date"
-                              value={group.installationDate}
-                              onChange={(event) =>
-                                setGroupSchedule(
-                                  group,
-                                  event.target.value,
-                                  startTime,
-                                )
-                              }
-                              aria-label="Installation date"
-                            />
-                            <input
-                              type="time"
-                              value={startTime}
-                              onChange={(event) =>
-                                setGroupSchedule(group, "", event.target.value)
-                              }
-                              aria-label="Installation time"
-                            />
-                          </div>
-                        ) : (
-                          <span className="run-field-readout">
-                            {formatDateOnly(group.installationDate)}
-                            {startTime ? ` @ ${startTime}` : ""}
-                          </span>
-                        )}
-                      </td>
-                      <td onClick={stopWhenEditing}>
-                        {/* Column G of the ops schedule sheet, kept as the
-                            prose ops write rather than parsed into model and
-                            quantity: one cell routinely carries the inverter,
-                            an "ADD ON 1 X ATS", a ballast count and an FOC
-                            note, and they only make sense read together.
-
-                            A crew booking with no customer on it yet has no
-                            job to store this against, so it reads as empty
-                            until one is assigned. Same uncontrolled
-                            save-on-blur as the Remark cell beside it. */}
-                        {isEditing && job ? (
-                          <textarea
-                            className="schedule-remark"
-                            rows={3}
-                            defaultValue={job.inverterBattery}
-                            onBlur={(event) => {
-                              const text = event.target.value;
-                              if (text === job.inverterBattery) return;
-                              onSaveJob({ ...job, inverterBattery: text });
-                            }}
-                            placeholder="e.g. 1 X R6-10K-T2"
-                            aria-label={`Inverter and battery for ${job.customerName}`}
-                          />
-                        ) : (
-                          <span className="run-field-readout">
-                            {job?.inverterBattery.trim() || "—"}
-                          </span>
-                        )}
-                      </td>
-                      <td onClick={stopWhenEditing}>
-                        {/* Column F of the ops schedule sheet — panel count,
-                            brand and rating as one phrase ("16 Jinko 650W").
-                            The invoice feed carries a quantity and a rating but
-                            never the brand, so this is ops' text rather than
-                            anything derived from panelDetails. */}
-                        {isEditing && job ? (
-                          <textarea
-                            className="schedule-remark"
-                            rows={3}
-                            defaultValue={job.powerOutput}
-                            onBlur={(event) => {
-                              const text = event.target.value;
-                              if (text === job.powerOutput) return;
-                              onSaveJob({ ...job, powerOutput: text });
-                            }}
-                            placeholder="e.g. 16 Jinko 650W"
-                            aria-label={`Power output for ${job.customerName}`}
-                          />
-                        ) : (
-                          <span className="run-field-readout">
-                            {job?.powerOutput.trim() || "—"}
-                          </span>
-                        )}
-                      </td>
                       <td onClick={stopWhenEditing}>
                         {/* The sheet's site notes, which belong to the
                             customer. A customer worked over several days has a
@@ -7361,7 +7666,6 @@ function InstallationGroupsView({
           onRemoveGroup={(id) =>
             onGroupsChange(groups.filter((item) => item.id !== id))
           }
-          onOpenJob={onOpenJob}
           onClose={() => setOpenGroupId(null)}
           pinnedJobIds={pinnedJobIds}
           onTogglePin={onTogglePin}
@@ -7552,7 +7856,6 @@ function GroupDrawer({
   deliveryRunsForGroup,
   onUpdateGroup,
   onRemoveGroup,
-  onOpenJob,
   onClose,
   pinnedJobIds,
   onTogglePin,
@@ -7566,7 +7869,6 @@ function GroupDrawer({
   deliveryRunsForGroup: (groupId: string) => DeliveryRun[];
   onUpdateGroup: (id: string, update: Partial<InstallationGroup>) => void;
   onRemoveGroup: (id: string) => void;
-  onOpenJob: (id: string) => void;
   onClose: () => void;
   pinnedJobIds: Set<string>;
   onTogglePin: (id: string) => void;
@@ -7741,12 +8043,7 @@ function GroupDrawer({
                     >
                       {isPinned ? <Pin size={14} /> : <PinOff size={14} />}
                     </button>
-                    <button
-                      className="text-button"
-                      onClick={() => onOpenJob(job.id)}
-                    >
-                      {formatPersonName(job.customerName)}
-                    </button>
+                    <span>{formatPersonName(job.customerName)}</span>
                   </li>
                 );
               })}
@@ -7822,6 +8119,8 @@ function TeamPlanningView({
   onSecondPaymentMonthFilterChange,
   customerNameFilter,
   onCustomerNameFilterChange,
+  workCategoryFilter,
+  onWorkCategoryFilterChange,
   onUpdateJob,
   manuallyPinnedJobIds,
   onTogglePin,
@@ -7840,6 +8139,8 @@ function TeamPlanningView({
   onSecondPaymentMonthFilterChange: (next: string) => void;
   customerNameFilter: string;
   onCustomerNameFilterChange: (next: string) => void;
+  workCategoryFilter: string;
+  onWorkCategoryFilterChange: (next: string) => void;
   onUpdateJob: (job: InstallationJob) => void;
   manuallyPinnedJobIds: Set<string>;
   onTogglePin: (id: string) => void;
@@ -7941,9 +8242,12 @@ function TeamPlanningView({
   }
 
   // The table itself still leads with work still to be planned — a finished
-  // install is only listed when Complete Installation is the stage being
-  // asked for, so the default view does not fill up with history.
-  const showingCompleted = planningFilter === "complete";
+  // install is hidden from an earlier stage's own list (Deposit, Ready to
+  // Install, Pending Complete, Need Attention), so picking one of those does
+  // not fill up with history. All jobs is meant to be the union of every
+  // stage, Complete Installation included, so it has to see them too.
+  const showingCompleted =
+    planningFilter === "complete" || planningFilter === ALL_JOBS;
   const readyJobs = jobs.filter(
     (job) =>
       belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
@@ -7954,7 +8258,8 @@ function TeamPlanningView({
           groupByJobId.get(job.id),
         )) &&
       matchesSecondPaymentMonth(job) &&
-      matchesPlanningStatus(job),
+      matchesPlanningStatus(job) &&
+      matchesWorkCategory(job, workCategoryFilter),
   );
   // Every customer the table is allowed to show. The location groups filter
   // their members through this, so it has to admit finished installs on the
@@ -7972,7 +8277,8 @@ function TeamPlanningView({
               planningTodayIso,
               groupByJobId.get(job.id),
             )) &&
-          matchesSecondPaymentMonth(job),
+          matchesSecondPaymentMonth(job) &&
+          matchesWorkCategory(job, workCategoryFilter),
       )
       .map((job) => job.id),
   );
@@ -8052,23 +8358,25 @@ function TeamPlanningView({
   const filteredSuggestions = useMemo(() => {
     const postcodeSearch = postcodeFilter.trim().toLowerCase();
     const nameSearch = customerNameFilter.trim().toLowerCase();
-    const matching = displayedSuggestions
+    return displayedSuggestions
       .filter(
         (suggestion) =>
           !postcodeSearch ||
           suggestion.postcode.toLowerCase().includes(postcodeSearch),
       )
-      .filter(
-        (suggestion) =>
-          !nameSearch ||
-          suggestion.customers.some((customer) =>
-            jobMatchesSearch(customer, nameSearch),
-          ),
-      );
-
-    // Every group takes its place by 2nd payment date, so working top-down
-    // always reaches the longest-waiting customers first.
-    return matching;
+      .map((suggestion) => ({
+        ...suggestion,
+        // A town group is up to five customers. Searching for one name used
+        // to keep the whole group if any member matched, so "Burhanuddin"
+        // listed the other four people who only share a postcode. Narrow to
+        // the matching customers; empty groups drop out below.
+        customers: nameSearch
+          ? suggestion.customers.filter((customer) =>
+              jobMatchesSearch(customer, nameSearch),
+            )
+          : suggestion.customers,
+      }))
+      .filter((suggestion) => suggestion.customers.length > 0);
   }, [displayedSuggestions, postcodeFilter, customerNameFilter]);
 
   // Available and Pending customers pin to the top of the table, ahead of
@@ -8194,9 +8502,12 @@ function TeamPlanningView({
   // Commits immediately — there is no separate save step now that the group
   // renders live from `suggestions` rather than a snapshot taken on open.
   function addCustomerToGroup(suggestion: { id: string; customers: InstallationJob[] }) {
-    if (!addCustomerId || suggestion.customers.length >= 5) return;
+    const members =
+      displayedSuggestions.find((item) => item.id === suggestion.id)?.customers ??
+      suggestion.customers;
+    if (!addCustomerId || members.length >= 5) return;
     saveSuggestionDraft(suggestion.id, [
-      ...suggestion.customers.map((customer) => customer.id),
+      ...members.map((customer) => customer.id),
       addCustomerId,
     ]);
     setAddCustomerId("");
@@ -8451,9 +8762,17 @@ function TeamPlanningView({
         </div>
         <div className="planning-filters">
           <label className="range-control">
+            Job type
+            <WorkCategorySelect
+              value={workCategoryFilter}
+              onChange={onWorkCategoryFilterChange}
+            />
+          </label>
+          <label className="range-control">
             Customer, invoice or address
             <input
               type="search"
+              className="customer-invoice-search"
               placeholder="e.g. Tan Wei Ming, INV-1009919, Ayer Keroh"
               value={customerNameFilter}
               onChange={(event) => {
@@ -8640,7 +8959,11 @@ function TeamPlanningView({
                 );
               })}
               {unpinnedSuggestions.flatMap((suggestion) => {
-                const canAddMore = suggestion.customers.length < 5;
+                const fullGroupSize =
+                  displayedSuggestions.find((item) => item.id === suggestion.id)
+                    ?.customers.length ?? suggestion.customers.length;
+                const canAddMore =
+                  !customerNameFilter.trim() && fullGroupSize < 5;
                 const addingHere = addingToSuggestionId === suggestion.id;
                 return suggestion.customers.map((snapshotJob, index) => {
                   // `suggestion.customers` already comes from the live `jobs`
@@ -8873,6 +9196,8 @@ function DeliveryPlanningView({
   onUpdateJob,
   pinnedJobIds,
   onTogglePin,
+  workCategoryFilter,
+  onWorkCategoryFilterChange,
 }: {
   runs: DeliveryRun[];
   jobs: InstallationJob[];
@@ -8883,6 +9208,8 @@ function DeliveryPlanningView({
   onUpdateJob: (job: InstallationJob) => void;
   pinnedJobIds: Set<string>;
   onTogglePin: (id: string) => void;
+  workCategoryFilter: string;
+  onWorkCategoryFilterChange: (next: string) => void;
 }) {
   const todayIso = malaysiaToday();
   // Every customer by id, built once per jobs change. The tables here are
@@ -9088,6 +9415,19 @@ function DeliveryPlanningView({
   }
 
   function toggleRunEdit(id: string) {
+    if (editingRunIds.has(id)) {
+      // Closing the editor — via Done, or clicking the row again — implicitly
+      // finishes anything still sitting in a stock-item box. Without this, a
+      // typed item that was never confirmed with Enter or + is silently lost:
+      // Done reads as "save and close", not "discard and close".
+      const run = runs.find((candidate) => candidate.id === id);
+      for (const jobId of run?.jobIds ?? []) {
+        const job = jobById.get(jobId);
+        if (job && (stockDraft[jobId] ?? "").trim()) {
+          addStockTag(job);
+        }
+      }
+    }
     setEditingRunIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -9265,7 +9605,10 @@ function DeliveryPlanningView({
   // the planning status. A run whose every stop is filtered out drops away
   // with them, so either filter returns the runs that carry those customers
   // rather than a page of empty bands.
-  const stopFiltered = Boolean(query) || planningFilter !== ALL_JOBS;
+  const stopFiltered =
+    Boolean(query) ||
+    planningFilter !== ALL_JOBS ||
+    workCategoryFilter !== ALL_JOBS;
   const visibleRuns = runs
     .map((run) => {
       // Walk the run's own stops rather than the whole customer list. Scanning
@@ -9277,7 +9620,8 @@ function DeliveryPlanningView({
       const matching = runJobs.filter(
         (job) =>
           (!query || jobMatchesSearch(job, query)) &&
-          matchesPipelineStage(job, planningFilter, todayIso, planningLookup),
+          matchesPipelineStage(job, planningFilter, todayIso, planningLookup) &&
+          matchesWorkCategory(job, workCategoryFilter),
       );
       // Pinned stops lead their run. To the top of the run rather than of the
       // page, because a stop only means anything under the run that carries
@@ -9345,7 +9689,10 @@ function DeliveryPlanningView({
     });
 
   const filtered = Boolean(
-    periodFilter || customerQuery || planningFilter !== ALL_JOBS,
+    periodFilter ||
+      customerQuery ||
+      planningFilter !== ALL_JOBS ||
+      workCategoryFilter !== ALL_JOBS,
   );
 
   return (
@@ -9358,9 +9705,17 @@ function DeliveryPlanningView({
         <div className="planning-heading-actions">
           <div className="schedule-filters">
             <label className="schedule-search">
+              <span>Job type</span>
+              <WorkCategorySelect
+                value={workCategoryFilter}
+                onChange={onWorkCategoryFilterChange}
+              />
+            </label>
+            <label className="schedule-search">
               <span>Customer</span>
               <input
                 type="search"
+                className="customer-invoice-search"
                 value={customerQuery}
                 onChange={(event) => setCustomerQuery(event.target.value)}
                 placeholder="Search customer, invoice, address…"
@@ -9401,6 +9756,7 @@ function DeliveryPlanningView({
                   setPeriodFilter("");
                   setCustomerQuery("");
                   setPlanningFilter(ALL_JOBS);
+                  onWorkCategoryFilterChange(ALL_JOBS);
                 }}
               >
                 Clear

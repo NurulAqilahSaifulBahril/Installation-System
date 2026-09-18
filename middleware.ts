@@ -7,6 +7,19 @@ import { NextRequest, NextResponse } from "next/server";
 // empty shell but can neither read job data nor save anything.
 const SESSION_COOKIE = "session_token";
 
+// Lets the Electron shell (electron/main.cjs) tell this app apart from any
+// other local server that happens to be listening on the same port — e.g.
+// Agent CRM, a separate app built the same way, which also defaults to 3000.
+// Without this, a desktop shortcut that finds *something* already on the
+// port has no way to know it's the wrong app before loading it.
+export const APP_ID_HEADER = "x-eternalgy-app";
+export const APP_ID = "installation-ops";
+
+function withAppId(response: NextResponse) {
+  response.headers.set(APP_ID_HEADER, APP_ID);
+  return response;
+}
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -21,19 +34,19 @@ export function middleware(request: NextRequest) {
     pathname === "/favicon.ico" ||
     /\.(png|jpg|jpeg|svg|gif|ico|webp)$/.test(pathname);
 
-  if (isPublic) return NextResponse.next();
+  if (isPublic) return withAppId(NextResponse.next());
 
   const hasSession = Boolean(request.cookies.get(SESSION_COOKIE)?.value);
-  if (hasSession) return NextResponse.next();
+  if (hasSession) return withAppId(NextResponse.next());
 
   if (pathname.startsWith("/api/")) {
-    return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+    return withAppId(NextResponse.json({ error: "Not signed in." }, { status: 401 }));
   }
 
   const loginUrl = request.nextUrl.clone();
   loginUrl.pathname = "/login";
   loginUrl.search = "";
-  return NextResponse.redirect(loginUrl);
+  return withAppId(NextResponse.redirect(loginUrl));
 }
 
 export const config = {

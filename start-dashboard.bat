@@ -22,13 +22,20 @@ REM a browser tab. A manual double-click has no such variable set, so it does.
 cd /d "%~dp0"
 if defined DASHBOARD_WATCHDOG (set "OPEN_BROWSER=0") else (set "OPEN_BROWSER=1")
 
-REM If something is already serving port 3000, do nothing (but show the user
-REM it's up, since this is almost always a manual double-click checking on it).
+REM If something is already serving port 3000, check it's actually this
+REM dashboard before treating it as "already up" - a different app (e.g.
+REM Agent CRM) can grab port 3000 first, and blindly trusting it here is what
+REM used to make a manual double-click, or the watchdog, show the wrong app.
 netstat -ano | findstr /R /C:":3000 .*LISTENING" >nul 2>&1
 if %errorlevel%==0 (
-  echo [%date% %time%] Port 3000 already serving - nothing to do. >> dashboard-startup.log
-  if "%OPEN_BROWSER%"=="1" start "" "http://127.0.0.1:3000/"
-  exit /b 0
+  call "%~dp0is-our-dashboard.bat"
+  if not errorlevel 1 (
+    echo [%date% %time%] Port 3000 already serving this dashboard - nothing to do. >> dashboard-startup.log
+    if "%OPEN_BROWSER%"=="1" start "" "http://127.0.0.1:3000/"
+    exit /b 0
+  )
+  echo [%date% %time%] Port 3000 is serving a DIFFERENT app - not touching it. This dashboard cannot start until that port is free. >> dashboard-startup.log
+  exit /b 1
 )
 
 REM Build once if the production build is missing (e.g. after a clean checkout).

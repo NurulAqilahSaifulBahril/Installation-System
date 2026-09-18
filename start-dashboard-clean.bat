@@ -10,10 +10,19 @@ echo CLEAN START - Removing all caches
 echo ========================================
 echo.
 
-REM Kill port 3000
+REM Kill port 3000 - but only if it's actually this dashboard. A different
+REM app (e.g. Agent CRM) can end up on port 3000 too, and killing whatever PID
+REM happens to be there without checking would take it down.
 echo Stopping any process on port 3000...
 netstat -ano | findstr /R /C:":3000 .*LISTENING" >nul 2>&1
 if %errorlevel%==0 (
+  call "%~dp0is-our-dashboard.bat"
+  if errorlevel 1 (
+    echo ERROR: Port 3000 is being used by a different app - not stopping it.
+    echo Close that app first, or free the port, then re-run this script.
+    pause
+    exit /b 1
+  )
   for /f "tokens=5" %%a in ('netstat -ano ^| findstr /R /C:":3000 .*LISTENING"') do (
     taskkill /PID %%a /F >nul 2>&1
   )

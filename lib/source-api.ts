@@ -18,7 +18,11 @@ type ProxyRow = {
   ballast_details: string | null;
   foc_details: string | null;
   battery_details: string | null;
+  inverter_type_details: string | null;
   package_item_description: string | null;
+  first_item_description: string | null;
+  package_type: string | null;
+  ev_details: string | null;
   panel_qty: number | null;
   panel_rating: number | null;
   pv_system_drawing: string[] | string | null;
@@ -142,7 +146,22 @@ invoice_item_details as (
       ) as foc_details,
     string_agg(description, E'\n\n' order by sort nulls last, id)
       filter (where lower(coalesce(description, '')) like '%battery%')
-      as battery_details
+      as battery_details,
+    -- A micro inverter add-on is its own line item, sold and priced
+    -- separately from the package's own string/hybrid inverter — see
+    -- INV-1009209, whose "Micro Inverter" line sits outside is_a_package
+    -- entirely. Read together in rowToJob to say what inverter types the
+    -- invoice actually carries, not just whichever line the package names.
+    string_agg(description, E'\n\n' order by sort nulls last, id)
+      filter (where lower(coalesce(description, '')) like '%inverter%')
+      as inverter_type_details,
+    string_agg(description, E'\n\n' order by sort nulls last, id)
+      filter (
+        where lower(coalesce(description, '')) like '%ev %'
+          or lower(coalesce(description, '')) like '%evcharger%'
+          or lower(coalesce(description, '')) like '%wallbox%'
+          or lower(coalesce(description, '')) like '%ev charger%'
+      ) as ev_details
   from invoice_item
   group by linked_invoice
 ),
@@ -162,29 +181,108 @@ package_items as (
   where is_a_package = true and linked_invoice is not null
   order by linked_invoice, sort nulls last, id
 ),
+-- The invoice's own first line, whatever it is, with no is_a_package filter.
+-- Solar invoices already have a package_items row above and never need this;
+-- it exists for the invoices that do not — a cleaning or inspection call-out
+-- billed as its own line, never marked as a package because it isn't one.
+-- linked_package can still point an invoice like that at an unrelated solar
+-- product left over from how it was set up, which is exactly the value
+-- package_name below would otherwise surface as "the package" it was never
+-- sold. Read together with package_items in rowToJob: only consulted when
+-- that CTE has nothing for the invoice.
+first_invoice_items as (
+  select distinct on (linked_invoice)
+    linked_invoice,
+    description as first_item_description
+  from invoice_item
+  where linked_invoice is not null
+  order by linked_invoice, sort nulls last, id
+),
 -- Emails that reported an approval but that the automated SEDA_ATAP_APPROVAL
 -- matcher couldn't confidently attach to a seda_registration row (below its
 -- confidence threshold) sit here as still-pending, needing-review tasks. The
--- customer name is the only link back to an invoice, so it's normalised the
--- same way on both sides of the join below (case, whitespace, the "(ATAP)"
--- suffix some customer records carry and the task rows never do).
-requested_status as (
-  select distinct on (normalized_name)
-    normalized_name,
-    payload ->> 'status' as requested_seda_status
-  from (
-    select
-      trim(replace(upper(trim(coalesce(customer_name, ''))), '(ATAP)', ''))
-        as normalized_name,
-      payload,
-      created_at
-    from seda_tasks
-    where status = 'PENDING'
-      and requires_manual_review = true
-      and coalesce(customer_name, '') <> ''
-      and payload ->> 'status' is not null
-  ) parsed
-  order by normalized_name, created_at desc
+-- customer name is the only link back to an invoice, so it is normalised the
+-- same way on both sides of the joins below.
+--
+-- Matched in two passes, because one pass cannot be both safe and generous.
+--
+-- The exact pass drops "(ATAP)" and reduces every run of punctuation to a
+-- single space, but keeps brackets otherwise. That alone rescues the misses
+-- that were only ever about a full stop -- the task writes "SDN. BHD." where
+-- the customer record writes "SDN BHD" -- while "(M)" and the site codes stay
+-- part of the name, so no two customers are conflated.
+--
+-- The loose pass then takes what the first could not place and strips every
+-- bracket, which is what finally lets "WONG PECK YIN" reach "WONG PECK YIN
+-- (SHOP-LOT) (ATAP)". That is a blunter key, so it is only trusted when it
+-- lands on exactly one customer. It has to be: the two Eng Ann commercial
+-- sites, (PLO46) and (PTD 53661 - SELCO), differ *only* inside their brackets
+-- and reduce to the same text. An approval carries one application number and
+-- so belongs to one site; marking the wrong job Approved would let it be
+-- scheduled against a permit it does not hold, which is worse than leaving it
+-- Pending for a human to settle. Ambiguous names are therefore withheld and
+-- stay a manual review.
+--
+-- Measured against the live source when this was written: the exact pass
+-- reproduces all 125 names the old matcher found, the loose pass adds 9 that
+-- had been sitting approved and unseen for weeks, and 1 is withheld.
+customer_keys as (
+  select
+    customer_id,
+    trim(regexp_replace(
+      replace(upper(coalesce(name, '')), '(ATAP)', ''),
+      '[^A-Z0-9()]+', ' ', 'g'
+    )) as exact_key,
+    trim(regexp_replace(
+      regexp_replace(upper(coalesce(name, '')), '[(][^)]*[)]', ' ', 'g'),
+      '[^A-Z0-9]+', ' ', 'g'
+    )) as loose_key
+  from customer
+  where coalesce(name, '') <> ''
+),
+ambiguous_loose_keys as (
+  select loose_key
+  from customer_keys
+  where loose_key <> ''
+  group by loose_key
+  having count(distinct customer_id) > 1
+),
+task_status as (
+  select
+    trim(regexp_replace(
+      replace(upper(coalesce(customer_name, '')), '(ATAP)', ''),
+      '[^A-Z0-9()]+', ' ', 'g'
+    )) as exact_key,
+    trim(regexp_replace(
+      regexp_replace(upper(coalesce(customer_name, '')), '[(][^)]*[)]', ' ', 'g'),
+      '[^A-Z0-9]+', ' ', 'g'
+    )) as loose_key,
+    payload ->> 'status' as requested_seda_status,
+    created_at
+  from seda_tasks
+  where status = 'PENDING'
+    and requires_manual_review = true
+    and coalesce(customer_name, '') <> ''
+    and payload ->> 'status' is not null
+),
+-- The empty-key guards are not decoration: a name that reduces to nothing
+-- would otherwise match every other name that does the same.
+requested_exact as (
+  select distinct on (exact_key)
+    exact_key,
+    requested_seda_status
+  from task_status
+  where exact_key <> ''
+  order by exact_key, created_at desc
+),
+requested_loose as (
+  select distinct on (loose_key)
+    loose_key,
+    requested_seda_status
+  from task_status
+  where loose_key <> ''
+    and loose_key not in (select loose_key from ambiguous_loose_keys)
+  order by loose_key, created_at desc
 )
 select
   i.bubble_id,
@@ -199,7 +297,11 @@ select
   invoice_item_details.ballast_details,
   invoice_item_details.foc_details,
   invoice_item_details.battery_details,
+  invoice_item_details.inverter_type_details,
   package_items.package_item_description,
+  first_invoice_items.first_item_description,
+  invoice_item_details.ev_details,
+  coalesce(nullif(trim(i.package_type), ''), p.type) as package_type,
   i.panel_qty,
   i.panel_rating,
   i.pv_system_drawing,
@@ -218,7 +320,10 @@ select
   s.inverter as seda_inverter,
   s.installation_address,
   s.drawing_pdf_system,
-  requested_status.requested_seda_status
+  coalesce(
+    requested_exact.requested_seda_status,
+    requested_loose.requested_seda_status
+  ) as requested_seda_status
 from invoice i
 left join customer c on c.customer_id = i.linked_customer
 -- linked_agent is inconsistent in the source data: most invoices store the
@@ -237,9 +342,19 @@ left join second_payments on second_payments.linked_invoice = i.bubble_id
 left join payment_totals on payment_totals.linked_invoice = i.bubble_id
 left join invoice_item_details on invoice_item_details.linked_invoice = i.bubble_id
 left join package_items on package_items.linked_invoice = i.bubble_id
-left join requested_status
-  on requested_status.normalized_name
-    = trim(replace(upper(trim(coalesce(c.name, ''))), '(ATAP)', ''))
+left join first_invoice_items on first_invoice_items.linked_invoice = i.bubble_id
+left join requested_exact
+  on requested_exact.exact_key
+    = trim(regexp_replace(
+        replace(upper(coalesce(c.name, '')), '(ATAP)', ''),
+        '[^A-Z0-9()]+', ' ', 'g'
+      ))
+left join requested_loose
+  on requested_loose.loose_key
+    = trim(regexp_replace(
+        regexp_replace(upper(coalesce(c.name, '')), '[(][^)]*[)]', ' ', 'g'),
+        '[^A-Z0-9]+', ' ', 'g'
+      ))
 -- Every live invoice belongs in the installation system, whatever it has
 -- been paid. Payment is a gate on *scheduling*, not on visibility: anything
 -- under the threshold arrives with scheduleStatus 'pending_approval' and the
@@ -338,33 +453,6 @@ function applyRequestedSedaStatusOverrides(rows: ProxyRow[]): ProxyRow[] {
   );
 }
 
-// The seda_tasks pipeline (applyRequestedSedaStatusOverrides above) only has
-// email history from when it went live — it has nothing to say about older
-// invoices. For those, a paid-up deposit stands in for the missing paper
-// trail: an invoice from before the automation existed that has already
-// reached 60% payment has, in practice, cleared SEDA by now regardless of
-// what the registration link shows (stale "Pending"/"Submitted", or no
-// linked registration row at all). Below 60%, or on or after the cutoff, the
-// real registration status (or the "Pending" rowToJob defaults a missing one
-// to) still applies unchanged.
-const PRE_AUTOMATION_CUTOFF = "2026-07-01";
-
-function isBeforePreAutomationCutoff(invoiceDate: string | null): boolean {
-  return Boolean(invoiceDate) && invoiceDate! < PRE_AUTOMATION_CUTOFF;
-}
-
-function applyPreAutomationPaymentAssumption(rows: ProxyRow[]): ProxyRow[] {
-  return rows.map((row) => {
-    if (hasSedaApproval(row.seda_status)) return row;
-    if (!isBeforePreAutomationCutoff(row.invoice_date)) return row;
-    // Resolved, not stored: an old invoice that has been paid in full but whose
-    // percentage column stopped at the deposit would otherwise be denied the
-    // assumption and left showing a SEDA status nobody has maintained.
-    if (resolvePaymentPercent(row) < 60) return row;
-    return { ...row, seda_status: "Approved" };
-  });
-}
-
 function focOnly(value: string | null) {
   if (!value) return "";
   return value
@@ -450,6 +538,105 @@ function parsePhaseFromText(text: string | null): InstallationJob["phase"] {
   return "Unknown";
 }
 
+// Which inverter types the invoice actually carries — String, Hybrid, Micro,
+// or any combination (a string inverter for the array plus micro inverters
+// as a later add-on is a real, common setup, not a contradiction to pick one
+// side of). Read off inverter_type_details, which already carries every line
+// item mentioning "inverter" at all — the package's own line and any
+// separately sold add-on alike — so this only has to classify what is there,
+// not go hunting for it across rows itself. Order fixed so two invoices
+// naming the same combination always read the same way.
+const INVERTER_TYPES: { label: string; pattern: RegExp }[] = [
+  { label: "String", pattern: /string\s*inverter/i },
+  { label: "Hybrid", pattern: /hybrid\s*inverter/i },
+  { label: "Micro", pattern: /micro\s*inverter/i },
+];
+
+function parseInverterTypesFromText(text: string | null): string {
+  if (!text) return "";
+  const found = INVERTER_TYPES.filter((type) => type.pattern.test(text)).map(
+    (type) => type.label,
+  );
+  if (found.length === 0) return "";
+  return `${found.join(" + ")} Inverter`;
+}
+
+// One inverter's own model code out of a block of free text — "SAJ R6 12KW
+// String Inverter" or "SAJ M2-1.0K S2 Micro Inverter". Two shapes, because
+// that is the two the invoice text actually uses:
+//
+//  - The R6 string inverter states only the family and capacity ("R6
+//    12KW"), never the "-T2" every R6 unit is actually sold as — that
+//    suffix is fixed for the whole series, not read off anything, so it is
+//    appended rather than parsed.
+//  - A micro inverter's code is already complete in the text ("M2-1.0K
+//    S2"), just inconsistently punctuated — a hyphen here, a space there,
+//    stray spaces around the wattage there ("M2- 2.0K -S4") — so this only
+//    has to normalise it, not invent anything.
+//
+// Deliberately narrow: a model family neither pattern recognises returns
+// null rather than a guess, and stays whatever ops last typed.
+function extractInverterModel(text: string): string | null {
+  const r6 = text.match(/\bR6\s+(\d+(?:\.\d+)?)\s*KW\b/i);
+  if (r6) return `R6-${r6[1]}K-T2`;
+  const micro = text.match(/\bM(\d+)[\s-]*([\d.]+)\s*K\s*-?\s*S(\d+)\b/i);
+  if (micro) return `M${micro[1]}-${micro[2]}K-S${micro[3]}`;
+  return null;
+}
+
+// The full model list for Installation groups' Inverter / Battery Model
+// column — every inverter unit on the invoice, "+"-joined, each read the
+// same way SAJ's own paperwork counts them: one unit unless the line says
+// otherwise, which none of these do. inverter_type_details already carries
+// one paragraph per line item (see invoice_item_details), so this splits
+// back along the same blank-line boundaries string_agg joined them with.
+//
+// A "change to" item is a swap on a unit the invoice already named, not a
+// second one — INV-1008980's package line states its string inverter as
+// "R6 5KW", and a later, separate line item records that same inverter
+// changing to "R6 6KW". Counted independently that reads as two inverters
+// on a one-inverter job, so a change is matched back against whichever
+// earlier entry named its own "before" model and replaces it in place,
+// rather than being appended as a new unit. Only once nothing already on
+// the list names that model — a genuinely new unit changing before it was
+// even installed — does it get appended as its own "old => new" entry (see
+// INV-1009209's micro inverter, swapped without ever being counted as the
+// original model first).
+function parseInverterModelsFromText(text: string | null): string {
+  if (!text) return "";
+  const entries: { model: string; display: string }[] = [];
+  for (const item of text.split(/\n\s*\n/)) {
+    const change = item.match(/change\s*to/i);
+    if (change) {
+      const before = item.slice(0, change.index);
+      const after = item.slice((change.index ?? 0) + change[0].length);
+      const oldModel = extractInverterModel(before);
+      const newModel = extractInverterModel(after);
+      if (oldModel && newModel) {
+        const display = `1 X ${oldModel} => 1 X ${newModel}`;
+        const existing = entries.find((entry) => entry.model === oldModel);
+        if (existing) {
+          existing.model = newModel;
+          existing.display = display;
+        } else {
+          entries.push({ model: newModel, display });
+        }
+        continue;
+      }
+      const single = oldModel || newModel;
+      if (single && !entries.some((entry) => entry.model === single)) {
+        entries.push({ model: single, display: `1 X ${single}` });
+      }
+      continue;
+    }
+    const model = extractInverterModel(item);
+    if (model && !entries.some((entry) => entry.model === model)) {
+      entries.push({ model, display: `1 X ${model}` });
+    }
+  }
+  return entries.map((entry) => entry.display).join(" + ");
+}
+
 // How much of the invoice the customer has paid.
 //
 // invoice.percent_of_total_amount is written when a payment is first recorded
@@ -511,8 +698,23 @@ function rowToJob(row: ProxyRow): InstallationJob {
     row.panel_rating ?? parsePanelRatingFromPackageLine(packageLine);
   const parsedInverter = parseInverterFromText(row.package_item_description);
   const parsedPhase = parsePhaseFromText(row.package_item_description);
+  const inverterTypes = parseInverterTypesFromText(row.inverter_type_details);
+  const derivedInverterModel = parseInverterModelsFromText(
+    row.inverter_type_details,
+  );
   const ballastText = linesMatching(row.ballast_details, /ballast/i);
   const batteryText = linesMatching(row.battery_details, /batter/i);
+  // No is_a_package line on the invoice at all — nothing solar was sold on
+  // it, so there is no package to report. linked_package can still resolve
+  // to a product below (see the join on `p`), left over from how the invoice
+  // was set up rather than describing what it is; packageName is left blank
+  // instead of surfacing that. first_item_description carries what the
+  // invoice actually bills for one of these — a cleaning or inspection
+  // call-out — through to remarks below.
+  const hasPackageItem = Boolean(row.package_item_description);
+  const nonPackageDescription = hasPackageItem
+    ? ""
+    : (row.first_item_description || "").trim();
 
   return {
     id: row.bubble_id,
@@ -541,9 +743,15 @@ function rowToJob(row: ProxyRow): InstallationJob {
     ballastDetails: ballastText,
     focDetails: focOnly(row.foc_details),
     phase: parsedPhase !== "Unknown" ? parsedPhase : phaseLabel(row.phase_type),
+    inverterType: inverterTypes,
+    derivedInverterModel,
     sedaStatus: row.seda_status || "Pending",
     sldUrl: textUrl(row.drawing_pdf_system) || textUrl(row.pv_system_drawing),
-    packageName: packageLine || row.package_name || "Not available",
+    packageName: hasPackageItem
+      ? packageLine || row.package_name || "Not available"
+      : "",
+    packageType: (row.package_type || "").trim(),
+    evDetails: row.ev_details?.trim() || "",
     installationDate: null,
     // A job just arrived from the source system — nobody has looked at
     // availability yet. Distinct from "pending", which means someone actively
@@ -583,12 +791,20 @@ function rowToJob(row: ProxyRow): InstallationJob {
     paymentOverrideStatus: "none",
     paymentOverrideReason: "",
     teams: [],
-    remarks:
+    // Leads with what the invoice actually is, for the jobs that have no
+    // package item, ahead of whichever payment/SEDA hint applies below — an
+    // ops note on the record from the moment it first arrives here, same as
+    // those hints, rather than a separate field of its own.
+    remarks: [
+      nonPackageDescription,
       belowApprovalLine
         ? `Below ${APPROVAL_PAYMENT_PERCENT}% payment · Management approval required`
         : sedaApproved
           ? ""
           : "Pending SEDA Approval",
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
     installationRemarks: "",
     sourceUpdatedAt: row.updated_at || undefined,
   };
@@ -638,9 +854,7 @@ export async function fetchEligibleSourceJobs(): Promise<SourceJobsResult> {
   }
 
   const rows = payload.rows ?? [];
-  const patchedRows = applyPreAutomationPaymentAssumption(
-    applyRequestedSedaStatusOverrides(rows),
-  );
+  const patchedRows = applyRequestedSedaStatusOverrides(rows);
   return {
     jobs: patchedRows.map(rowToJob),
     truncated: rows.length >= SOURCE_ROW_LIMIT,

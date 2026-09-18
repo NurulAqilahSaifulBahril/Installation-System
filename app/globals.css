@@ -16,8 +16,11 @@
   --green-soft: #e9f5ed;
   --amber: #986b16;
   --amber-soft: #faf2dc;
+  --job-type: #ffe6cc;
+  --job-type-line: #f0c49a;
   --red: #b33a32;
   --red-soft: #fae9e7;
+  --frost: #1c6e8c;
   --shadow: 0 1px 2px rgba(28, 28, 26, 0.04);
 }
 
@@ -39,8 +42,11 @@
   --green-soft: #20382a;
   --amber: #e3b85f;
   --amber-soft: #3a301c;
+  --job-type: #4a3424;
+  --job-type-line: #8a5e38;
   --red: #ec827a;
   --red-soft: #402523;
+  --frost: #6ec3e6;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.24);
 }
 
@@ -441,8 +447,7 @@ button:disabled {
 }
 
 .button,
-.icon-button,
-.text-button {
+.icon-button {
   border: 0;
 }
 
@@ -494,12 +499,6 @@ button:disabled {
 
 .icon-button:hover {
   background: var(--surface-soft);
-}
-
-.text-button {
-  color: var(--primary);
-  background: transparent;
-  font-weight: 700;
 }
 
 .notice {
@@ -670,6 +669,34 @@ article.metric[title] {
 .toolbar {
   padding: 14px;
   border-bottom: 1px solid var(--line);
+}
+
+.toolbar.pipeline-toolbar {
+  align-items: flex-end;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.pipeline-toolbar .pipeline-customer-search {
+  flex: 1;
+  min-width: 240px;
+}
+
+.pipeline-toolbar .search-field {
+  width: 100%;
+}
+
+.pipeline-toolbar .search-field input {
+  width: 100%;
+}
+
+.pipeline-toolbar .schedule-search select {
+  min-height: 38px;
+}
+
+.pipeline-toolbar .button {
+  align-self: flex-end;
 }
 
 .search-field {
@@ -1134,6 +1161,18 @@ tbody tr.selected {
   color: var(--primary);
 }
 
+.freeze-cell {
+  text-align: center;
+}
+
+.freeze-toggle {
+  color: var(--muted);
+}
+
+.freeze-toggle.is-frozen {
+  color: var(--frost);
+}
+
 
 td strong,
 td span {
@@ -1484,6 +1523,21 @@ td span {
 .range-control input {
   width: 132px;
   padding-right: 9px;
+}
+
+/* Customer names, invoice numbers and street fragments need more room than
+   the postcode or month boxes beside them. Used on Customer Scheduling,
+   Installation groups and Stock delivery so the same search is the same
+   size on all three. */
+input.customer-invoice-search {
+  width: 320px;
+  min-width: 320px;
+}
+
+select.work-category-filter {
+  min-width: 220px;
+  background: var(--job-type);
+  border-color: var(--job-type-line);
 }
 
 /* Wider than the postcode box beside it: this one holds a typed month and year
@@ -2161,50 +2215,6 @@ tr.needs-reschedule-date.selected td {
   min-width: 0;
 }
 
-/* Customer name in the schedule table — reads as a link because it opens the
-   customer's job panel, unlike every other cell which edits in place. */
-.link-button {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--green);
-  font: inherit;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-}
-
-.link-button:hover {
-  text-decoration: underline;
-}
-
-/* One skylift booking per block: name on its own line, then the two dates.
-   Stacked rather than laid out in a row so the column never has to be as wide
-   as name + two date pickers side by side. */
-.skylift-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
-.skylift-entry {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 4px;
-  align-items: center;
-}
-
-.skylift-entry input[name="skylift-name"] {
-  grid-column: 1 / -1;
-}
-
-.skylift-dates {
-  display: flex;
-  gap: 4px;
-  min-width: 0;
-}
-
 .schedule-datetime {
   display: flex;
   flex-direction: column;
@@ -2212,10 +2222,9 @@ tr.needs-reschedule-date.selected td {
   min-width: 0;
 }
 
-/* Ten columns now (customer, team, two crews, members, supervisor, car,
-   skylift, date, actions). The floor is what the narrowest useful reading of
-   those needs; above it the table simply fills the wide shell, so on a normal
-   desktop there is no sideways scroll at all. */
+/* The floor is what the narrowest useful reading of each column needs; above
+   it the table simply fills the wide shell, so on a normal desktop there is
+   no sideways scroll at all. */
 .unified-team-table table {
   min-width: 100%;
   table-layout: fixed;
@@ -2391,6 +2400,23 @@ tr.needs-reschedule-date.selected td {
   font-weight: 600;
 }
 
+.schedule-band-car {
+  margin-left: 10px;
+  color: var(--band-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* The tag editor is a block element (member-tag-list wraps); inline-flex
+   here is what keeps it sitting beside the week and crew text instead of
+   dropping to a line of its own the moment there is a car to show. */
+.schedule-band-car-editor {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
 /* A cell with nothing in it yet reads as waiting for input rather than as a
    value someone chose. */
 .unified-team-table .run-field-readout.is-empty {
@@ -2425,6 +2451,11 @@ tr.needs-reschedule-date.selected td {
   min-width: 190px;
 }
 
+.schedule-search input.customer-invoice-search {
+  width: 320px;
+  min-width: 320px;
+}
+
 .schedule-filters label {
   display: grid;
   gap: 4px;
@@ -2441,8 +2472,7 @@ tr.needs-reschedule-date.selected td {
 
 /* Long values — member lists, car lists, customer names — wrap inside their
    column instead of pushing the table wider than the screen. */
-.unified-team-table td .run-field-readout,
-.unified-team-table td .link-button {
+.unified-team-table td .run-field-readout {
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -2467,16 +2497,18 @@ tr.needs-reschedule-date.selected td {
 /* Proportions tuned to the content: the two free-text list columns get the
    most room, the short coded ones the least. */
 .unified-team-table col.col-customer { width: 11%; }
+.unified-team-table col.col-agent { width: 8%; }
+.unified-team-table col.col-address { width: 13%; }
 .unified-team-table col.col-team { width: 5%; }
 .unified-team-table col.col-install { width: 8%; }
 .unified-team-table col.col-wiring { width: 8%; }
 .unified-team-table col.col-members { width: 9%; }
 .unified-team-table col.col-supervisor { width: 8%; }
-.unified-team-table col.col-car { width: 7%; }
-.unified-team-table col.col-skylift { width: 7%; }
 .unified-team-table col.col-datetime { width: 7%; }
 .unified-team-table col.col-inverter-battery { width: 10%; }
+.unified-team-table col.col-inverter-type { width: 8%; }
 .unified-team-table col.col-power-output { width: 8%; }
+.unified-team-table col.col-power-supply { width: 6%; }
 .unified-team-table col.col-remark { width: 7%; }
 /* Wide enough for a stacked "Remove" spelled out — at 5% the button's own
    minimum width pushed the whole table into a sideways scroll. */

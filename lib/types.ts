@@ -172,9 +172,28 @@ export type InstallationJob = {
   ballastDetails?: string;
   focDetails?: string;
   phase: "Single phase" | "Three phase" | "Unknown";
+  // Which inverter types the invoice carries — "String Inverter", "Micro
+  // Inverter", "String + Micro Inverter", etc. — read off every line item
+  // that mentions "inverter" at all, package line and separately sold add-on
+  // alike (see parseInverterTypesFromText in lib/source-api.ts). Blank when
+  // nothing on the invoice says so.
+  inverterType: string;
+  // Best-effort model codes for the same inverters — "1 X R6-12K-T2 + 1 X
+  // M2-1.0K-S2" — for Installation groups' Inverter / Battery Model column
+  // to default to before anyone has typed over it (see
+  // parseInverterModelsFromText in lib/source-api.ts). Never written back;
+  // inverterBattery is what actually gets saved.
+  derivedInverterModel: string;
   sedaStatus: string;
   sldUrl: string | null;
   packageName: string;
+  // Invoice/package type from the source — "Residential", "Tariff B&D Low
+  // Voltage", "EV Charger". Used to filter Residential/Shoplots, Commercial,
+  // EV and O&M on every dashboard page.
+  packageType: string;
+  // Invoice lines that mention an EV charger / wallbox, including those sold
+  // outside the solar package. Blank when the invoice has none.
+  evDetails?: string;
   installationDate: string | null;
   // Additional days this site is worked on, beyond installationDate. Absent on
   // the great majority of jobs.

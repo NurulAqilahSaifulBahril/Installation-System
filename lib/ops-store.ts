@@ -8,6 +8,11 @@ export type OpsState = {
   teamResources: unknown[];
   teamWeekAssignments: unknown[];
   jobUpdates: Record<string, unknown>;
+  // Job ids frozen off the active pipeline. Shared like the lists above (the
+  // client owns and replaces the whole set) rather than per-device like a
+  // pin, because freezing is a decision about the row itself, not about one
+  // person's view of it.
+  frozenJobIds: string[];
 };
 
 export const EMPTY_OPS_STATE: OpsState = {
@@ -17,6 +22,7 @@ export const EMPTY_OPS_STATE: OpsState = {
   teamResources: [],
   teamWeekAssignments: [],
   jobUpdates: {},
+  frozenJobIds: [],
 };
 
 const STATE_ROW_ID = 'default';
