@@ -2965,21 +2965,39 @@ export default function DashboardPage() {
   } | null>(null);
 
   useEffect(() => {
-    fetch("/api/auth/me")
-      .then(async (response) => {
+    let cancelled = false;
+
+    // Only a 401 means the session is actually gone. Anything else is the
+    // check itself having failed — a 503 because the database was unreachable,
+    // or the fetch never landing — and reading that as a sign-out is what used
+    // to dump people on the login screen mid-shift. The commonest case is the
+    // very first check after the server restarts, which runs the schema
+    // migration batch before it can answer, so it is also the case most worth
+    // retrying: without one, the session survives but the header sits there
+    // with no name and no Sign out button until someone reloads.
+    async function loadCurrentUser(attemptsLeft: number) {
+      try {
+        const response = await fetch("/api/auth/me");
+        if (cancelled) return;
         if (response.status === 401) {
           window.location.href = "/login";
           return;
         }
+        if (!response.ok) throw new Error("check unavailable");
         const payload = (await response.json()) as {
           user: typeof currentUser;
         };
-        setCurrentUser(payload.user);
-      })
-      .catch(() => {
-        // Database unreachable — the offline banner already covers this;
-        // don't bounce the user to the login page over a connection blip.
-      });
+        if (!cancelled) setCurrentUser(payload.user);
+      } catch {
+        if (cancelled || attemptsLeft <= 0) return;
+        setTimeout(() => void loadCurrentUser(attemptsLeft - 1), 3000);
+      }
+    }
+
+    void loadCurrentUser(2);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function signOut() {

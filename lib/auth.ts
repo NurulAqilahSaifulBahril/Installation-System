@@ -14,7 +14,24 @@ export type AppUser = {
 };
 
 export const SESSION_COOKIE = "session_token";
-const SESSION_DAYS = 30;
+// A year, and renewed on every use (see getSessionUser), so in practice a
+// session ends when someone signs out rather than on a timer. The office signs
+// in on shared machines and expects to stay signed in between shifts; a 30-day
+// cap meant the dashboard demanded a password again for no reason anyone could
+// see.
+const SESSION_DAYS = 365;
+export const SESSION_MAX_AGE_SECONDS = SESSION_DAYS * 24 * 60 * 60;
+
+// One definition for every route that issues the cookie, so sign-in, first-run
+// setup and the renewal on /api/auth/me cannot drift apart. No `secure`: the
+// dashboard is served over plain http on the office LAN, and a secure cookie
+// would simply never be stored.
+export const SESSION_COOKIE_OPTIONS = {
+  httpOnly: true,
+  sameSite: "lax",
+  path: "/",
+  maxAge: SESSION_MAX_AGE_SECONDS,
+} as const;
 
 export class AuthError extends Error {
   status: number;
@@ -116,11 +133,14 @@ export async function getSessionUser(
   if (new Date(row.expires_at).getTime() < Date.now()) return null;
   if (!row.is_active) return null;
 
-  // Sliding-window "last seen" for the admin session view — best-effort, a
-  // failure here must not block the request that's actually being served.
-  queryProxy("update public.app_sessions set last_seen_at = now() where id = $1", [
-    token,
-  ]).catch(() => {});
+  // "Last seen" for the admin session view, and the renewal that keeps an
+  // active session from ever aging out: every check pushes the expiry back to
+  // a full term. Best-effort on purpose — a failure here must not block the
+  // request actually being served, and the next check will renew it anyway.
+  queryProxy(
+    "update public.app_sessions set last_seen_at = now(), expires_at = $2 where id = $1",
+    [token, new Date(Date.now() + SESSION_MAX_AGE_SECONDS * 1000).toISOString()],
+  ).catch(() => {});
 
   return {
     id: row.user_id,

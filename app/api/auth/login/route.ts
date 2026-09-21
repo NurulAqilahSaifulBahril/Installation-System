@@ -5,6 +5,7 @@ import {
   createSession,
   findUserByUsername,
   SESSION_COOKIE,
+  SESSION_COOKIE_OPTIONS,
   verifyPassword,
 } from "@/lib/auth";
 
@@ -61,12 +62,7 @@ export async function POST(request: Request) {
         role: user.role,
       },
     });
-    response.cookies.set(SESSION_COOKIE, token, {
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 30 * 24 * 60 * 60,
-    });
+    response.cookies.set(SESSION_COOKIE, token, SESSION_COOKIE_OPTIONS);
     return response;
   } catch (error) {
     return NextResponse.json(

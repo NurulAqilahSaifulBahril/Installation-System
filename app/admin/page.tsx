@@ -82,6 +82,10 @@ export default function AdminPage() {
   useEffect(() => {
     fetch("/api/auth/me")
       .then(async (response) => {
+        // Only a 401 is a real sign-out. A 503 (database unreachable) left
+        // through here would bounce an admin with a valid session to the login
+        // screen — see the same guard on the dashboard.
+        if (response.status !== 401 && !response.ok) return;
         if (!response.ok) throw new Error("unauthenticated");
         const payload = (await response.json()) as { user: AdminUser | null };
         if (!payload.user) throw new Error("unauthenticated");

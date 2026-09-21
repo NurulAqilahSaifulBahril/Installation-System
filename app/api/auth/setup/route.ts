@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { writeAuditLog } from "@/lib/audit";
-import { createSession, hashPassword, SESSION_COOKIE } from "@/lib/auth";
+import {
+  createSession,
+  hashPassword,
+  SESSION_COOKIE,
+  SESSION_COOKIE_OPTIONS,
+} from "@/lib/auth";
 import { ensureInstallationSchema } from "@/lib/installation-schema";
 import { queryProxy } from "@/lib/proxy-db";
 
@@ -86,12 +91,7 @@ export async function POST(request: Request) {
 
     const token = await createSession(id);
     const response = NextResponse.json({ ok: true });
-    response.cookies.set(SESSION_COOKIE, token, {
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 30 * 24 * 60 * 60,
-    });
+    response.cookies.set(SESSION_COOKIE, token, SESSION_COOKIE_OPTIONS);
     return response;
   } catch (error) {
     return NextResponse.json(
