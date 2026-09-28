@@ -24,3 +24,15 @@ npm-debug.log*
 # ...but the user guide is written by us and contains no customer data, so it
 # ships with the repo. Regenerate with: python scripts/build-user-guide.py
 !Installation Desktop app_user_guide.pdf
+
+# Local-only launch scripts and the old Supabase schema. Kept on this machine,
+# not part of the app: localhost runs through npm / .claude/launch.json and
+# the desktop build, and the live schema is documented in data_schema.md.
+/supabase/
+/start-dashboard*.bat
+/start-dashboard-hidden.vbs
+/open-dashboard-when-ready.bat
+/is-our-dashboard.bat
+/rebuild-dashboard.bat
+/check-build.bat
+/register-dashboard-task.ps1
