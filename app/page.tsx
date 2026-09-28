@@ -133,7 +133,13 @@ type InstallationGroup = {
   jobIds: string[];
   installationTeam: string;
   wiringTeam: string;
-  supervisor: string;
+  // More than one is normal — two supervisors splitting a week, or covering
+  // for each other on different days.
+  supervisors: string[];
+  // Retired — see migrateGroupSupervisor. A group made before supervisors
+  // was a list carries its one name here instead; migrated into supervisors
+  // as a single entry (not split apart) the first time the group loads.
+  supervisor?: string;
   // The sheet's slot label for the crew — "Team 3". Separate from the crew
   // names because the same label carries different crews across weeks.
   teamLabel?: string;
@@ -174,6 +180,22 @@ function migrateGroupSkylift(group: InstallationGroup): InstallationGroup {
   return {
     ...rest,
     remark: [group.remark, skyliftNote].filter(Boolean).join(" · "),
+  };
+}
+
+// One-time migration off the single-value Supervisor field: the one name a
+// group already carries becomes the first (and, until someone adds another,
+// only) entry in supervisors — never split apart, since "Kaijie/Ahzu" and
+// "Kaikian (Mon & Tue), Ahzu (Wed)" are exactly as likely to be one typed
+// value as two names jammed together, and guessing wrong would invent a
+// person. Idempotent, same as migrateGroupSkylift above.
+function migrateGroupSupervisor(group: InstallationGroup): InstallationGroup {
+  if (group.supervisors) return group;
+  const { supervisor, ...rest } = group;
+  const trimmed = supervisor?.trim();
+  return {
+    ...rest,
+    supervisors: trimmed ? [trimmed] : [],
   };
 }
 
@@ -1233,6 +1255,7 @@ const CREW_COLUMNS = [
 type CrewColumnKey = (typeof CREW_COLUMNS)[number]["key"];
 
 function crewBandLabel(group: InstallationGroup): string {
+  const supervisors = group.supervisors.filter((name) => !isPlaceholder(name));
   return [
     // A lone dash is how the sheet writes "nobody assigned", so it reads as
     // absent here too rather than as a crew called "-".
@@ -1241,9 +1264,7 @@ function crewBandLabel(group: InstallationGroup): string {
       ? ""
       : `Install: ${group.installationTeam}`,
     isPlaceholder(group.wiringTeam) ? "" : `Wiring: ${group.wiringTeam}`,
-    isPlaceholder(group.supervisor)
-      ? ""
-      : `Site Supervisor: ${group.supervisor}`,
+    supervisors.length ? `Site Supervisor: ${supervisors.join(", ")}` : "",
   ]
     .filter(Boolean)
     .join("  ·  ");
@@ -2257,6 +2278,14 @@ function jobHasOm(job: InstallationJob): boolean {
   return /o\s*&\s*m|cleaning and inspection/i.test(jobCategoryText(job));
 }
 
+// Narrower than jobHasOm above: the yellow row highlight on Installation
+// groups and Stock delivery is keyed off the Remark text itself saying
+// "O&M", not the broader work-category signals (cleaning-service package,
+// visit kind, category text) that filter counts as O&M work.
+function remarkHasOm(remark: string): boolean {
+  return /o\s*&\s*m/i.test(remark);
+}
+
 function jobIsCommercial(job: InstallationJob): boolean {
   if (/tariff\s*b/i.test(job.packageType ?? "")) return true;
   return /\bselco\b/i.test(job.customerName);
@@ -2634,7 +2663,11 @@ function JobDetail({
               />
               <SpecRow
                 label="Supervisor"
-                value={group?.supervisor || "Unassigned"}
+                value={
+                  group?.supervisors.length
+                    ? group.supervisors.join(", ")
+                    : "Unassigned"
+                }
               />
             </SpecBlock>
 
@@ -3076,10 +3109,13 @@ export default function DashboardPage() {
   const applySharedState = useCallback(
     (state: SharedOpsState) => {
       // Runs on every load, not just once — cheap (a no-op map once nothing
-      // has skylifts left) and it means a group edited on a device that
-      // missed this migration still gets caught the next time anyone loads
-      // it, rather than depending on every client having upgraded first.
-      const migratedGroups = state.groups.map(migrateGroupSkylift);
+      // has skylifts left, or supervisors is already a list) and it means a
+      // group edited on a device that missed a migration still gets caught
+      // the next time anyone loads it, rather than depending on every
+      // client having upgraded first.
+      const migratedGroups = state.groups
+        .map(migrateGroupSkylift)
+        .map(migrateGroupSupervisor);
       setGroups(migratedGroups);
       setDeliveryRuns(state.deliveryRuns);
       // Older saved states predate the warehouse list, so it can be absent.
@@ -3797,7 +3833,7 @@ export default function DashboardPage() {
       jobIds: [],
       installationTeam: "",
       wiringTeam: "",
-      supervisor: "",
+      supervisors: [],
     };
     saveGroups([...groups, nextGroup]);
     setGroupDraft({
@@ -5384,6 +5420,9 @@ function InstallationGroupsView({
   const [groupCarDraft, setGroupCarDraft] = useState<Record<string, string>>(
     {},
   );
+  const [groupSupervisorDraft, setGroupSupervisorDraft] = useState<
+    Record<string, string>
+  >({});
   // Which row/field is mid-way through typing a brand-new team name after
   // picking "+ Add new…" in its dropdown.
   const [newTeamDraft, setNewTeamDraft] = useState<{
@@ -5412,17 +5451,22 @@ function InstallationGroupsView({
             group.teamLabel ?? "",
             group.installationTeam,
             group.wiringTeam,
-            group.supervisor,
+            group.supervisors.join(","),
           ].join("|"),
         })),
       )
       // Applied after the rows are built, not to the groups, because the name
-      // being searched for lives on the customer rather than on the crew. A
-      // crew row with nobody on it can never match a name, so it drops out
-      // while a search is running.
+      // being searched for usually lives on the customer rather than on the
+      // crew. Site supervisor is the one exception — that's the crew's own
+      // field, so it's checked straight off the row's group and can match
+      // even a crew row with nobody on it yet.
       .filter((row) => {
-        if (!customerQuery.trim()) return true;
-        return row.job ? jobMatchesSearch(row.job, customerQuery) : false;
+        const needle = customerQuery.trim();
+        if (!needle) return true;
+        if (row.job && jobMatchesSearch(row.job, needle)) return true;
+        return row.group.supervisors.some((name) =>
+          name.toLowerCase().includes(needle.toLowerCase()),
+        );
       })
       // Same treatment as the name search above, and for the same reason: the
       // stage belongs to the customer, not to the crew, so an empty crew row
@@ -5486,7 +5530,7 @@ function InstallationGroupsView({
           // under different supervisors interleave by date, and the heading
           // re-emits every time the supervisor flips. Three week-and-crew
           // combinations were splitting their heading that way.
-          (a.group.supervisor ?? "").localeCompare(b.group.supervisor ?? "") ||
+          a.group.supervisors.join(",").localeCompare(b.group.supervisors.join(",")) ||
           // Days inside a week still read forwards, Monday to Saturday,
           // because that is the order the crew works them.
           a.group.installationDate.localeCompare(b.group.installationDate) ||
@@ -5534,6 +5578,15 @@ function InstallationGroupsView({
         ]),
       ).sort(),
     [teams, groups],
+  );
+  // No team resource carries a site supervisor in practice — TeamResource
+  // has the field, but nothing in the app writes it — so unlike the two
+  // dropdowns above, this one has only ever the names already on a group to
+  // draw from.
+  const supervisorNames = useMemo(
+    () =>
+      Array.from(new Set(groups.flatMap((group) => group.supervisors))).sort(),
+    [groups],
   );
   const memberSuggestions = useMemo(
     () =>
@@ -5611,7 +5664,7 @@ function InstallationGroupsView({
       jobIds: [],
       installationTeam: "",
       wiringTeam: "",
-      supervisor: "",
+      supervisors: [],
       teamLabel: "",
       wiringMembers: [],
       cars: [],
@@ -5736,7 +5789,7 @@ function InstallationGroupsView({
 
   function addGroupListItem(
     group: InstallationGroup,
-    key: "wiringMembers" | "cars",
+    key: "wiringMembers" | "cars" | "supervisors",
     value: string,
   ) {
     const trimmed = value.trim();
@@ -5748,7 +5801,7 @@ function InstallationGroupsView({
 
   function removeGroupListItem(
     group: InstallationGroup,
-    key: "wiringMembers" | "cars",
+    key: "wiringMembers" | "cars" | "supervisors",
     value: string,
   ) {
     updateGroupFields(group.id, {
@@ -5785,6 +5838,7 @@ function InstallationGroupsView({
     }
     setNewTeamDraft(null);
   }
+
 
   function toggleTeamEdit(teamId: string) {
     const wasEditing = editingTeamIds.has(teamId);
@@ -5907,7 +5961,7 @@ function InstallationGroupsView({
         jobIds,
         installationTeam: "",
         wiringTeam: "",
-        supervisor: "",
+        supervisors: [],
       });
     }
 
@@ -6296,8 +6350,8 @@ function InstallationGroupsView({
                   className="customer-invoice-search"
                   value={customerQuery}
                   onChange={(event) => setCustomerQuery(event.target.value)}
-                  placeholder="Search customer, invoice, address…"
-                  aria-label="Search customer name, invoice number or address"
+                  placeholder="Search customer, invoice, address, site supervisor…"
+                  aria-label="Search customer name, invoice number, address or site supervisor"
                 />
               </label>
               <label className="schedule-search">
@@ -6636,7 +6690,12 @@ function InstallationGroupsView({
                       </tr>
                     )}
                     <tr
-                      className={isEditing ? "selected" : ""}
+                      className={[
+                        isEditing ? "selected" : "",
+                        remarkHasOm(rowRemark) ? "is-om" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
                       onClick={() => toggleRowEdit(rowKey)}
                     >
                       <td onClick={stopWhenEditing}>
@@ -7162,19 +7221,79 @@ function InstallationGroupsView({
                       {isCrewColumnVisible("supervisor") && (
                       <td onClick={stopWhenEditing}>
                         {isEditing ? (
-                          <input
-                            value={group.supervisor}
-                            onChange={(event) =>
-                              updateGroupFields(group.id, {
-                                supervisor: event.target.value,
-                              })
-                            }
-                            placeholder="Supervisor name"
-                            aria-label="Site supervisor"
-                          />
+                          <div className="member-tag-input">
+                            <div className="member-tag-list">
+                              {group.supervisors.map((name) => (
+                                <span className="member-tag" key={name}>
+                                  {name}
+                                  <button
+                                    type="button"
+                                    aria-label={`Remove ${name}`}
+                                    onClick={() =>
+                                      removeGroupListItem(
+                                        group,
+                                        "supervisors",
+                                        name,
+                                      )
+                                    }
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                            <div className="member-tag-add">
+                              <input
+                                list="supervisor-options"
+                                value={groupSupervisorDraft[group.id] ?? ""}
+                                onChange={(event) =>
+                                  setGroupSupervisorDraft((prev) => ({
+                                    ...prev,
+                                    [group.id]: event.target.value,
+                                  }))
+                                }
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") {
+                                    event.preventDefault();
+                                    addGroupListItem(
+                                      group,
+                                      "supervisors",
+                                      groupSupervisorDraft[group.id] ?? "",
+                                    );
+                                    setGroupSupervisorDraft((prev) => ({
+                                      ...prev,
+                                      [group.id]: "",
+                                    }));
+                                  }
+                                }}
+                                placeholder="Add supervisor"
+                                aria-label="Add site supervisor"
+                              />
+                              <button
+                                type="button"
+                                className="icon-button"
+                                aria-label="Add site supervisor"
+                                onClick={() => {
+                                  addGroupListItem(
+                                    group,
+                                    "supervisors",
+                                    groupSupervisorDraft[group.id] ?? "",
+                                  );
+                                  setGroupSupervisorDraft((prev) => ({
+                                    ...prev,
+                                    [group.id]: "",
+                                  }));
+                                }}
+                              >
+                                <Plus size={14} />
+                              </button>
+                            </div>
+                          </div>
                         ) : (
                           <span className="run-field-readout">
-                            {group.supervisor || "Not assigned"}
+                            {group.supervisors.length > 0
+                              ? group.supervisors.join(", ")
+                              : "Not assigned"}
                           </span>
                         )}
                       </td>
@@ -7267,6 +7386,11 @@ function InstallationGroupsView({
             </datalist>
             <datalist id="car-options">
               {carSuggestions.map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+            <datalist id="supervisor-options">
+              {supervisorNames.map((name) => (
                 <option key={name} value={name} />
               ))}
             </datalist>
@@ -7678,6 +7802,7 @@ function InstallationGroupsView({
           jobById={jobById}
           installationOptions={installationOptions}
           wiringOptions={wiringOptions}
+          supervisorNames={supervisorNames}
           calendarWeather={calendarWeather}
           deliveryRunsForGroup={deliveryRunsForGroup}
           onUpdateGroup={updateGroup}
@@ -7870,6 +7995,7 @@ function GroupDrawer({
   jobs,
   installationOptions,
   wiringOptions,
+  supervisorNames,
   calendarWeather,
   deliveryRunsForGroup,
   onUpdateGroup,
@@ -7883,6 +8009,7 @@ function GroupDrawer({
   jobById: Map<string, InstallationJob>;
   installationOptions: TeamResource[];
   wiringOptions: TeamResource[];
+  supervisorNames: string[];
   calendarWeather: Record<string, { rainProbability: number; weatherCode: number }>;
   deliveryRunsForGroup: (groupId: string) => DeliveryRun[];
   onUpdateGroup: (id: string, update: Partial<InstallationGroup>) => void;
@@ -7893,6 +8020,15 @@ function GroupDrawer({
 }) {
   const staffing = groupStaffing(group);
   const runs = deliveryRunsForGroup(group.id);
+  // Only one group is ever open in the drawer at a time, so this needs no
+  // per-group key the way the schedule table's equivalent draft does.
+  const [supervisorDraft, setSupervisorDraft] = useState("");
+  function addSupervisor() {
+    const trimmed = supervisorDraft.trim();
+    if (!trimmed || group.supervisors.includes(trimmed)) return;
+    onUpdateGroup(group.id, { supervisors: [...group.supervisors, trimmed] });
+    setSupervisorDraft("");
+  }
   // Pinned customers lead the list; everyone else holds their existing order,
   // which Array.sort preserves. filter has already made a new array, so this
   // sorts a copy rather than the jobs prop.
@@ -8029,13 +8165,51 @@ function GroupDrawer({
           </label>
           <label>
             Supervisor
-            <input
-              value={group.supervisor}
-              onChange={(event) =>
-                onUpdateGroup(group.id, { supervisor: event.target.value })
-              }
-              placeholder="Supervisor"
-            />
+            <div className="member-tag-input">
+              <div className="member-tag-list">
+                {group.supervisors.map((name) => (
+                  <span className="member-tag" key={name}>
+                    {name}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${name}`}
+                      onClick={() =>
+                        onUpdateGroup(group.id, {
+                          supervisors: group.supervisors.filter(
+                            (item) => item !== name,
+                          ),
+                        })
+                      }
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="member-tag-add">
+                <input
+                  list="supervisor-options"
+                  value={supervisorDraft}
+                  onChange={(event) => setSupervisorDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addSupervisor();
+                    }
+                  }}
+                  placeholder="Add supervisor"
+                  aria-label="Add site supervisor"
+                />
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Add site supervisor"
+                  onClick={addSupervisor}
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
+            </div>
           </label>
         </div>
 
@@ -9637,7 +9811,14 @@ function DeliveryPlanningView({
         .filter((job): job is InstallationJob => Boolean(job));
       const matching = runJobs.filter(
         (job) =>
-          (!query || jobMatchesSearch(job, query)) &&
+          (!query ||
+            jobMatchesSearch(job, query) ||
+            // Site supervisor is the group's own field, not the job's —
+            // looked up the same way every other group fact is here, off
+            // the stop's own job id.
+            (groupByJobId.get(job.id)?.supervisors ?? []).some((name) =>
+              name.toLowerCase().includes(query),
+            )) &&
           matchesPipelineStage(job, planningFilter, todayIso, planningLookup) &&
           matchesWorkCategory(job, workCategoryFilter),
       );
@@ -9736,8 +9917,8 @@ function DeliveryPlanningView({
                 className="customer-invoice-search"
                 value={customerQuery}
                 onChange={(event) => setCustomerQuery(event.target.value)}
-                placeholder="Search customer, invoice, address…"
-                aria-label="Search customer name, invoice number or address"
+                placeholder="Search customer, invoice, address, site supervisor…"
+                aria-label="Search customer name, invoice number, address or site supervisor"
               />
             </label>
             <label className="schedule-search">
@@ -10029,7 +10210,14 @@ function DeliveryPlanningView({
                       return (
                         <tr
                           key={job ? job.id : "empty"}
-                          className={complete ? "run-stop-complete" : undefined}
+                          className={[
+                            complete ? "run-stop-complete" : "",
+                            job && remarkHasOm(job.installationRemarks)
+                              ? "is-om"
+                              : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
                           onClick={() => toggleRunEdit(run.id)}
                         >
                           <td

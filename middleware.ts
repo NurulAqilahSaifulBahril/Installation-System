@@ -25,6 +25,7 @@ export function middleware(request: NextRequest) {
 
   const isPublic =
     pathname === "/login" ||
+    pathname === "/warehouse" ||
     pathname.startsWith("/api/auth/") ||
     // The sign-in screen's calendar. Everything under /api/public/ is readable
     // by anyone who can reach the app, so nothing may be added here without
