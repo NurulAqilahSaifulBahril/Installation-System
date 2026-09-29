@@ -3,6 +3,7 @@ import {
   APPROVAL_PAYMENT_PERCENT,
   READY_PAYMENT_PERCENT,
   hasReachedPaymentPercent,
+  isSedaApproved,
   type InstallationJob,
 } from "@/lib/types";
 
@@ -43,11 +44,9 @@ type ProxyRow = {
   updated_at: string | null;
   requested_seda_status: string | null;
   invoice_date: string | null;
-};
-
-type ProxyResponse = {
-  rows?: ProxyRow[];
-  error?: string;
+  email: string | null;
+  roof_photo_count: number | string | null;
+  site_photo_count: number | string | null;
 };
 
 // A backstop against an unbounded payload, not a business rule. Now that every
@@ -320,6 +319,9 @@ select
   s.inverter as seda_inverter,
   s.installation_address,
   s.drawing_pdf_system,
+  coalesce(nullif(trim(s.email), ''), nullif(trim(c.email), '')) as email,
+  coalesce(array_length(i.linked_roof_image, 1), 0) as roof_photo_count,
+  coalesce(array_length(i.site_assessment_image, 1), 0) as site_photo_count,
   coalesce(
     requested_exact.requested_seda_status,
     requested_loose.requested_seda_status
@@ -390,10 +392,7 @@ function phaseLabel(value: string | null): InstallationJob["phase"] {
 }
 
 function hasSedaApproval(status: string | null): boolean {
-  const normalized = status?.toLowerCase() ?? "";
-  return ["approved", "complete", "completed", "success"].some((word) =>
-    normalized.includes(word),
-  );
+  return isSedaApproved(status);
 }
 
 function normalizeCustomerName(name: string | null): string {
@@ -806,19 +805,25 @@ function rowToJob(row: ProxyRow): InstallationJob {
       .filter(Boolean)
       .join("\n\n"),
     installationRemarks: "",
+    customerEmail: row.email?.trim() || "",
+    roofPhotoCount: Number(row.roof_photo_count ?? 0) || 0,
+    sitePhotoCount: Number(row.site_photo_count ?? 0) || 0,
     sourceUpdatedAt: row.updated_at || undefined,
   };
 }
 
-export async function fetchEligibleSourceJobs(): Promise<SourceJobsResult> {
-  // Deliberately separate from PG_PROXY_* (lib/proxy-db.ts), which is the
-  // app's own read-write operational store. This is the read-only connection
-  // to the upstream business database (invoices, customers, payments) that
-  // the pipeline is built from.
-  // Falls back to the operational connection when no separate source one is
-  // configured. Splitting them is the better arrangement, but a deployment
-  // that only ever had PG_PROXY_* must keep reading its pipeline rather than
-  // dropping to demo data the moment it updates.
+// The read-only connection to the upstream business database (invoices,
+// customers, payments). Deliberately separate from PG_PROXY_* (lib/proxy-db.ts),
+// which is the app's own read-write operational store.
+//
+// Falls back to the operational connection when no separate source one is
+// configured. Splitting them is the better arrangement, but a deployment that
+// only ever had PG_PROXY_* must keep reading its pipeline rather than dropping
+// to demo data the moment it updates.
+export async function querySource<T>(
+  sql: string,
+  params: unknown[] = [],
+): Promise<T[]> {
   const proxyUrl =
     process.env.PG_SOURCE_PROXY_URL || process.env.PG_PROXY_URL;
   const database =
@@ -839,24 +844,67 @@ export async function fetchEligibleSourceJobs(): Promise<SourceJobsResult> {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      db_name: database,
-      sql: INSTALLATION_SOURCE_QUERY,
-      params: [],
-    }),
+    body: JSON.stringify({ db_name: database, sql, params }),
     cache: "no-store",
     signal: AbortSignal.timeout(20_000),
   });
 
-  const payload = (await response.json()) as ProxyResponse;
+  const payload = (await response.json()) as { rows?: T[]; error?: string };
   if (!response.ok || payload.error) {
     throw new Error(payload.error || `Source API returned ${response.status}.`);
   }
+  return payload.rows ?? [];
+}
 
-  const rows = payload.rows ?? [];
+export async function fetchEligibleSourceJobs(): Promise<SourceJobsResult> {
+  const rows = await querySource<ProxyRow>(INSTALLATION_SOURCE_QUERY);
   const patchedRows = applyRequestedSedaStatusOverrides(rows);
   return {
     jobs: patchedRows.map(rowToJob),
     truncated: rows.length >= SOURCE_ROW_LIMIT,
+  };
+}
+
+export type JobFiles = {
+  sld: string[];
+  roof: string[];
+  site: string[];
+};
+
+function urlList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter(
+      (item): item is string => typeof item === "string" && Boolean(item),
+    );
+  }
+  return typeof value === "string" && value ? [value] : [];
+}
+
+// One customer's SLD drawing, roof photos and site-assessment photos, for the
+// viewer on Customer Scheduling. The SLD follows rowToJob's order: the SEDA
+// engineering drawing first, the invoice's PV layout after it.
+export async function fetchJobFiles(invoiceId: string): Promise<JobFiles | null> {
+  const rows = await querySource<{
+    drawing_pdf_system: unknown;
+    pv_system_drawing: unknown;
+    linked_roof_image: unknown;
+    site_assessment_image: unknown;
+  }>(
+    [
+      "select s.drawing_pdf_system, i.pv_system_drawing,",
+      "  i.linked_roof_image, i.site_assessment_image",
+      "from invoice i",
+      "left join seda_registration s on s.bubble_id = i.linked_seda_registration",
+      "where i.bubble_id = $1",
+      "limit 1",
+    ].join("\n"),
+    [invoiceId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    sld: [...urlList(row.drawing_pdf_system), ...urlList(row.pv_system_drawing)],
+    roof: urlList(row.linked_roof_image),
+    site: urlList(row.site_assessment_image),
   };
 }

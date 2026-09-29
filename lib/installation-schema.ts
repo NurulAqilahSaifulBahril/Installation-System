@@ -120,6 +120,17 @@ const MIGRATION_SQL = [
   "alter table public.app_audit_log add column if not exists details jsonb not null default '{}'::jsonb;",
   'alter table public.app_audit_log add column if not exists created_at timestamptz not null default now();',
   'create index if not exists app_audit_log_created_at_idx on public.app_audit_log (created_at desc);',
+  '',
+  // When this app first saw each invoice's SEDA status read Approved. The
+  // source records no approval date, so the day it is first seen stands in for
+  // one from here on. approved_on is null for invoices that were already
+  // approved the first time this ran: their real date is unknown.
+  'create table if not exists public.installation_seda_approvals (',
+  '  source_invoice_id text primary key',
+  ');',
+  '',
+  'alter table public.installation_seda_approvals add column if not exists approved_on date;',
+  'alter table public.installation_seda_approvals add column if not exists first_seen_at timestamptz not null default now();',
 ].join('\n');
 
 let schemaReady: Promise<void> | null = null;

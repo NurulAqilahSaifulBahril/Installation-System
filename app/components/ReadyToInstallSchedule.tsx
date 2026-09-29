@@ -1,0 +1,1381 @@
+"use client";
+
+import { CloudRain, FileText, MapPin, X } from "lucide-react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { fetchDailyWeather, type DailyWeather } from "@/lib/calendar-weather";
+import { distanceKm } from "@/lib/postcode-coords";
+import {
+  HOLD_LABEL,
+  MAX_RADIUS_KM,
+  REGION_LABEL,
+  SLOT_TIME,
+  TEAM_REGION,
+  WORKING_DAY_LIMIT,
+  addDays,
+  postcodeOf,
+  weekDays,
+  type Candidate,
+  type HoldReason,
+  type Placement,
+  type Region,
+  type ScheduleDraft,
+  type Slot,
+  type SlotEntry,
+  type TeamCrewAssignment,
+  type TeamNumber,
+} from "@/lib/schedule-suggest";
+import {
+  isSedaApproved,
+  type InstallationJob,
+  type SiteAssessment,
+  type SiteDifficulty,
+} from "@/lib/types";
+import {
+  useInstallationQueue,
+  type ScheduleGroup,
+  type ScheduleWeekAssignment,
+} from "@/app/components/installation-queue";
+
+// Installation groups under Planning status Ready to Install: next week's
+// front line from the installation queue, laid out as the four crews' tables.
+// The queue itself — order, standby, holds — is kept on Customer Scheduling;
+// both read the same shared data through useInstallationQueue.
+
+type JobFiles = { sld: string[]; roof: string[]; site: string[] };
+type FilesState =
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "ready"; files: JobFiles };
+
+// A day is flagged for the manager once the worst forecast across the crew's
+// area reaches this chance of rain.
+const RAIN_WARNING_PERCENT = 70;
+
+// How close to the 28-working-day limit a customer gets a warning tag.
+const CLOCK_WARNING_DAYS = 5;
+
+const REGION_WEATHER: Record<Region, { latitude: number; longitude: number }> = {
+  jb: { latitude: 1.492, longitude: 103.741 },
+  kluang: { latitude: 2.031, longitude: 103.318 },
+};
+
+const DAY_LABEL = new Intl.DateTimeFormat("en-MY", {
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+  timeZone: "UTC",
+});
+const SHORT_DATE = new Intl.DateTimeFormat("en-MY", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+function isoToUtcDate(iso: string) {
+  return new Date(`${iso}T00:00:00Z`);
+}
+
+export function dayLabel(iso: string) {
+  return DAY_LABEL.format(isoToUtcDate(iso));
+}
+
+function shortDate(iso: string | null | undefined) {
+  return iso ? SHORT_DATE.format(isoToUtcDate(iso.slice(0, 10))) : "";
+}
+
+function weekLabel(weekStart: string) {
+  const end = addDays(weekStart, 5);
+  return `${shortDate(weekStart).replace(/ \d{4}$/, "")} – ${shortDate(end)}`;
+}
+
+function titleCase(value: string) {
+  return value
+    .trim()
+    .toLocaleLowerCase("en-MY")
+    .replace(/(^|[\s(/'-])\p{L}/gu, (letter) => letter.toLocaleUpperCase("en-MY"));
+}
+
+// "(ATAP)" is how the sheet marks a tile roof on the customer's name. It is
+// shown as its own tag instead.
+function isAtap(name: string) {
+  return /\(ATAP\)/i.test(name);
+}
+
+function displayName(name: string) {
+  return titleCase(name.replace(/\(ATAP\)/gi, "").replace(/\s+/g, " "));
+}
+
+function formatPhone(value: string) {
+  const digits = value.replace(/\D/g, "");
+  if (!digits) return "";
+  const local = digits.startsWith("60") ? `0${digits.slice(2)}` : digits;
+  return local.length >= 9
+    ? `${local.slice(0, 3)}-${local.slice(3, 6)} ${local.slice(6)}`
+    : value;
+}
+
+function panelText(job: InstallationJob) {
+  if (job.powerOutput.trim()) return job.powerOutput.trim();
+  if (!job.panelQuantity) return "";
+  return `${job.panelQuantity}${job.panelRating ? ` × ${job.panelRating}W` : " panels"}`;
+}
+
+function inverterText(job: InstallationJob) {
+  return (
+    job.inverterBattery.trim() ||
+    job.derivedInverterModel ||
+    (job.inverter === "Not available" ? "" : job.inverter)
+  );
+}
+
+function phaseText(job: InstallationJob) {
+  if (job.phase === "Single phase") return "Single";
+  if (job.phase === "Three phase") return "Three";
+  return "–";
+}
+
+function townOf(job: InstallationJob) {
+  return titleCase(job.city || "") || postcodeOf(job) || "Unknown area";
+}
+
+export const SLOT_LABEL: Record<Slot, string> = {
+  am: "9am",
+  pm: "2pm",
+  full: "Full day",
+};
+
+const DIFFICULTY_LABEL: Record<SiteDifficulty, string> = {
+  easy: "Easy",
+  medium: "Medium",
+  hard: "Hard",
+};
+
+// Keywords in the remark that signal the customer should be held / removed
+// from this week's Propose to Install and returned to Ready to Install.
+const HOLD_KEYWORDS = [
+  "reschedule",
+  "on hold",
+  "hold",
+  "renovation",
+  "construction",
+  "book date",
+  "booked on",
+  "to arrange",
+  "arrange",
+  "postpone",
+  "delay",
+  "pending",
+  "cancel",
+  "not ready",
+  "unavailable",
+  "overseas",
+];
+
+function containsHoldKeyword(text: string): boolean {
+  if (!text.trim()) return false;
+  const lower = text.toLowerCase();
+  return HOLD_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+function isImageUrl(url: string) {
+  return /\.(jpe?g|png|webp|gif|bmp|heic)(\?|$)/i.test(url);
+}
+
+function isVideoUrl(url: string) {
+  return /\.(mov|mp4|m4v|webm)(\?|$)/i.test(url);
+}
+
+type SlotRef = { weekStart: string; team: TeamNumber; date: string; slot: Slot };
+
+function slotsConflict(a: Slot, b: Slot) {
+  return a === "full" || b === "full" || a === b;
+}
+
+function stockAllows(candidate: Candidate, date: string, slot: Slot) {
+  if (!candidate.stockDate) return true;
+  return slot === "pm" ? candidate.stockDate <= date : candidate.stockDate < date;
+}
+
+type DropMove = "queue" | "day" | "hold";
+type Panel =
+  | { kind: "drop"; jobId: string; ref: SlotRef }
+  | { kind: "files"; jobId: string };
+
+export default function ReadyToInstallSchedule({
+  readyJobs,
+  jobById,
+  groups,
+  weekAssignments,
+  assessments,
+  onSaveAssessment,
+  draft,
+  onChangeDraft,
+  onBook,
+  onBatchBook,
+  onShowOnMap,
+  mapJobId,
+  onOpenInQueue,
+  focusJobId,
+  todayIso,
+  onSaveJob,
+  teams,
+}: {
+  readyJobs: InstallationJob[];
+  jobById: Map<string, InstallationJob>;
+  groups: ScheduleGroup[];
+  weekAssignments: ScheduleWeekAssignment[];
+  assessments: Record<string, SiteAssessment>;
+  onSaveAssessment: (jobId: string, assessment: SiteAssessment) => void;
+  draft: ScheduleDraft | null;
+  onChangeDraft: (draft: ScheduleDraft) => void;
+  // Books one confirmed customer: a group and its start time, the same records
+  // Installation groups keeps for every booking.
+  onBook: (group: ScheduleGroup, assignment: ScheduleWeekAssignment) => void;
+  onBatchBook?: (
+    bookings: { group: ScheduleGroup; assignment: ScheduleWeekAssignment }[],
+  ) => void;
+  onShowOnMap: (jobId: string) => void;
+  mapJobId: string | null;
+  // Opens the customer in the queue on Customer Scheduling.
+  onOpenInQueue: (jobId: string) => void;
+  // A customer to scroll to and highlight, arriving from the queue.
+  focusJobId: string | null;
+  todayIso: string;
+  onSaveJob?: (job: InstallationJob) => void;
+  teams?: { id: string; name: string; role: string; siteSupervisor?: string; members?: string[] }[];
+}) {
+  const {
+    draft: scheduleDraft,
+    frontWeek: weekStart,
+    candidateById,
+    booked,
+    coordsFor,
+    schedule,
+    positions,
+    queue,
+    queueNumber,
+    standby,
+  } = useInstallationQueue({
+    readyJobs,
+    jobById,
+    groups,
+    weekAssignments,
+    assessments,
+    draft,
+    todayIso,
+  });
+
+  const availableInstallTeams = useMemo(() => {
+    const set = new Set<string>();
+    if (teams) {
+      teams.filter((t) => t.role !== "wiring").forEach((t) => set.add(t.name));
+    }
+    groups.forEach((g) => {
+      if (g.installationTeam) set.add(g.installationTeam);
+    });
+    if (set.size === 0) {
+      ["Installation Team A", "Installation Team B", "Installation Team C", "Installation Team D"].forEach((t) => set.add(t));
+    }
+    return Array.from(set);
+  }, [teams, groups]);
+
+  const availableWiringTeams = useMemo(() => {
+    const set = new Set<string>();
+    if (teams) {
+      teams.filter((t) => t.role === "wiring").forEach((t) => set.add(t.name));
+    }
+    groups.forEach((g) => {
+      if (g.wiringTeam) set.add(g.wiringTeam);
+    });
+    if (set.size === 0) {
+      ["Wiring Team 1", "Wiring Team 2", "Wiring Team 3", "Wiring Team 4"].forEach((t) => set.add(t));
+    }
+    return Array.from(set);
+  }, [teams, groups]);
+
+  const availableSupervisors = useMemo(() => {
+    const set = new Set<string>();
+    if (teams) {
+      teams.forEach((t) => {
+        if (t.siteSupervisor) set.add(t.siteSupervisor);
+      });
+    }
+    groups.forEach((g) => {
+      g.supervisors?.forEach((s) => {
+        if (s) set.add(s);
+      });
+    });
+    return Array.from(set);
+  }, [teams, groups]);
+
+  function checkAndGraduateTeam(
+    teamNum: TeamNumber,
+    crews: Partial<Record<TeamNumber, TeamCrewAssignment>>,
+  ) {
+    const crew = crews[teamNum];
+    const inst = crew?.installationTeam?.trim() || "";
+    const wir = crew?.wiringTeam?.trim() || "";
+    const sup = crew?.siteSupervisor?.trim() || "";
+
+    // All 3 fields must be filled
+    if (!inst || !wir || !sup) return;
+
+    // Find all slotted jobs for this team in the proposed schedule that aren't booked yet
+    const teamSchedule = schedule.teams.find((t) => t.team === teamNum);
+    if (!teamSchedule) return;
+
+    const entriesToMove: { jobId: string; date: string; slot: Slot }[] = [];
+    teamSchedule.days.forEach((day) => {
+      day.entries.forEach((entry) => {
+        if (entry.jobId && entry.source !== "booked") {
+          entriesToMove.push({
+            jobId: entry.jobId,
+            date: day.date,
+            slot: entry.slot,
+          });
+        }
+      });
+    });
+
+    if (entriesToMove.length === 0) return;
+
+    const wiringMembers = crew?.membersText
+      ? crew.membersText
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+
+    const bookings = entriesToMove.map((item) => {
+      const job = jobById.get(item.jobId);
+      const town = job ? townOf(job) : "";
+      const id = crypto.randomUUID();
+      return {
+        group: {
+          id,
+          name: `Team ${teamNum} · ${town}`,
+          area: town,
+          installationDate: item.date,
+          installationEndDate: item.date,
+          jobIds: [item.jobId],
+          installationTeam: inst,
+          wiringTeam: wir,
+          supervisors: [sup],
+          wiringMembers,
+          teamLabel: `Team ${teamNum}`,
+        } as ScheduleGroup,
+        assignment: {
+          id: crypto.randomUUID(),
+          teamId: "",
+          startDate: `${item.date}T${SLOT_TIME[item.slot]}`,
+          installationGroupId: id,
+        } as ScheduleWeekAssignment,
+      };
+    });
+
+    if (onBatchBook) {
+      onBatchBook(bookings);
+    } else {
+      bookings.forEach((b) => onBook(b.group, b.assignment));
+    }
+
+    let nextDraft: ScheduleDraft = {
+      ...scheduleDraft,
+      teamCrews: crews,
+    };
+    entriesToMove.forEach((item) => {
+      nextDraft = withoutJob(nextDraft, item.jobId);
+    });
+    onChangeDraft(nextDraft);
+
+    setNotice(
+      `Team ${teamNum} (${entriesToMove.length} customer${
+        entriesToMove.length === 1 ? "" : "s"
+      }) moved to Arranged Installation with ${inst}, ${wir} and ${sup}.`,
+    );
+  }
+
+  function updateCrewField(team: TeamNumber, field: keyof TeamCrewAssignment, value: string) {
+    const currentCrew = scheduleDraft.teamCrews?.[team] || {};
+    const nextCrews = {
+      ...(scheduleDraft.teamCrews || {}),
+      [team]: {
+        ...currentCrew,
+        [field]: value,
+      },
+    };
+    onChangeDraft({
+      ...scheduleDraft,
+      teamCrews: nextCrews,
+    });
+
+    const inst = (field === "installationTeam" ? value : (currentCrew.installationTeam ?? "")).trim();
+    const wir = (field === "wiringTeam" ? value : (currentCrew.wiringTeam ?? "")).trim();
+    const sup = (field === "siteSupervisor" ? value : (currentCrew.siteSupervisor ?? "")).trim();
+
+    const isOptionMatch =
+      (field === "installationTeam" && availableInstallTeams.includes(value.trim())) ||
+      (field === "wiringTeam" && availableWiringTeams.includes(value.trim())) ||
+      (field === "siteSupervisor" && availableSupervisors.includes(value.trim()));
+
+    if (isOptionMatch && inst && wir && sup) {
+      checkAndGraduateTeam(team, nextCrews);
+    }
+  }
+
+  function handleCrewBlur(team: TeamNumber, field: keyof TeamCrewAssignment, value: string) {
+    const currentCrew = scheduleDraft.teamCrews?.[team] || {};
+    const nextCrews = {
+      ...(scheduleDraft.teamCrews || {}),
+      [team]: {
+        ...currentCrew,
+        [field]: value,
+      },
+    };
+    checkAndGraduateTeam(team, nextCrews);
+  }
+
+  const [panel, setPanel] = useState<Panel | null>(null);
+  const [filesByJob, setFilesByJob] = useState<Record<string, FilesState>>({});
+  const [notice, setNotice] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState<Record<string, string>>({});
+  const [panelDraft, setPanelDraft] = useState<Record<string, string>>({});
+  const [inverterDraft, setInverterDraft] = useState<Record<string, string>>({});
+  const [remarkDraft, setRemarkDraft] = useState<Record<string, string>>({});
+
+  function handlePanelChange(jobId: string, value: string) {
+    setPanelDraft((prev) => ({ ...prev, [jobId]: value }));
+  }
+
+  function handlePanelBlur(job: InstallationJob) {
+    const draftVal = panelDraft[job.id];
+    if (draftVal !== undefined && draftVal !== job.powerOutput) {
+      onSaveJob?.({ ...job, powerOutput: draftVal });
+    }
+  }
+
+  function handleInverterChange(jobId: string, value: string) {
+    setInverterDraft((prev) => ({ ...prev, [jobId]: value }));
+  }
+
+  function handleInverterBlur(job: InstallationJob) {
+    const draftVal = inverterDraft[job.id];
+    if (draftVal !== undefined && draftVal !== job.inverterBattery) {
+      onSaveJob?.({ ...job, inverterBattery: draftVal });
+    }
+  }
+
+  function handleRemarkChange(jobId: string, value: string) {
+    setRemarkDraft((prev) => ({ ...prev, [jobId]: value }));
+  }
+
+  function handleRemarkBlur(job: InstallationJob) {
+    const draftVal = remarkDraft[job.id];
+    if (draftVal !== undefined && draftVal !== (job.installationRemarks || "")) {
+      onSaveJob?.({ ...job, installationRemarks: draftVal });
+
+      // Auto-remove: if the remark contains hold/remove keywords, pull the
+      // customer out of this week's schedule and return them to the
+      // Ready to Install queue automatically.
+      if (containsHoldKeyword(draftVal)) {
+        const position = positions.get(job.id);
+        if (position) {
+          const next: ScheduleDraft = {
+            ...scheduleDraft,
+            placements: scheduleDraft.placements.filter((p) => p.jobId !== job.id),
+            removals: [
+              ...scheduleDraft.removals,
+              { jobId: job.id, weekStart, remark: draftVal.trim() },
+            ],
+          };
+          onChangeDraft(next);
+          setNotice(
+            `${displayName(job.customerName)} moved back to Ready to Install (remark: "${draftVal.trim()}").`,
+          );
+        }
+      }
+    }
+  }
+  // The drop-out form. One panel is open at a time, so one set of fields
+  // serves it.
+  const [dropMove, setDropMove] = useState<DropMove>("queue");
+  const [dropDay, setDropDay] = useState<{ date: string; slot: Slot } | null>(null);
+  const [remark, setRemark] = useState("");
+  const [holdReasonChoice, setHoldReasonChoice] = useState<HoldReason>("customer");
+  const [returnOn, setReturnOn] = useState("");
+  const [replacementId, setReplacementId] = useState<string | null | undefined>(
+    undefined,
+  );
+  const [weather, setWeather] = useState<Record<Region, Record<string, DailyWeather>>>({
+    jb: {},
+    kluang: {},
+  });
+
+  function openPanel(next: Panel | null) {
+    setPanel(next);
+    setDropMove("queue");
+    setDropDay(null);
+    setRemark("");
+    setHoldReasonChoice("customer");
+    setReturnOn("");
+    setReplacementId(undefined);
+  }
+
+  // Arriving from the queue: bring that customer's row into view.
+  useEffect(() => {
+    if (!focusJobId) return;
+    const row = document.getElementById(`rti-row-${focusJobId}`);
+    row?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focusJobId, schedule]);
+
+  // Load the photos the first time a customer's viewer is opened.
+  const filesJobId = panel?.kind === "files" ? panel.jobId : null;
+  useEffect(() => {
+    if (!filesJobId || filesByJob[filesJobId]) return;
+    const jobId = filesJobId;
+    setFilesByJob((current) => ({ ...current, [jobId]: { status: "loading" } }));
+    void (async () => {
+      try {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/files`, {
+          cache: "no-store",
+        });
+        const body = (await response.json()) as JobFiles & { error?: string };
+        if (!response.ok) throw new Error(body.error || "Could not load the photos.");
+        setFilesByJob((current) => ({ ...current, [jobId]: { status: "ready", files: body } }));
+      } catch (error) {
+        setFilesByJob((current) => ({
+          ...current,
+          [jobId]: {
+            status: "error",
+            message: error instanceof Error ? error.message : "Could not load the photos.",
+          },
+        }));
+      }
+    })();
+  }, [filesJobId, filesByJob]);
+
+  // Rain outlook for the two bases, once.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const [jb, kluang] = await Promise.all([
+        fetchDailyWeather([REGION_WEATHER.jb]).catch(() => ({})),
+        fetchDailyWeather([REGION_WEATHER.kluang]).catch(() => ({})),
+      ]);
+      if (!cancelled) setWeather({ jb, kluang });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /* ------------------------------ draft edits ------------------------------ */
+
+  function bookedAt(ref: SlotRef) {
+    return booked.some(
+      (item) =>
+        item.team === ref.team && item.date === ref.date && slotsConflict(item.slot, ref.slot),
+    );
+  }
+
+  function withoutJob(next: ScheduleDraft, jobId: string): ScheduleDraft {
+    return {
+      ...next,
+      placements: next.placements.filter((placement) => placement.jobId !== jobId),
+      removals: next.removals.filter(
+        (removal) => !(removal.jobId === jobId && removal.weekStart === weekStart),
+      ),
+    };
+  }
+
+  // Puts a customer into a slot by hand. Anyone placed there by hand before is
+  // bumped back to the queue; a slot holding only a suggestion re-plans around
+  // it.
+  function placementDraft(base: ScheduleDraft, jobId: string, target: SlotRef): ScheduleDraft {
+    const hard = assessments[jobId]?.difficulty === "hard";
+    const slot: Slot = hard ? "full" : target.slot === "full" ? "am" : target.slot;
+    const cleared = withoutJob(base, jobId);
+    return {
+      ...cleared,
+      placements: [
+        ...cleared.placements.filter(
+          (placement) =>
+            !(
+              placement.weekStart === target.weekStart &&
+              placement.team === target.team &&
+              placement.date === target.date &&
+              slotsConflict(placement.slot, slot)
+            ),
+        ),
+        { jobId, weekStart: target.weekStart, team: target.team, date: target.date, slot } as Placement,
+      ],
+    };
+  }
+
+  function addToSlot(jobId: string, target: SlotRef) {
+    if (bookedAt(target)) {
+      setNotice("That slot is already booked. Pick another slot.");
+      return;
+    }
+    const crew = scheduleDraft.teamCrews?.[target.team];
+    const inst = crew?.installationTeam?.trim() || "";
+    const wir = crew?.wiringTeam?.trim() || "";
+    const sup = crew?.siteSupervisor?.trim() || "";
+    if (inst && wir && sup) {
+      confirm(jobId, target.team, target.date, target.slot);
+    } else {
+      onChangeDraft(placementDraft(scheduleDraft, jobId, target));
+      setNotice(null);
+    }
+  }
+
+  // Confirm: the customer agreed, so the slot becomes a booking.
+  function confirm(jobId: string, team: TeamNumber, date: string, slot: Slot) {
+    const job = jobById.get(jobId);
+    if (!job) return;
+    const id = crypto.randomUUID();
+    const town = townOf(job);
+    const crew = scheduleDraft.teamCrews?.[team];
+    const wiringMembers = crew?.membersText
+      ? crew.membersText
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+    onBook(
+      {
+        id,
+        name: `Team ${team} · ${town}`,
+        area: town,
+        installationDate: date,
+        installationEndDate: date,
+        jobIds: [jobId],
+        installationTeam: crew?.installationTeam || "",
+        wiringTeam: crew?.wiringTeam || "",
+        supervisors: crew?.siteSupervisor ? [crew.siteSupervisor] : [],
+        wiringMembers,
+        teamLabel: `Team ${team}`,
+      },
+      {
+        id: crypto.randomUUID(),
+        teamId: "",
+        startDate: `${date}T${SLOT_TIME[slot]}`,
+        installationGroupId: id,
+      },
+    );
+    onChangeDraft(withoutJob(scheduleDraft, jobId));
+    setNotice(
+      `${displayName(job.customerName)} is scheduled for Team ${team}, ${dayLabel(date)} ${SLOT_LABEL[slot]}.`,
+    );
+  }
+
+  // Standbys who could take a freed slot: same side of Johor, not a hard roof
+  // when only half the day is free, stock in time, and within reach of the
+  // other house that day.
+  function standbyFor(ref: SlotRef, droppedJobId: string) {
+    let partnerId: string | null = null;
+    positions.forEach((position, jobId) => {
+      if (jobId !== droppedJobId && position.team === ref.team && position.date === ref.date) {
+        partnerId = jobId;
+      }
+    });
+    const partnerCoords = partnerId ? coordsFor(partnerId) : null;
+    return standby.filter((candidate) => {
+      if (candidate.job.id === droppedJobId) return false;
+      if (candidate.region !== TEAM_REGION[ref.team]) return false;
+      if (ref.slot !== "full" && candidate.difficulty === "hard") return false;
+      if (!stockAllows(candidate, ref.date, ref.slot)) return false;
+      if (partnerCoords && candidate.coords) {
+        return distanceKm(partnerCoords, candidate.coords) <= MAX_RADIUS_KM;
+      }
+      return true;
+    });
+  }
+
+  function applyDrop(jobId: string, ref: SlotRef, replacement: string | null) {
+    let next = withoutJob(scheduleDraft, jobId);
+    if (dropMove === "day") {
+      if (!dropDay?.date) {
+        setNotice("Choose the day and time to move them to.");
+        return;
+      }
+      const target: SlotRef = { ...ref, date: dropDay.date, slot: dropDay.slot };
+      if (bookedAt(target)) {
+        setNotice("That slot is already booked. Pick another day or time.");
+        return;
+      }
+      next = placementDraft(next, jobId, target);
+    } else {
+      next = {
+        ...next,
+        removals: [...next.removals, { jobId, weekStart, remark: remark.trim() }],
+      };
+      if (dropMove === "hold") {
+        next = {
+          ...next,
+          holds: [
+            ...next.holds.filter((hold) => !(hold.jobId === jobId && hold.to === null)),
+            {
+              jobId,
+              reason: holdReasonChoice,
+              remark: remark.trim(),
+              from: todayIso,
+              to: null,
+              returnOn: returnOn || null,
+            },
+          ],
+        };
+      }
+    }
+    if (replacement) next = placementDraft(next, replacement, ref);
+    onChangeDraft(next);
+    openPanel(null);
+    setNotice(null);
+  }
+
+  function saveDifficulty(jobId: string, difficulty: SiteDifficulty) {
+    onSaveAssessment(jobId, {
+      difficulty,
+      note: noteDraft[jobId] ?? assessments[jobId]?.note ?? "",
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  function saveNote(jobId: string) {
+    const current = assessments[jobId];
+    const note = noteDraft[jobId];
+    if (!current || note === undefined || note === current.note) return;
+    onSaveAssessment(jobId, { difficulty: current.difficulty, note, updatedAt: new Date().toISOString() });
+  }
+
+  function setRainDay(date: string, choice: "hold" | "proceed" | "clear") {
+    const without = (list: string[]) => list.filter((item) => item !== date);
+    onChangeDraft({
+      ...scheduleDraft,
+      rainHoldDays:
+        choice === "hold" ? [...without(scheduleDraft.rainHoldDays), date] : without(scheduleDraft.rainHoldDays),
+      rainProceedDays:
+        choice === "proceed"
+          ? [...without(scheduleDraft.rainProceedDays), date]
+          : without(scheduleDraft.rainProceedDays),
+    });
+  }
+
+  /* -------------------------------- derived -------------------------------- */
+
+  // Rain forecast rendered directly on the slot.
+  function renderSlotRain(teamNum: TeamNumber, date: string) {
+    const region = TEAM_REGION[teamNum];
+    const dayWeather = weather[region]?.[date];
+    const chance = dayWeather?.rainProbability ?? 0;
+    const isHeld = scheduleDraft.rainHoldDays.includes(date);
+    const isRain = chance >= RAIN_WARNING_PERCENT;
+
+    if (isHeld) {
+      return (
+        <div className="rti-slot-rain is-held" role="status" title={`${dayLabel(date)} is on hold for rain`}>
+          <span className="rti-slot-rain-label">
+            <CloudRain size={12} /> Rain hold
+          </span>
+        </div>
+      );
+    }
+
+    if (isRain) {
+      return (
+        <div
+          className="rti-slot-rain is-warning"
+          role="status"
+          title={`Rain expected on ${dayLabel(date)}: ${chance}% chance`}
+        >
+          <span className="rti-slot-rain-label">
+            <CloudRain size={12} /> Rain expected ({chance}%)
+          </span>
+        </div>
+      );
+    }
+
+    return null;
+  }
+
+
+
+
+  /* ------------------------------- rendering ------------------------------- */
+
+  // Shown only when it matters: over the 28-working-day limit, or close to it.
+  function clockWarning(candidate: Candidate | undefined) {
+    if (!candidate || candidate.daysLeft === null) return null;
+    if (candidate.daysLeft < 0) {
+      return <span className="rti-tag is-hard">{-candidate.daysLeft} days over {WORKING_DAY_LIMIT}</span>;
+    }
+    if (candidate.daysLeft <= CLOCK_WARNING_DAYS) {
+      return <span className="rti-tag is-medium">{candidate.daysLeft} days left</span>;
+    }
+    return null;
+  }
+
+  function tags(job: InstallationJob, candidate: Candidate | undefined, entry?: SlotEntry) {
+    const clock = clockWarning(candidate);
+    const widened = entry?.widenedKm ? (
+      <span className="rti-tag is-warning">Widened to {entry.widenedKm} km</span>
+    ) : null;
+
+    if (!clock && !widened) return null;
+
+    return (
+      <span className="rti-tags">
+        {clock}
+        {widened}
+      </span>
+    );
+  }
+
+
+
+  function sedaCell(job: InstallationJob) {
+    if (job.sedaApprovedDate) return shortDate(job.sedaApprovedDate);
+    if (isSedaApproved(job.sedaStatus)) {
+      return <span className="rti-muted">Approved, date not recorded</span>;
+    }
+    return <span className="rti-warning-text">{job.sedaStatus || "Pending"}</span>;
+  }
+
+  function filesButton(job: InstallationJob) {
+    const counts = [
+      job.sldUrl ? "SLD" : null,
+      job.roofPhotoCount ? `${job.roofPhotoCount} roof` : null,
+      job.sitePhotoCount ? `${job.sitePhotoCount} site` : null,
+    ].filter(Boolean);
+    if (!counts.length) return <span className="rti-warning-text">No SLD</span>;
+    const open = filesJobId === job.id;
+    return (
+      <button
+        type="button"
+        className={`rti-link${open ? " is-active" : ""}`}
+        onClick={() => openPanel(open ? null : { kind: "files", jobId: job.id })}
+        title="Show the SLD, roof and site-assessment photos"
+      >
+        <FileText size={13} />
+        {job.sldUrl ? "View" : "Photos"}
+        <span className="rti-muted">{counts.join(" · ")}</span>
+      </button>
+    );
+  }
+
+  function filesPanel(job: InstallationJob) {
+    const state = filesByJob[job.id];
+    const assessment = assessments[job.id];
+    const renderFiles = (urls: string[], label: string) =>
+      urls.length === 0 ? (
+        <p className="rti-muted">No {label.toLowerCase()}.</p>
+      ) : (
+        <div className="rti-thumbs">
+          {urls.map((url, index) =>
+            isImageUrl(url) ? (
+              <a key={url} href={url} target="_blank" rel="noopener noreferrer">
+                <img src={url} alt={`${label} ${index + 1}`} loading="lazy" />
+              </a>
+            ) : (
+              <a key={url} className="rti-file-link" href={url} target="_blank" rel="noopener noreferrer">
+                <FileText size={14} />
+                {isVideoUrl(url) ? "Video" : label} {index + 1}
+              </a>
+            ),
+          )}
+        </div>
+      );
+    return (
+      <div className="rti-files">
+        <div className="rti-files-head">
+          <strong>{displayName(job.customerName)} · SLD and site photos</strong>
+          <button type="button" className="icon-button" aria-label="Close photos" onClick={() => openPanel(null)}>
+            <X size={15} />
+          </button>
+        </div>
+        {!state || state.status === "loading" ? (
+          <p className="rti-muted">Loading…</p>
+        ) : state.status === "error" ? (
+          <p className="rti-warning-text">{state.message}</p>
+        ) : (
+          <div className="rti-files-body">
+            <section>
+              <h4>SLD drawing</h4>
+              {renderFiles(state.files.sld, "SLD")}
+            </section>
+            <section>
+              <h4>Roof photos</h4>
+              {renderFiles(state.files.roof, "Roof photo")}
+            </section>
+            <section>
+              <h4>Site assessment</h4>
+              {renderFiles(state.files.site, "Site photo")}
+            </section>
+          </div>
+        )}
+        <div className="rti-rate">
+          <span>Difficulty</span>
+          {(Object.keys(DIFFICULTY_LABEL) as SiteDifficulty[]).map((level) => (
+            <button
+              key={level}
+              type="button"
+              className={`rti-rate-button is-${level}${assessment?.difficulty === level ? " is-selected" : ""}`}
+              aria-pressed={assessment?.difficulty === level}
+              onClick={() => saveDifficulty(job.id, level)}
+            >
+              {DIFFICULTY_LABEL[level]}
+            </button>
+          ))}
+          <input
+            value={noteDraft[job.id] ?? assessment?.note ?? ""}
+            placeholder="e.g. atap, 2 storey, old tiles"
+            aria-label={`Difficulty note for ${displayName(job.customerName)}`}
+            onChange={(event) => setNoteDraft((current) => ({ ...current, [job.id]: event.target.value }))}
+            onBlur={() => saveNote(job.id)}
+          />
+          <span className="rti-muted">Hard jobs take the whole day.</span>
+        </div>
+      </div>
+    );
+  }
+
+  function dropPanel(jobId: string, ref: SlotRef) {
+    const job = jobById.get(jobId);
+    const options = standbyFor(ref, jobId);
+    const chosen = replacementId === undefined ? (options[0]?.job.id ?? null) : replacementId;
+    return (
+      <div className="rti-move">
+        <strong>
+          {displayName(job?.customerName ?? "")} — Hold or Remove from Team {ref.team}, {dayLabel(ref.date)}{" "}
+          {SLOT_LABEL[ref.slot]}
+        </strong>
+        <div className="rti-move-row">
+          <span className="rti-muted">Action:</span>
+          <select value={dropMove} aria-label="Action" onChange={(event) => setDropMove(event.target.value as DropMove)}>
+            <option value="queue">Remove from this week (return to Ready to Install queue)</option>
+            <option value="hold">Put on hold</option>
+            <option value="day">Move to another day this week</option>
+          </select>
+          {dropMove === "day" && (
+            <>
+              <select
+                value={dropDay?.date ?? ""}
+                aria-label="Day"
+                onChange={(event) => setDropDay({ date: event.target.value, slot: dropDay?.slot ?? "am" })}
+              >
+                <option value="">Day…</option>
+                {weekDays(weekStart)
+                  .filter((date) => date !== ref.date)
+                  .map((date) => (
+                    <option key={date} value={date}>
+                      {dayLabel(date)}
+                    </option>
+                  ))}
+              </select>
+              <select
+                value={dropDay?.slot ?? "am"}
+                aria-label="Time"
+                onChange={(event) => setDropDay({ date: dropDay?.date ?? "", slot: event.target.value as Slot })}
+              >
+                <option value="am">9am</option>
+                <option value="pm">2pm</option>
+              </select>
+            </>
+          )}
+          {dropMove === "hold" && (
+            <>
+              <select
+                value={holdReasonChoice}
+                aria-label="Hold reason"
+                onChange={(event) => setHoldReasonChoice(event.target.value as HoldReason)}
+              >
+                {(Object.keys(HOLD_LABEL) as HoldReason[]).map((reason) => (
+                  <option key={reason} value={reason}>
+                    {HOLD_LABEL[reason]}
+                    {reason === "customer" ? " (clock paused)" : " (clock keeps running)"}
+                  </option>
+                ))}
+              </select>
+              <label className="rti-inline">
+                Back on
+                <input type="date" value={returnOn} onChange={(event) => setReturnOn(event.target.value)} />
+              </label>
+            </>
+          )}
+          <input
+            className="rti-remark"
+            value={remark}
+            placeholder="Manager remark, e.g. customer overseas / delay requested"
+            aria-label="Manager remark"
+            onChange={(event) => setRemark(event.target.value)}
+          />
+        </div>
+        <div className="rti-move-row">
+          <span className="rti-muted">Replacement from Ready to Install:</span>
+          <select
+            value={chosen ?? ""}
+            aria-label="Replacement taking the slot"
+            onChange={(event) => setReplacementId(event.target.value || null)}
+          >
+            {options.map((candidate, idx) => (
+              <option key={candidate.job.id} value={candidate.job.id}>
+                {idx === 0 ? "★ Next in line eligible: " : ""}{displayName(candidate.job.customerName)} · {townOf(candidate.job)}
+                {candidate.difficulty ? ` · ${DIFFICULTY_LABEL[candidate.difficulty]}` : ""}
+              </option>
+            ))}
+            <option value="">Leave slot for automatic suggestion to fill</option>
+          </select>
+          {!options.length && <span className="rti-muted">No standby fits this slot criteria.</span>}
+          <button type="button" className="button primary" onClick={() => applyDrop(jobId, ref, chosen)}>
+            Confirm & Replace
+          </button>
+          <button type="button" className="button secondary" onClick={() => openPanel(null)}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const COLUMN_COUNT = 11;
+
+  return (
+    <div className="rti">
+      <div className="rti-toolbar">
+        <div className="rti-week-nav">
+          <strong>Next week · {weekLabel(weekStart)}</strong>
+        </div>
+      </div>
+
+
+
+
+      {notice && (
+        <div className="rti-notice" role="status">
+          {notice}
+          <button type="button" className="icon-button" aria-label="Dismiss" onClick={() => setNotice(null)}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {schedule.teams.map((team) => {
+        const filled = team.days.reduce(
+          (total, day) =>
+            total +
+            day.entries.reduce((sum, entry) => sum + (entry.jobId ? (entry.slot === "full" ? 2 : 1) : 0), 0),
+          0,
+        );
+        return (
+          <div className={`table-wrap rti-team rti-team-${team.team}`} key={team.team}>
+            <table>
+              <colgroup>
+                <col className="rti-col-date" />
+                <col className="rti-col-customer" />
+                <col className="rti-col-address" />
+                <col className="rti-col-phone" />
+                <col className="rti-col-email" />
+                <col className="rti-col-agent" />
+                <col className="rti-col-phase" />
+                <col className="rti-col-panel" />
+                <col className="rti-col-inverter" />
+                <col className="rti-col-sld" />
+                <col className="rti-col-remark" />
+              </colgroup>
+              <thead>
+                <tr className="rti-team-band rti-team-band-sub">
+                  <th colSpan={COLUMN_COUNT}>
+                    <span>Week {weekLabel(weekStart)}</span>
+                    <span>
+                      Hard {team.hard} · far {team.far}
+                    </span>
+                    <span>{Math.min(filled, 12)} of 12 slots filled</span>
+                  </th>
+                </tr>
+                <tr className="rti-team-band rti-team-band-main">
+                  <th colSpan={COLUMN_COUNT}>
+                    <div className="rti-team-header-main">
+                      <div className="rti-team-title-wrap">
+                        <span className="rti-team-name">Team {team.team}</span>
+                        <span className="rti-team-base">{REGION_LABEL[TEAM_REGION[team.team]]}</span>
+                      </div>
+                      <div className="rti-crew-grid">
+                        <div className="rti-crew-col">
+                          <label className="rti-crew-label" htmlFor={`crew-inst-${team.team}`}>
+                            Installation Team
+                          </label>
+                          <input
+                            id={`crew-inst-${team.team}`}
+                            type="text"
+                            list={`install-teams-list-${team.team}`}
+                            className="rti-crew-input"
+                            value={scheduleDraft.teamCrews?.[team.team]?.installationTeam ?? ""}
+                            placeholder="Assign installation team..."
+                            onChange={(e) => updateCrewField(team.team, "installationTeam", e.target.value)}
+                            onBlur={(e) => handleCrewBlur(team.team, "installationTeam", e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
+                          />
+                          <datalist id={`install-teams-list-${team.team}`}>
+                            {availableInstallTeams.map((name) => (
+                              <option key={name} value={name} />
+                            ))}
+                          </datalist>
+                        </div>
+
+                        <div className="rti-crew-col">
+                          <label className="rti-crew-label" htmlFor={`crew-wir-${team.team}`}>
+                            Wiring Team
+                          </label>
+                          <input
+                            id={`crew-wir-${team.team}`}
+                            type="text"
+                            list={`wiring-teams-list-${team.team}`}
+                            className="rti-crew-input"
+                            value={scheduleDraft.teamCrews?.[team.team]?.wiringTeam ?? ""}
+                            placeholder="Assign wiring team..."
+                            onChange={(e) => updateCrewField(team.team, "wiringTeam", e.target.value)}
+                            onBlur={(e) => handleCrewBlur(team.team, "wiringTeam", e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
+                          />
+                          <datalist id={`wiring-teams-list-${team.team}`}>
+                            {availableWiringTeams.map((name) => (
+                              <option key={name} value={name} />
+                            ))}
+                          </datalist>
+                        </div>
+
+                        <div className="rti-crew-col">
+                          <label className="rti-crew-label" htmlFor={`crew-sup-${team.team}`}>
+                            Site Supervisor
+                          </label>
+                          <input
+                            id={`crew-sup-${team.team}`}
+                            type="text"
+                            list={`supervisors-list-${team.team}`}
+                            className="rti-crew-input"
+                            value={scheduleDraft.teamCrews?.[team.team]?.siteSupervisor ?? ""}
+                            placeholder="Assign supervisor..."
+                            onChange={(e) => updateCrewField(team.team, "siteSupervisor", e.target.value)}
+                            onBlur={(e) => handleCrewBlur(team.team, "siteSupervisor", e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
+                          />
+                          <datalist id={`supervisors-list-${team.team}`}>
+                            {availableSupervisors.map((name) => (
+                              <option key={name} value={name} />
+                            ))}
+                          </datalist>
+                        </div>
+
+                        <div className="rti-crew-col">
+                          <label className="rti-crew-label" htmlFor={`crew-mem-${team.team}`}>
+                            Team member
+                          </label>
+                          <input
+                            id={`crew-mem-${team.team}`}
+                            type="text"
+                            className="rti-crew-input"
+                            value={scheduleDraft.teamCrews?.[team.team]?.membersText ?? ""}
+                            placeholder="e.g. Ali, Ah Hock, Kumar..."
+                            onChange={(e) => updateCrewField(team.team, "membersText", e.target.value)}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </th>
+                </tr>
+                <tr>
+                  <th>Slot</th>
+                  <th>Customer</th>
+                  <th>Address</th>
+                  <th>Phone</th>
+                  <th>Email</th>
+                  <th>Agent</th>
+                  <th>Phase</th>
+                  <th>Panel</th>
+                  <th>Inverter</th>
+                  <th>SLD</th>
+                  <th>Remark</th>
+                </tr>
+              </thead>
+              <tbody>
+                {team.days.flatMap((day) =>
+                  day.entries.map((entry, index) => {
+                    const ref: SlotRef = { weekStart, team: team.team, date: day.date, slot: entry.slot };
+                    const key = `${day.date}-${entry.slot}-${index}`;
+                    const slotCell = (
+                      <td className="rti-date">
+                        <strong>{dayLabel(day.date)}</strong>
+                        <span>{SLOT_LABEL[entry.slot]}</span>
+                        {renderSlotRain(team.team, day.date)}
+                      </td>
+                    );
+                    if (!entry.jobId) {
+                      return (
+                        <tr key={key} className="rti-open-row">
+                          {slotCell}
+                          <td colSpan={COLUMN_COUNT - 1}>
+                            <span className="rti-muted">
+                              Open{entry.openReason ? ` · ${entry.openReason}` : ""}
+                            </span>
+                            {entry.openReason !== "Rain day on hold" && standby.length > 0 && (
+                              <select
+                                className="rti-add-select"
+                                value=""
+                                aria-label={`Add a standby to Team ${team.team} on ${dayLabel(day.date)} ${SLOT_LABEL[entry.slot]}`}
+                                onChange={(event) => {
+                                  if (event.target.value) addToSlot(event.target.value, ref);
+                                }}
+                              >
+                                <option value="">Add a standby…</option>
+                                {standby.slice(0, 60).map((candidate) => (
+                                  <option key={candidate.job.id} value={candidate.job.id}>
+                                    {displayName(candidate.job.customerName)} · {townOf(candidate.job)}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    }
+                    const job = jobById.get(entry.jobId);
+                    if (!job) return null;
+                    const candidate = candidateById.get(job.id);
+                    const isBooked = entry.source === "booked";
+                    const dropHere = panel?.kind === "drop" && panel.jobId === job.id ? panel : null;
+                    const focused = focusJobId === job.id;
+                    return (
+                      <Fragment key={key}>
+                        <tr
+                          id={`rti-row-${job.id}`}
+                          className={`rti-row is-${entry.source}${focused ? " is-focused" : ""}`}
+                        >
+                          {slotCell}
+                          <td>
+                            <div className="rti-customer-wrap">
+                              <button
+                                type="button"
+                                className="rti-name-link"
+                                title={`SEDA approved: ${job.sedaApprovedDate ? shortDate(job.sedaApprovedDate) : isSedaApproved(job.sedaStatus) ? "Approved" : (job.sedaStatus || "Pending")} · 2nd payment: ${shortDate(job.secondPaymentDate) || "–"}\nClick to see in queue`}
+                                onClick={() => onOpenInQueue(job.id)}
+                              >
+                                {displayName(job.customerName)}
+                              </button>
+                              <div className="rti-customer-popover" role="tooltip">
+                                <div className="rti-customer-popover-row">
+                                  <span className="rti-customer-popover-label">SEDA approved:</span>
+                                  <span className="rti-customer-popover-val">{sedaCell(job)}</span>
+                                </div>
+                                <div className="rti-customer-popover-row">
+                                  <span className="rti-customer-popover-label">2nd payment:</span>
+                                  <span className="rti-customer-popover-val">{shortDate(job.secondPaymentDate) || "–"}</span>
+                                </div>
+                              </div>
+                            </div>
+                            <span className="rti-muted rti-invoice">{job.invoiceNumber}</span>
+                            {tags(job, isBooked ? undefined : candidate, entry)}
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className={`rti-link rti-address${mapJobId === job.id ? " is-active" : ""}`}
+                              onClick={() => onShowOnMap(job.id)}
+                              title="Show on the map"
+                            >
+                              <MapPin size={13} />
+                              {titleCase(job.address) || "Address not available"}
+                            </button>
+                            {entry.pairDistanceKm !== undefined && (
+                              <span className="rti-muted">
+                                {entry.pairDistanceKm < 1
+                                  ? "Same area as the other house"
+                                  : `${entry.pairDistanceKm.toFixed(1)} km from the other house`}
+                              </span>
+                            )}
+                          </td>
+                          <td>{formatPhone(job.customerPhone) || "–"}</td>
+                          <td className="rti-email">{job.customerEmail || "–"}</td>
+                          <td className="rti-agent">{job.agentName?.trim().toUpperCase() || "–"}</td>
+                          <td>{phaseText(job)}</td>
+                          <td className="rti-edit-cell">
+                            <textarea
+                              className="rti-cell-textarea"
+                              rows={2}
+                              value={panelDraft[job.id] ?? panelText(job)}
+                              placeholder="e.g. 16 Jinko 650W"
+                              aria-label={`Panel for ${displayName(job.customerName)}`}
+                              onChange={(e) => handlePanelChange(job.id, e.target.value)}
+                              onBlur={() => handlePanelBlur(job)}
+                            />
+                          </td>
+                          <td className="rti-edit-cell">
+                            <textarea
+                              className="rti-cell-textarea"
+                              rows={2}
+                              value={inverterDraft[job.id] ?? inverterText(job)}
+                              placeholder="e.g. 10kW Hybrid"
+                              aria-label={`Inverter for ${displayName(job.customerName)}`}
+                              onChange={(e) => handleInverterChange(job.id, e.target.value)}
+                              onBlur={() => handleInverterBlur(job)}
+                            />
+                          </td>
+                          <td>
+                            {filesButton(job)}
+                            {assessments[job.id]?.difficulty && (
+                              <span
+                                className={`rti-tag is-${assessments[job.id].difficulty}`}
+                                style={{ marginTop: 4, display: "block", width: "fit-content" }}
+                                title={
+                                  assessments[job.id]?.note?.trim()
+                                    ? `Remarks: ${assessments[job.id].note.trim()}`
+                                    : `Difficulty: ${assessments[job.id].difficulty}`
+                                }
+                              >
+                                {assessments[job.id].difficulty}
+                              </span>
+                            )}
+                          </td>
+                          <td className="rti-edit-cell rti-remark-cell">
+                            <textarea
+                              className="rti-cell-textarea"
+                              rows={2}
+                              value={remarkDraft[job.id] ?? (job.installationRemarks || "")}
+                              placeholder="Add remark…"
+                              aria-label={`Remark for ${displayName(job.customerName)}`}
+                              onChange={(e) => handleRemarkChange(job.id, e.target.value)}
+                              onBlur={() => handleRemarkBlur(job)}
+                            />
+                          </td>
+                        </tr>
+                        {dropHere && (
+                          <tr className="rti-panel-row">
+                            <td colSpan={COLUMN_COUNT}>{dropPanel(job.id, dropHere.ref)}</td>
+                          </tr>
+                        )}
+                        {filesJobId === job.id && (
+                          <tr className="rti-panel-row">
+                            <td colSpan={COLUMN_COUNT}>{filesPanel(job)}</td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  }),
+                )}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
+      {queueNumber.size === 0 && (
+        <p className="rti-muted">Nobody is in the queue right now.</p>
+      )}
+    </div>
+  );
+}

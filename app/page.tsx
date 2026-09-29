@@ -51,14 +51,24 @@ import {
   APPROVAL_PAYMENT_PERCENT,
   READY_PAYMENT_PERCENT,
   hasReachedPaymentPercent,
+  isSedaApproved,
   normalizeAvailabilityStatus,
   type CalendarDayDetail,
   type CustomerAvailabilityStatus,
   type InstallationJob,
   type JobUpdate,
   type JobVisit,
+  type SiteAssessment,
   type TeamAssignment,
 } from "@/lib/types";
+import {
+  EMPTY_DRAFT,
+  REGION_LABEL,
+  TEAM_REGION,
+  normalizeDraft,
+  type ScheduleDraft,
+  type TeamNumber,
+} from "@/lib/schedule-suggest";
 import type { UpdateStatus } from "@/lib/electron-desktop";
 import {
   MALAYSIA_PUBLIC_HOLIDAYS,
@@ -79,6 +89,13 @@ import { ROUTE_METHOD_LABELS } from "@/lib/routing";
 import SidebarCalendar from "@/app/components/SidebarCalendar";
 import GroupMultiSelect from "@/app/components/GroupMultiSelect";
 import WeatherGlyph from "@/app/components/WeatherGlyph";
+import ReadyToInstallSchedule from "@/app/components/ReadyToInstallSchedule";
+import DepositScheduleTable, {
+  isJobReschedule,
+  isJobPending,
+  isJobNeedAttention,
+  getJobReviewColor,
+} from "@/app/components/DepositScheduleTable";
 
 const PlanningMap = dynamic(() => import("@/app/components/PlanningMap"), {
   ssr: false,
@@ -105,11 +122,11 @@ const DASHBOARD_PAGES: Record<DashboardView, { title: string; blurb: string }> =
     blurb: "Find ready customers and suggest location groups for team planning.",
   },
   groups: {
-    title: "Installation groups",
+    title: "Installation Schedule",
     blurb: "Customers grouped by location and installation date.",
   },
   delivery: {
-    title: "Stock delivery",
+    title: "Delivery Schedule",
     blurb: "Group customer materials into warehouse delivery routes.",
   },
 };
@@ -427,6 +444,10 @@ const HIDDEN_CREW_COLUMNS_STORAGE_KEY =
 // page has something to show before the shared store answers, or if it
 // cannot be reached at all.
 const FROZEN_JOBS_STORAGE_KEY = "installation-ops-frozen-jobs-v1";
+// Local caches of the shared roof ratings and schedule draft, for the same
+// reason as the frozen-jobs key above.
+const SITE_ASSESSMENTS_STORAGE_KEY = "installation-ops-site-assessments-v1";
+const SCHEDULE_DRAFT_STORAGE_KEY = "installation-ops-schedule-draft-v1";
 
 function formatPersonName(name: string) {
   return name
@@ -804,15 +825,16 @@ function hasPlanningEligibility(job: InstallationJob) {
   );
 }
 
-// How long a job has been waiting, expressed as a sortable number. A missing or
-// unparseable 2nd payment date sorts last, matching the pipeline table.
+// The 2nd payment date as a sortable number, negated so the most recent
+// payment ranks lowest and leads — the office works from the current month
+// down. A missing or unparseable date sorts last, matching the pipeline table.
 function secondPaymentRank(job: InstallationJob): number {
   if (!job.secondPaymentDate) return Number.POSITIVE_INFINITY;
   const time = new Date(job.secondPaymentDate).getTime();
-  return Number.isNaN(time) ? Number.POSITIVE_INFINITY : time;
+  return Number.isNaN(time) ? Number.POSITIVE_INFINITY : -time;
 }
 
-// Oldest 2nd payment first, so the longest-waiting customer leads.
+// Newest 2nd payment first, so the current month leads.
 function compareBySecondPayment(a: InstallationJob, b: InstallationJob) {
   const order = secondPaymentRank(a) - secondPaymentRank(b);
   // Two undated jobs give Infinity - Infinity, which is NaN — fall back to the
@@ -875,11 +897,11 @@ function matchesSecondPaymentSearch(job: InstallationJob, query: string) {
   return matchesDateSearch(job.secondPaymentDate, query);
 }
 
-// A location group is ranked by its longest-waiting customer, so the most
-// overdue postcode surfaces first.
+// A location group is ranked by its most recent 2nd payment, so the postcodes
+// with this month's customers surface first.
 function groupSecondPaymentRank(customers: InstallationJob[]): number {
   return customers.reduce(
-    (oldest, job) => Math.min(oldest, secondPaymentRank(job)),
+    (newest, job) => Math.min(newest, secondPaymentRank(job)),
     Number.POSITIVE_INFINITY,
   );
 }
@@ -1436,13 +1458,13 @@ const PIPELINE_STAGES = [
     value: "ready",
     label: "Ready to Install",
     note: `${READY_PAYMENT_PERCENT}%+ paid, still to install`,
-    hint: `The invoice has reached ${READY_PAYMENT_PERCENT}% or more, and the customer's availability is Not Set, Propose or Reschedule — the job is cleared and still to be installed. A booked date does not move the job out of here; it just fills the date in beside the customer. Only payments from 1 Jan 2026 onward are counted.`,
+    hint: `The invoice has reached ${READY_PAYMENT_PERCENT}% or more, and the customer's availability is Not Set or Reschedule — the job is cleared and still to be installed. A booked date does not move the job out of here; it just fills the date in beside the customer. Only payments from 1 Jan 2026 onward are counted.`,
   },
   {
     value: "pending_complete",
     label: "Pending Complete",
     note: "Marked Pending Complete",
-    hint: "The customer's availability is set to Pending Complete, or a remark says something is being waited on — e.g. \"pending wiring\", \"Pending batt\". \"Pending SEDA Approval\" does not count. Does not require a date or delivery run to already be booked — the status is enough on its own.",
+    hint: "The customer's availability is set to Pending Complete or Propose, or a remark says something is being waited on — e.g. \"pending wiring\", \"Pending batt\". \"Pending SEDA Approval\" does not count. Does not require a date or delivery run to already be booked — the status is enough on its own.",
   },
   {
     value: "complete",
@@ -1465,11 +1487,12 @@ type StageValue = (typeof PIPELINE_STAGES)[number]["value"];
 // filter ran, so the option could only ever return nothing — selecting it now
 // admits them instead. Kept as a list rather than deleted so a future stage
 // that genuinely cannot apply here has somewhere to go.
-const UNPLANNABLE_STAGES: StageValue[] = [];
-
-const PLANNING_STAGES = PIPELINE_STAGES.filter(
-  (stage) => !UNPLANNABLE_STAGES.includes(stage.value),
-);
+const PLANNING_STAGES: { value: string; label: string }[] = [
+  { value: "deposit", label: "Deposit" },
+  { value: "to_arrange", label: "Ready to Install" },
+  { value: "propose", label: "Propose to Install" },
+  { value: "arranged", label: "Arranged Installation" },
+];
 
 const stageIcons: Record<StageValue, React.ReactNode> = {
   deposit: <Wallet size={18} />,
@@ -1693,7 +1716,15 @@ function pipelineStagesOf(
     return stages;
   }
 
-  // Not Set, Propose and Reschedule all land here — but only once the invoice
+  // A Propose customer has a date on the table, so they sit with Pending
+  // Complete rather than in the Ready to Install worklist. Tested after
+  // "complete" so the job still moves on once its date has passed.
+  if (job.customerAvailabilityStatus === "propose") {
+    stages.add("pending_complete");
+    return stages;
+  }
+
+  // Not Set and Reschedule land here — but only once the invoice
   // has actually cleared the threshold. Below it the customer is still paying,
   // whatever has been agreed about dates.
   if (hasCountedSecondPayment(job)) {
@@ -1731,6 +1762,37 @@ function matchesPipelineStage(
   todayIso: string,
   lookup: PlanningLookup,
 ) {
+  if (stage === "propose") {
+    const group = lookup.groupByJobId.get(job.id) ?? null;
+    if (
+      job.customerAvailabilityStatus === "complete" ||
+      isCompleteInstallation(job, todayIso, group)
+    ) {
+      return false;
+    }
+    return job.customerAvailabilityStatus === "propose";
+  }
+  if (stage === "to_arrange") {
+    const group = lookup.groupByJobId.get(job.id) ?? null;
+    if (
+      job.customerAvailabilityStatus === "complete" ||
+      isCompleteInstallation(job, todayIso, group)
+    ) {
+      return false;
+    }
+    return (
+      pipelineStagesOf(job, todayIso, lookup).has("ready") &&
+      isSedaApproved(job.sedaStatus)
+    );
+  }
+  if (stage === "arranged") {
+    const stages = pipelineStagesOf(job, todayIso, lookup);
+    return (
+      stages.has("ready") ||
+      stages.has("pending_complete") ||
+      stages.has("complete")
+    );
+  }
   // ALL_JOBS, and anything unrecognised, leaves the list untouched.
   if (!PIPELINE_STAGES.some((item) => item.value === stage)) return true;
   return pipelineStagesOf(job, todayIso, lookup).has(stage as StageValue);
@@ -1742,6 +1804,45 @@ function matchesPipelineStage(
 // "available" from before the rename would otherwise put a finished job back
 // to Propose on every load, undoing on the client exactly what the server had
 // just written to the column.
+// The suggested week's map: every Ready to Install customer, one marker group
+// per postcode — not the town suggestions, which stop at five a town.
+function readyScheduleMapGroups(readyJobs: InstallationJob[]) {
+  const byPostcode = new Map<
+    string,
+    {
+      id: string;
+      town: string;
+      postcode: string;
+      state: string;
+      customers: {
+        id: string;
+        name: string;
+        address: string;
+        paymentPercent: number;
+      }[];
+    }
+  >();
+  readyJobs.forEach((job) => {
+    const postcode = postcodeForJob(job);
+    const key = postcode || `no-postcode-${job.id}`;
+    const entry = byPostcode.get(key) ?? {
+      id: key,
+      town: job.city || townshipForJob(job),
+      postcode,
+      state: job.state || "",
+      customers: [],
+    };
+    entry.customers.push({
+      id: job.id,
+      name: job.customerName,
+      address: job.address,
+      paymentPercent: job.paymentPercent,
+    });
+    byPostcode.set(key, entry);
+  });
+  return Array.from(byPostcode.values());
+}
+
 function applyJobUpdates(
   jobs: InstallationJob[],
   updates: Record<string, JobUpdate>,
@@ -1787,6 +1888,10 @@ type SharedOpsState = {
   teamWeekAssignments: TeamWeekAssignment[];
   jobUpdates: Record<string, JobUpdate>;
   frozenJobIds: string[];
+  // Both newer than the rest, so a stored state from an older build can lack
+  // them; read through `?? {}`.
+  siteAssessments?: Record<string, SiteAssessment>;
+  scheduleDraft?: ScheduleDraft;
 };
 
 function readLocalJson<T>(key: string, fallback: T): T {
@@ -2270,6 +2375,10 @@ function jobHasEv(job: InstallationJob): boolean {
   );
 }
 
+function jobIsSolar(job: InstallationJob): boolean {
+  return !jobHasEv(job);
+}
+
 function jobHasOm(job: InstallationJob): boolean {
   if (isCleaningServiceJob(job)) return true;
   if (job.visits?.some((visit) => /o\s*&\s*m/i.test(visit.kind ?? ""))) {
@@ -2305,6 +2414,7 @@ function jobIsResidential(job: InstallationJob): boolean {
 
 function matchesWorkCategory(job: InstallationJob, filter: string): boolean {
   if (filter === ALL_JOBS) return true;
+  if (filter === "solar") return jobIsSolar(job);
   if (filter === "ev") return jobHasEv(job);
   if (filter === "om") return jobHasOm(job);
   if (filter === "commercial") return jobIsCommercial(job);
@@ -2955,6 +3065,11 @@ export default function DashboardPage() {
   // Scheduling, Installation groups and Stock delivery; it keeps listing here
   // on Customer details so it can be found again and unfrozen.
   const [frozenJobIds, setFrozenJobIds] = useState<Set<string>>(new Set());
+  // Customer Scheduling's roof ratings and schedule draft — see SharedOpsState.
+  const [siteAssessments, setSiteAssessments] = useState<
+    Record<string, SiteAssessment>
+  >({});
+  const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft>(EMPTY_DRAFT);
   // Lifted out of Team planning so the summary cards above it can be scoped to
   // the same filters while that page is active — see planningScopedJobs below.
   const [planningFilter, setPlanningFilter] = useState<string>(ALL_JOBS);
@@ -3126,6 +3241,8 @@ export default function DashboardPage() {
       setTeamWeekAssignments(state.teamWeekAssignments);
       // Older saved states predate freezing, so it can be absent.
       setFrozenJobIds(new Set(state.frozenJobIds ?? []));
+      setSiteAssessments(state.siteAssessments ?? {});
+      setScheduleDraft(normalizeDraft(state.scheduleDraft));
       jobUpdatesRef.current = state.jobUpdates;
       groupsRef.current = migratedGroups;
       setJobs((current) =>
@@ -3159,6 +3276,8 @@ export default function DashboardPage() {
         teamWeekAssignments: readLocalJson(TEAM_WEEKS_STORAGE_KEY, []),
         jobUpdates: readLocalJson(STORAGE_KEY, {}),
         frozenJobIds: readLocalJson(FROZEN_JOBS_STORAGE_KEY, []),
+        siteAssessments: readLocalJson(SITE_ASSESSMENTS_STORAGE_KEY, {}),
+        scheduleDraft: readLocalJson(SCHEDULE_DRAFT_STORAGE_KEY, EMPTY_DRAFT),
       };
       try {
         const response = await fetchWithRetry("/api/ops-state", {
@@ -3497,9 +3616,10 @@ export default function DashboardPage() {
         }
         if (!a.secondPaymentDate) return 1;
         if (!b.secondPaymentDate) return -1;
+        // Newest first, so the current month sits at the top.
         const dateOrder =
-          new Date(a.secondPaymentDate).getTime() -
-          new Date(b.secondPaymentDate).getTime();
+          new Date(b.secondPaymentDate).getTime() -
+          new Date(a.secondPaymentDate).getTime();
         return dateOrder || a.customerName.localeCompare(b.customerName);
       });
   }, [pipelineScopedJobs, status, todayIso, planningLookup]);
@@ -3570,6 +3690,15 @@ export default function DashboardPage() {
     todayIso,
     planningLookup,
   ]);
+
+  const solarTotalCount = useMemo(
+    () => activeJobs.filter(jobIsSolar).length,
+    [activeJobs],
+  );
+  const evTotalCount = useMemo(
+    () => activeJobs.filter(jobHasEv).length,
+    [activeJobs],
+  );
 
   // The report reads the whole customer list, not the filtered pipeline: it
   // answers "where does the business stand", which a search box left open on
@@ -3805,6 +3934,26 @@ export default function DashboardPage() {
     persistOps({ teamWeekAssignments: next });
   }
 
+  // Only the one rating travels: the store merges siteAssessments per job id,
+  // so sending the whole map would be wasted bytes, not a correctness issue.
+  function saveSiteAssessment(jobId: string, assessment: SiteAssessment) {
+    setSiteAssessments((current) => {
+      const next = { ...current, [jobId]: assessment };
+      window.localStorage.setItem(
+        SITE_ASSESSMENTS_STORAGE_KEY,
+        JSON.stringify(next),
+      );
+      return next;
+    });
+    persistOps({ siteAssessments: { [jobId]: assessment } });
+  }
+
+  function saveScheduleDraft(next: ScheduleDraft) {
+    setScheduleDraft(next);
+    window.localStorage.setItem(SCHEDULE_DRAFT_STORAGE_KEY, JSON.stringify(next));
+    persistOps({ scheduleDraft: next });
+  }
+
   function toggleTheme() {
     const next = !darkMode;
     setDarkMode(next);
@@ -3956,13 +4105,69 @@ export default function DashboardPage() {
           )}
         </button>
 
+        <div className="sidebar-category-cards" role="group" aria-label="Job category filters">
+          <button
+            type="button"
+            className={`sidebar-category-card card-solar${workCategoryFilter === "solar" ? " is-active" : ""}`}
+            onClick={() =>
+              setWorkCategoryFilter((current) =>
+                current === "solar" ? ALL_JOBS : "solar",
+              )
+            }
+            title={
+              sidebarCollapsed
+                ? `Solar: ${solarTotalCount} jobs${workCategoryFilter === "solar" ? " (active, click to clear)" : " (click to filter)"}`
+                : undefined
+            }
+            aria-pressed={workCategoryFilter === "solar"}
+          >
+            <div className="card-top">
+              <span className="card-label">Solar</span>
+              <div className="card-icon">
+                <Sun size={15} />
+              </div>
+            </div>
+            <strong className="card-count">{solarTotalCount}</strong>
+            <small className="card-note">
+              {workCategoryFilter === "solar" ? "Active filter" : "Installations"}
+            </small>
+          </button>
+
+          <button
+            type="button"
+            className={`sidebar-category-card card-ev${workCategoryFilter === "ev" ? " is-active" : ""}`}
+            onClick={() =>
+              setWorkCategoryFilter((current) =>
+                current === "ev" ? ALL_JOBS : "ev",
+              )
+            }
+            title={
+              sidebarCollapsed
+                ? `EV: ${evTotalCount} jobs${workCategoryFilter === "ev" ? " (active, click to clear)" : " (click to filter)"}`
+                : undefined
+            }
+            aria-pressed={workCategoryFilter === "ev"}
+          >
+            <div className="card-top">
+              <span className="card-label">EV</span>
+              <div className="card-icon">
+                <Zap size={15} />
+              </div>
+            </div>
+            <strong className="card-count">{evTotalCount}</strong>
+            <small className="card-note">
+              {workCategoryFilter === "ev" ? "Active filter" : "Chargers"}
+            </small>
+          </button>
+        </div>
+
         <nav className="dashboard-tabs" aria-label="Installation workspaces">
           {(
             [
               ["pipeline", "Customer details"],
               ["teams", "Customer Scheduling"],
-              ["groups", "Installation groups"],
-              ["delivery", "Stock delivery"],
+              ["groups", "Installation Schedule"],
+              ["delivery", "Delivery Schedule"],
             ] as [DashboardView, string][]
           ).map(([value, label]) => (
             <button
@@ -4141,11 +4346,17 @@ export default function DashboardPage() {
           // its guards already exclude installed jobs, so the stage can never
           // apply there. Clicking the card while viewing Team planning would
           // set a filter value the dropdown has no matching option for.
-          const plannable = PLANNING_STAGES.some((s) => s.value === stage.value);
+          const isArrangedStage = ["ready", "pending_complete", "complete"].includes(stage.value);
+          const plannable =
+            PLANNING_STAGES.some((s) => s.value === stage.value) ||
+            (isArrangedStage && PLANNING_STAGES.some((s) => s.value === "arranged"));
           const disabledHere = onPlanning && !plannable;
           const active =
             !disabledHere &&
-            (onPlanning ? planningFilter === stage.value : status === stage.value);
+            (onPlanning
+              ? planningFilter === stage.value ||
+                (planningFilter === "arranged" && isArrangedStage)
+              : status === stage.value);
           return (
             <Metric
               key={stage.value}
@@ -4172,7 +4383,8 @@ export default function DashboardPage() {
                   ? undefined
                   : () => {
                       if (onPlanning) {
-                        setPlanningFilter(active ? ALL_JOBS : stage.value);
+                        const targetFilter = isArrangedStage ? "arranged" : stage.value;
+                        setPlanningFilter(active ? ALL_JOBS : targetFilter);
                         return;
                       }
                       setStatus(active ? ALL_JOBS : stage.value);
@@ -4600,6 +4812,14 @@ export default function DashboardPage() {
             onTogglePin={togglePinJob}
             workCategoryFilter={workCategoryFilter}
             onWorkCategoryFilterChange={setWorkCategoryFilter}
+            siteAssessments={siteAssessments}
+            onSaveSiteAssessment={saveSiteAssessment}
+            scheduleDraft={scheduleDraft}
+            onChangeScheduleDraft={saveScheduleDraft}
+            onOpenInQueue={() => {
+              setPlanningFilter("arranged");
+              setView("teams");
+            }}
           />
         )}
 
@@ -5045,7 +5265,7 @@ export default function DashboardPage() {
           >
             <div className="detail-header">
               <div>
-                <p className="eyebrow">Installation groups</p>
+                <p className="eyebrow">Installation Schedule</p>
                 <h2>Schedule &amp; assign</h2>
                 <p>Plan group dates, teams, and delivery across the month.</p>
               </div>
@@ -5195,6 +5415,11 @@ function InstallationGroupsView({
   onTogglePin,
   workCategoryFilter,
   onWorkCategoryFilterChange,
+  siteAssessments,
+  onSaveSiteAssessment,
+  scheduleDraft,
+  onChangeScheduleDraft,
+  onOpenInQueue,
 }: {
   groups: InstallationGroup[];
   jobs: InstallationJob[];
@@ -5214,6 +5439,13 @@ function InstallationGroupsView({
   onTogglePin: (id: string) => void;
   workCategoryFilter: string;
   onWorkCategoryFilterChange: (next: string) => void;
+  // Only the page's own Installation groups passes these; the copy inside the
+  // schedule popup does not, and keeps its ordinary table for Ready to Install.
+  siteAssessments?: Record<string, SiteAssessment>;
+  onSaveSiteAssessment?: (jobId: string, assessment: SiteAssessment) => void;
+  scheduleDraft?: ScheduleDraft;
+  onChangeScheduleDraft?: (draft: ScheduleDraft) => void;
+  onOpenInQueue?: (jobId: string) => void;
 }) {
   const todayIso = malaysiaToday();
   // Every customer by id, built once per jobs change and shared with the group
@@ -5234,7 +5466,7 @@ function InstallationGroupsView({
   // The same stage filter Customer Scheduling carries, reading the same
   // predicate, so "Ready to Install" means one thing across the dashboard and
   // the two pages can never disagree about which customers that is.
-  const [planningFilter, setPlanningFilter] = useState<string>(ALL_JOBS);
+  const [planningFilter, setPlanningFilter] = useState<string>("propose");
   const planningLookup = useMemo<PlanningLookup>(
     () => ({
       groupByJobId,
@@ -5245,6 +5477,39 @@ function InstallationGroupsView({
     }),
     [groupByJobId, deliveryRuns],
   );
+  // Propose to Install shows the four crews' suggested week instead of the
+  // booking table: the same customers Customer Scheduling calls Propose to
+  // Install, under the same job-type filter.
+  const showSuggestedWeek =
+    groupsWorkspace === "teams" &&
+    planningFilter === "propose" &&
+    Boolean(scheduleDraft && onChangeScheduleDraft && onSaveSiteAssessment);
+  const readyScheduleJobs = useMemo(
+    () =>
+      showSuggestedWeek
+        ? jobs.filter(
+            (job) =>
+              belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
+              !isHiddenAsCompleted(job, todayIso, groupByJobId.get(job.id)) &&
+              matchesPipelineStage(job, "to_arrange", todayIso, planningLookup) &&
+              matchesWorkCategory(job, workCategoryFilter),
+          )
+        : [],
+    [
+      showSuggestedWeek,
+      jobs,
+      groupByJobId,
+      planningLookup,
+      todayIso,
+      workCategoryFilter,
+    ],
+  );
+  const showDepositTable =
+    groupsWorkspace === "teams" && planningFilter === "deposit";
+  const showToArrangeTable =
+    groupsWorkspace === "teams" && planningFilter === "to_arrange";
+  const [awaitingReviewFilter, setAwaitingReviewFilter] = useState<string>("all");
+  const [scheduleMapJobId, setScheduleMapJobId] = useState<string | null>(null);
   const [openGroupId, setOpenGroupId] = useState<string | null>(null);
   const [showFullCalendar, setShowFullCalendar] = useState(false);
   // The full calendar opens on top of the group drawer, so it closes first.
@@ -5317,6 +5582,119 @@ function InstallationGroupsView({
   // "everything in 2026" and "every August" were both unaskable.
   const [periodFilter, setPeriodFilter] = useState("");
   const [customerQuery, setCustomerQuery] = useState("");
+
+  const depositScheduleJobs = useMemo(
+    () =>
+      showDepositTable
+        ? jobs.filter(
+            (job) =>
+              belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
+              !isHiddenAsCompleted(job, todayIso, groupByJobId.get(job.id)) &&
+              matchesPipelineStage(job, "deposit", todayIso, planningLookup) &&
+              matchesWorkCategory(job, workCategoryFilter) &&
+              (!customerQuery ||
+                job.customerName?.toLowerCase().includes(customerQuery.toLowerCase()) ||
+                job.invoiceNumber?.toLowerCase().includes(customerQuery.toLowerCase()) ||
+                job.address?.toLowerCase().includes(customerQuery.toLowerCase())),
+          )
+        : [],
+    [
+      showDepositTable,
+      jobs,
+      groupByJobId,
+      planningLookup,
+      todayIso,
+      workCategoryFilter,
+      customerQuery,
+    ],
+  );
+
+  const {
+    rescheduleCount,
+    pendingCount,
+    attentionCount,
+    newReadyCount,
+    totalReadyCount,
+  } = useMemo(() => {
+    if (!showToArrangeTable) {
+      return { rescheduleCount: 0, pendingCount: 0, attentionCount: 0, newReadyCount: 0, totalReadyCount: 0 };
+    }
+    const baseJobs = jobs.filter(
+      (job) =>
+        belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
+        !isHiddenAsCompleted(job, todayIso, groupByJobId.get(job.id)) &&
+        matchesPipelineStage(job, "to_arrange", todayIso, planningLookup) &&
+        matchesWorkCategory(job, workCategoryFilter) &&
+        (!customerQuery ||
+          job.customerName?.toLowerCase().includes(customerQuery.toLowerCase()) ||
+          job.invoiceNumber?.toLowerCase().includes(customerQuery.toLowerCase()) ||
+          job.address?.toLowerCase().includes(customerQuery.toLowerCase())),
+    );
+    let rCount = 0;
+    let pCount = 0;
+    let aCount = 0;
+    let nCount = 0;
+    for (const job of baseJobs) {
+      const isResched = isJobReschedule(job);
+      const isPend = isJobPending(job);
+      const isAttn = needsAttention(job, todayIso, groupByJobId.get(job.id)) || isJobNeedAttention(job, todayIso);
+      if (isResched) rCount++;
+      if (isPend) pCount++;
+      if (isAttn) aCount++;
+      if (!isResched && !isPend && !isAttn) nCount++;
+    }
+    return {
+      rescheduleCount: rCount,
+      pendingCount: pCount,
+      attentionCount: aCount,
+      newReadyCount: nCount,
+      totalReadyCount: baseJobs.length,
+    };
+  }, [
+    showToArrangeTable,
+    jobs,
+    groupByJobId,
+    planningLookup,
+    todayIso,
+    workCategoryFilter,
+    customerQuery,
+  ]);
+
+  const toArrangeScheduleJobs = useMemo(
+    () =>
+      showToArrangeTable
+        ? jobs.filter(
+            (job) =>
+              belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
+              !isHiddenAsCompleted(job, todayIso, groupByJobId.get(job.id)) &&
+              matchesPipelineStage(job, "to_arrange", todayIso, planningLookup) &&
+              matchesWorkCategory(job, workCategoryFilter) &&
+              (awaitingReviewFilter === "all" ||
+                (awaitingReviewFilter === "new_ready" &&
+                  !isJobReschedule(job) &&
+                  !isJobPending(job) &&
+                  !(needsAttention(job, todayIso, groupByJobId.get(job.id)) || isJobNeedAttention(job, todayIso))) ||
+                (awaitingReviewFilter === "reschedule" && isJobReschedule(job)) ||
+                (awaitingReviewFilter === "pending" && isJobPending(job)) ||
+                (awaitingReviewFilter === "attention" &&
+                  (needsAttention(job, todayIso, groupByJobId.get(job.id)) || isJobNeedAttention(job, todayIso)))) &&
+              (!customerQuery ||
+                job.customerName?.toLowerCase().includes(customerQuery.toLowerCase()) ||
+                job.invoiceNumber?.toLowerCase().includes(customerQuery.toLowerCase()) ||
+                job.address?.toLowerCase().includes(customerQuery.toLowerCase())),
+          )
+        : [],
+    [
+      showToArrangeTable,
+      jobs,
+      groupByJobId,
+      planningLookup,
+      todayIso,
+      workCategoryFilter,
+      awaitingReviewFilter,
+      customerQuery,
+    ],
+  );
 
   // Read on mount rather than in the initialiser: this component renders on
   // the server too, where localStorage does not exist.
@@ -5393,8 +5771,7 @@ function InstallationGroupsView({
   // Power Supply, Remark, Actions are always there; only the five crew
   // columns come and go. Car moved into the band header, so it no longer
   // counts as a column of its own.
-  const visibleColumnCount =
-    10 + CREW_COLUMNS.filter((column) => isCrewColumnVisible(column.key)).length;
+  const visibleColumnCount = 10;
 
   function togglePinnedWeek(blockKey: string) {
     setPinnedWeekKeys((previous) => {
@@ -5420,6 +5797,17 @@ function InstallationGroupsView({
   const [groupCarDraft, setGroupCarDraft] = useState<Record<string, string>>(
     {},
   );
+  const [groupCrewDraft, setGroupCrewDraft] = useState<
+    Record<
+      string,
+      {
+        installationTeam?: string;
+        wiringTeam?: string;
+        siteSupervisor?: string;
+        membersText?: string;
+      }
+    >
+  >({});
   const [groupSupervisorDraft, setGroupSupervisorDraft] = useState<
     Record<string, string>
   >({});
@@ -5435,6 +5823,23 @@ function InstallationGroupsView({
     return groups
       .filter((group) => group.installationDate)
       .filter((group) => matchesDateSearch(group.installationDate, periodFilter))
+      .filter((group) => {
+        if (planningFilter === "arranged") {
+          const isFullyArranged = Boolean(
+            group.installationTeam && group.wiringTeam && group.supervisors?.length,
+          );
+          if (!isFullyArranged) {
+            const bounds = weekBounds(group.installationDate);
+            if (
+              bounds?.start === "2026-10-05" ||
+              weekRangeLabel(group.installationDate).includes("5 Oct – 10 Oct 2026")
+            ) {
+              return false;
+            }
+          }
+        }
+        return true;
+      })
       .flatMap((group) =>
         // A crew booked for a week before anyone is assigned to it still gets
         // a row — otherwise a team added here would vanish the moment it was
@@ -6326,151 +6731,242 @@ function InstallationGroupsView({
     })
     .map((entry) => entry.team);
 
+  const currentPlanningTitle =
+    PLANNING_STAGES.find((stage) => stage.value === planningFilter)?.label ||
+    "Installation Schedule";
+
+  const currentPlanningSubtitle =
+    planningFilter === "deposit"
+      ? "Customer with Below 60% Payment and Pending Seda Approved"
+      : planningFilter === "to_arrange"
+      ? "Customer with Above 60% Payment and Seda Approved"
+      : planningFilter === "propose"
+      ? "Suggested customer installation dates from Ready to Install pipeline"
+      : planningFilter === "arranged"
+      ? "Customers arranged for installation (ready to install, pending complete, and complete)"
+      : "Customers grouped by location and installation date.";
+
   return (
-    <div className="planning-panel">
+    <>
       {groupsWorkspace === "teams" && (
-        <div className="planning-heading">
-          <div>
-            <h2>Installation groups</h2>
-            <p>Customers grouped by location and installation date.</p>
-          </div>
-          <div className="planning-heading-actions">
-            <div className="schedule-filters">
-              <label className="schedule-search">
-                <span>Job type</span>
-                <WorkCategorySelect
-                  value={workCategoryFilter}
-                  onChange={onWorkCategoryFilterChange}
-                />
-              </label>
-              <label className="schedule-search">
-                <span>Customer</span>
-                <input
-                  type="search"
-                  className="customer-invoice-search"
-                  value={customerQuery}
-                  onChange={(event) => setCustomerQuery(event.target.value)}
-                  placeholder="Search customer, invoice, address, site supervisor…"
-                  aria-label="Search customer name, invoice number, address or site supervisor"
-                />
-              </label>
-              <label className="schedule-search">
-                <span>Month or year</span>
-                <input
-                  type="search"
-                  className="second-payment-search"
-                  value={periodFilter}
-                  onChange={(event) => setPeriodFilter(event.target.value)}
-                  placeholder="August, 2026, August 2026…"
-                  aria-label="Filter by installation month or year"
-                />
-              </label>
-              <label className="schedule-search">
-                <span>Planning status</span>
-                <select
-                  value={planningFilter}
-                  onChange={(event) => setPlanningFilter(event.target.value)}
-                  aria-label="Filter by planning status"
-                >
-                  <option value={ALL_JOBS}>All jobs</option>
-                  {PLANNING_STAGES.map((stage) => (
-                    <option key={stage.value} value={stage.value}>
-                      {stage.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {(periodFilter ||
-                customerQuery ||
-                planningFilter !== ALL_JOBS ||
-                workCategoryFilter !== ALL_JOBS) && (
-                <button
-                  type="button"
-                  className="button secondary"
-                  onClick={() => {
-                    setPeriodFilter("");
-                    setCustomerQuery("");
-                    setPlanningFilter(ALL_JOBS);
-                    onWorkCategoryFilterChange(ALL_JOBS);
-                  }}
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-            <button className="button primary" onClick={addTeamRow}>
-              <Plus size={16} />
-              Add Team
-            </button>
+        <div className="installation-schedule-filter-bar">
+          <div className="schedule-filters">
+            <label className="schedule-search">
+              <span>Planning Status</span>
+              <select
+                value={planningFilter}
+                onChange={(event) => {
+                  setPlanningFilter(event.target.value);
+                  if (event.target.value !== "to_arrange") {
+                    setAwaitingReviewFilter("all");
+                  }
+                }}
+                aria-label="Filter by planning status"
+              >
+                <option value={ALL_JOBS}>All jobs</option>
+                {PLANNING_STAGES.map((stage) => (
+                  <option key={stage.value} value={stage.value}>
+                    {stage.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="schedule-search">
+              <span>Month or Year</span>
+              <input
+                type="search"
+                className="second-payment-search"
+                value={periodFilter}
+                onChange={(event) => setPeriodFilter(event.target.value)}
+                placeholder="August, 2026, August 2026…"
+                aria-label="Filter by installation month or year"
+              />
+            </label>
+            <label className="schedule-search">
+              <span>Customer</span>
+              <input
+                type="search"
+                className="customer-invoice-search"
+                value={customerQuery}
+                onChange={(event) => setCustomerQuery(event.target.value)}
+                placeholder="Search customer, invoice, address, site supervisor…"
+                aria-label="Search customer name, invoice number, address or site supervisor"
+              />
+            </label>
+            {(periodFilter ||
+              customerQuery ||
+              planningFilter !== "propose" ||
+              awaitingReviewFilter !== "all") && (
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => {
+                  setPeriodFilter("");
+                  setCustomerQuery("");
+                  setPlanningFilter("propose");
+                  setAwaitingReviewFilter("all");
+                }}
+              >
+                Clear
+              </button>
+            )}
           </div>
         </div>
       )}
 
-      {groupsWorkspace === "teams" && (
-        <section className="unified-team-management">
-          <div className="group-header">
+      <div className="planning-panel">
+        {groupsWorkspace === "teams" && (
+          <div className="planning-heading">
             <div>
-              <h3>Installation teams</h3>
-              <p>
-                One row per scheduled customer — team, crews, members and car,
-                the way the schedule sheet lays them out. Grouped by week,
-                newest first, then by team and crew. Team fields are shared by
-                every customer under the same crew and day.
-              </p>
+              <h2>{currentPlanningTitle}</h2>
+              <p>{currentPlanningSubtitle}</p>
             </div>
+            {!showSuggestedWeek &&
+              !showDepositTable &&
+              !showToArrangeTable &&
+              planningFilter !== "arranged" && (
+                <div className="planning-heading-actions">
+                  <button className="button primary" onClick={addTeamRow}>
+                    <Plus size={16} />
+                    Add Team
+                  </button>
+                </div>
+              )}
           </div>
-          <div className="table-wrap unified-team-table">
+        )}
+
+      {showSuggestedWeek && (
+        <div
+          className={`team-planning-workspace ready-schedule-workspace${
+            scheduleMapJobId ? "" : " map-hidden"
+          }`}
+        >
+          {scheduleMapJobId && (
+            <PlanningMap
+              focusGroupId={null}
+              highlightedGroupId={null}
+              highlightedCustomerId={scheduleMapJobId}
+              groups={readyScheduleMapGroups(readyScheduleJobs)}
+              onClose={() => setScheduleMapJobId(null)}
+            />
+          )}
+          <ReadyToInstallSchedule
+            readyJobs={readyScheduleJobs}
+            jobById={jobById}
+            groups={groups}
+            weekAssignments={weekAssignments}
+            assessments={siteAssessments ?? {}}
+            onSaveAssessment={onSaveSiteAssessment!}
+            draft={scheduleDraft ?? null}
+            onChangeDraft={onChangeScheduleDraft!}
+            onBook={(group, assignment) => {
+              // A confirmed customer becomes an ordinary booking, saved the
+              // way every other edit on this page is.
+              onGroupsChange([...groups, group as InstallationGroup]);
+              onWeekAssignmentsChange([...weekAssignments, assignment]);
+            }}
+            onBatchBook={(bookings) => {
+              const newGroups = bookings.map((b) => b.group as InstallationGroup);
+              const newAssignments = bookings.map((b) => b.assignment);
+              onGroupsChange([...groups, ...newGroups]);
+              onWeekAssignmentsChange([...weekAssignments, ...newAssignments]);
+            }}
+            onShowOnMap={(jobId) =>
+              setScheduleMapJobId((current) => (current === jobId ? null : jobId))
+            }
+            mapJobId={scheduleMapJobId}
+            onOpenInQueue={(jobId) => {
+              setPlanningFilter("to_arrange");
+            }}
+            focusJobId={null}
+            todayIso={todayIso}
+            onSaveJob={onSaveJob}
+            teams={teams}
+          />
+        </div>
+      )}
+
+      {showDepositTable && (
+        <div
+          className={`team-planning-workspace ready-schedule-workspace${
+            scheduleMapJobId ? "" : " map-hidden"
+          }`}
+        >
+          {scheduleMapJobId && (
+            <PlanningMap
+              focusGroupId={null}
+              highlightedGroupId={null}
+              highlightedCustomerId={scheduleMapJobId}
+              groups={readyScheduleMapGroups(depositScheduleJobs)}
+              onClose={() => setScheduleMapJobId(null)}
+            />
+          )}
+          <DepositScheduleTable
+            jobs={depositScheduleJobs}
+            assessments={siteAssessments ?? {}}
+            onSaveJob={onSaveJob}
+            onShowOnMap={(jobId) =>
+              setScheduleMapJobId((current) => (current === jobId ? null : jobId))
+            }
+            mapJobId={scheduleMapJobId}
+            onOpenInQueue={(jobId) => onOpenInQueue?.(jobId)}
+          />
+        </div>
+      )}
+
+      {showToArrangeTable && (
+        <div
+          className={`team-planning-workspace ready-schedule-workspace${
+            scheduleMapJobId ? "" : " map-hidden"
+          }`}
+        >
+          {scheduleMapJobId && (
+            <PlanningMap
+              focusGroupId={null}
+              highlightedGroupId={null}
+              highlightedCustomerId={scheduleMapJobId}
+              groups={readyScheduleMapGroups(toArrangeScheduleJobs)}
+              onClose={() => setScheduleMapJobId(null)}
+            />
+          )}
+          <DepositScheduleTable
+            jobs={toArrangeScheduleJobs}
+            assessments={siteAssessments ?? {}}
+            onSaveJob={onSaveJob}
+            onShowOnMap={(jobId) =>
+              setScheduleMapJobId((current) => (current === jobId ? null : jobId))
+            }
+            mapJobId={scheduleMapJobId}
+            onOpenInQueue={(jobId) => onOpenInQueue?.(jobId)}
+            emptyMessage="No ready to install customers found to arrange."
+            todayIso={todayIso}
+            showAwaitingReviewFilter={true}
+            awaitingReviewFilter={awaitingReviewFilter}
+            onAwaitingReviewChange={setAwaitingReviewFilter}
+            newReadyCount={newReadyCount}
+            rescheduleCount={rescheduleCount}
+            pendingCount={pendingCount}
+            attentionCount={attentionCount}
+          />
+        </div>
+      )}
+
+      {groupsWorkspace === "teams" && !showSuggestedWeek && !showDepositTable && !showToArrangeTable && (
+        <section className="unified-team-management">
+          <div className="table-wrap rti-team unified-team-table">
             <table>
               <colgroup>
-                <col className="col-customer" />
-                <col className="col-datetime" />
-                <col className="col-address" />
-                <col className="col-power-supply" />
-                <col className="col-power-output" />
-                <col className="col-inverter-battery" />
-                <col className="col-inverter-type" />
-                <col className="col-agent" />
-                {isCrewColumnVisible("team") && <col className="col-team" />}
-                {isCrewColumnVisible("installationTeam") && (
-                  <col className="col-install" />
-                )}
-                {isCrewColumnVisible("wiringTeam") && (
-                  <col className="col-wiring" />
-                )}
-                {isCrewColumnVisible("wiringMembers") && (
-                  <col className="col-members" />
-                )}
-                {isCrewColumnVisible("supervisor") && (
-                  <col className="col-supervisor" />
-                )}
-                <col className="col-remark" />
-                <col className="col-actions" />
+                <col className="rti-col-date" />
+                <col className="rti-col-customer" />
+                <col className="rti-col-address" />
+                <col className="rti-col-phone" />
+                <col className="rti-col-email" />
+                <col className="rti-col-agent" />
+                <col className="rti-col-phase" />
+                <col className="rti-col-panel" />
+                <col className="rti-col-inverter" />
+                <col className="rti-col-remark" />
               </colgroup>
-              <thead>
-                <tr>
-                  <th>Customer</th>
-                  <th>Date &amp; time</th>
-                  <th>Address</th>
-                  <th>Power Supply</th>
-                  <th>Power Output</th>
-                  <th>Package</th>
-                  <th>Inverter</th>
-                  <th>Agent</th>
-                  {isCrewColumnVisible("team") && <th>Team</th>}
-                  {isCrewColumnVisible("installationTeam") && (
-                    <th>Installation Team</th>
-                  )}
-                  {isCrewColumnVisible("wiringTeam") && <th>Wiring Team</th>}
-                  {isCrewColumnVisible("wiringMembers") && (
-                    <th>Wiring Team Members</th>
-                  )}
-                  {isCrewColumnVisible("supervisor") && (
-                    <th>Site supervisor</th>
-                  )}
-                  <th>Remark</th>
-                  <th aria-label="Actions" />
-                </tr>
-              </thead>
               <tbody>
                 {scheduleRows.map(({ rowKey, group, job, jobId, blockKey }, index) => {
                   // A band whenever the crew, the week or the supervisor
@@ -6522,175 +7018,392 @@ function InstallationGroupsView({
                   const addingWiring =
                     newTeamDraft?.rowKey === rowKey &&
                     newTeamDraft.field === "wiringTeam";
+                  const rawTeamNum = (() => {
+                    const raw = `${group.teamLabel || ""} ${group.name || ""}`;
+                    const m = raw.match(/\bteam\s*(\d+)\b/i) || (group.teamLabel || "").match(/\b(\d+)\b/);
+                    return m ? Number(m[1]) : null;
+                  })();
+                  const isStandardTeam = rawTeamNum !== null && rawTeamNum >= 1 && rawTeamNum <= 4;
+                  const teamNum = isStandardTeam ? rawTeamNum : null;
+                  const teamClass = isStandardTeam
+                    ? `rti-team-${teamNum}`
+                    : "rti-team-other rti-team-default";
+                  const teamTitle = (() => {
+                    if (rawTeamNum) return `Team ${rawTeamNum}`;
+                    if (!isPlaceholder(group.teamLabel)) return group.teamLabel!;
+                    return group.name || "Team";
+                  })();
+                  const baseLabel = (() => {
+                    if (group.area && !isPlaceholder(group.area)) {
+                      const trimmed = group.area.trim();
+                      return /base$/i.test(trimmed) ? trimmed : `${trimmed} base`;
+                    }
+                    if (teamNum && (teamNum as TeamNumber) in TEAM_REGION) {
+                      return REGION_LABEL[TEAM_REGION[teamNum as TeamNumber]];
+                    }
+                    return null;
+                  })();
+                  const crewDetails = [
+                    isPlaceholder(group.installationTeam)
+                      ? ""
+                      : `Install: ${group.installationTeam}`,
+                    isPlaceholder(group.wiringTeam) ? "" : `Wiring: ${group.wiringTeam}`,
+                    group.supervisors.filter((name) => !isPlaceholder(name)).length
+                      ? `Site Supervisor: ${group.supervisors.filter((name) => !isPlaceholder(name)).join(", ")}`
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join("  ·  ");
+                  const defaultInstallTeam =
+                    group.installationTeam ||
+                    (teamNum === 1
+                      ? "Installation Team A"
+                      : teamNum === 2
+                        ? "Installation Team C"
+                        : teamNum === 3
+                          ? "Installation Team B"
+                          : teamNum === 4
+                            ? "Installation Team D"
+                            : "");
+                  const defaultWiringTeam =
+                    group.wiringTeam ||
+                    (teamNum ? `Wiring Team ${teamNum}` : "");
+                  const defaultSupervisor =
+                    group.supervisors && group.supervisors.length > 0 && !group.supervisors.every(isPlaceholder)
+                      ? group.supervisors.filter((name) => !isPlaceholder(name)).join(", ")
+                      : "";
+                  const defaultMembers =
+                    group.wiringMembers && group.wiringMembers.length > 0
+                      ? group.wiringMembers.join(", ")
+                      : "";
                   return (
                     <Fragment key={rowKey}>
                     {startsBlock && bandCrew && (
-                      <tr
-                        className={`schedule-band${
-                          pinnedWeekKeys.has(blockKey) ? " is-pinned" : ""
-                        }`}
-                      >
-                        <th colSpan={visibleColumnCount} scope="colgroup">
-                          <button
-                            type="button"
-                            className="schedule-band-pin"
-                            aria-pressed={pinnedWeekKeys.has(blockKey)}
-                            aria-label={`${
-                              pinnedWeekKeys.has(blockKey) ? "Unpin" : "Pin"
-                            } week ${weekRangeLabel(group.installationDate)}`}
-                            title={
-                              pinnedWeekKeys.has(blockKey)
-                                ? "Unpin this week"
-                                : "Pin this week to the top"
-                            }
-                            onClick={() => togglePinnedWeek(blockKey)}
-                          >
-                            {pinnedWeekKeys.has(blockKey) ? (
-                              <PinOff size={14} />
-                            ) : (
-                              <Pin size={14} />
-                            )}
-                          </button>
-                          <span className="schedule-band-week">
-                            Week {weekRangeLabel(group.installationDate)}
-                          </span>
-                          <span className="schedule-band-crew">
-                            {bandCrew}
-                          </span>
-                          {/* Car used to be its own column; it moved here
-                              because — like Team, Install and Wiring — it is
-                              one value for the whole crew, not one per
-                              customer row. Editable whenever any row in this
-                              block is, same as those. */}
-                          {isGroupEditing ? (
-                            <span className="schedule-band-car-editor">
-                              <div className="member-tag-input">
-                                <div className="member-tag-list">
-                                  {cars.map((car) => (
-                                    <span className="member-tag" key={car}>
-                                      {car}
-                                      <button
-                                        type="button"
-                                        aria-label={`Remove ${car}`}
-                                        onClick={() =>
-                                          removeGroupListItem(group, "cars", car)
-                                        }
-                                      >
-                                        <X size={12} />
-                                      </button>
-                                    </span>
-                                  ))}
-                                </div>
-                                <div className="member-tag-add">
-                                  <input
-                                    list="car-options"
-                                    value={groupCarDraft[group.id] ?? ""}
-                                    onChange={(event) =>
-                                      setGroupCarDraft((prev) => ({
-                                        ...prev,
-                                        [group.id]: event.target.value,
-                                      }))
-                                    }
-                                    onKeyDown={(event) => {
-                                      if (event.key === "Enter") {
-                                        event.preventDefault();
-                                        addGroupListItem(
-                                          group,
-                                          "cars",
-                                          groupCarDraft[group.id] ?? "",
-                                        );
-                                        setGroupCarDraft((prev) => ({
-                                          ...prev,
-                                          [group.id]: "",
-                                        }));
-                                      }
-                                    }}
-                                    placeholder="Add car"
-                                    aria-label="Add car"
-                                  />
-                                  <button
-                                    type="button"
-                                    className="icon-button"
-                                    aria-label="Add car"
-                                    onClick={() => {
-                                      addGroupListItem(
-                                        group,
-                                        "cars",
-                                        groupCarDraft[group.id] ?? "",
-                                      );
-                                      setGroupCarDraft((prev) => ({
-                                        ...prev,
-                                        [group.id]: "",
-                                      }));
-                                    }}
-                                  >
-                                    <Plus size={14} />
-                                  </button>
-                                </div>
-                              </div>
-                            </span>
-                          ) : (
-                            cars.length > 0 && (
-                              <span className="schedule-band-car">
-                                Car: {cars.join(", ")}
-                              </span>
-                            )
-                          )}
-                          {/* The band already names the crew, so the five
-                              columns repeating it can be folded away. The
-                              control lives here rather than in the toolbar
-                              because this heading is what makes them
-                              redundant. */}
-                          <span className="schedule-band-columns">
-                            <button
-                              type="button"
-                              className="schedule-band-columns-toggle"
-                              aria-haspopup="true"
-                              aria-expanded={openColumnMenu === blockKey}
-                              title="Show or hide crew columns"
-                              aria-label="Show or hide crew columns"
-                              onClick={() =>
-                                setOpenColumnMenu(
-                                  openColumnMenu === blockKey ? null : blockKey,
-                                )
-                              }
-                            >
-                              <Columns size={14} />
-                              {hiddenCrewColumns.size > 0 && (
-                                <span className="schedule-band-columns-count">
-                                  {hiddenCrewColumns.size}
-                                </span>
-                              )}
-                            </button>
-                            {openColumnMenu === blockKey && (
-                              <div
-                                className="schedule-band-columns-menu"
-                                role="group"
-                                aria-label="Crew columns"
+                      <>
+                        <tr
+                          className={`schedule-band rti-team-band rti-team-band-sub${
+                            pinnedWeekKeys.has(blockKey) ? " is-pinned" : ""
+                          }`}
+                        >
+                          <th colSpan={visibleColumnCount} scope="colgroup">
+                            <div className="schedule-band-sub-content">
+                              <button
+                                type="button"
+                                className="schedule-band-pin"
+                                aria-pressed={pinnedWeekKeys.has(blockKey)}
+                                aria-label={`${
+                                  pinnedWeekKeys.has(blockKey) ? "Unpin" : "Pin"
+                                } week ${weekRangeLabel(group.installationDate)}`}
+                                title={
+                                  pinnedWeekKeys.has(blockKey)
+                                    ? "Unpin this week"
+                                    : "Pin this week to the top"
+                                }
+                                onClick={() => togglePinnedWeek(blockKey)}
                               >
-                                {CREW_COLUMNS.map((column) => (
-                                  <label key={column.key}>
-                                    <input
-                                      type="checkbox"
-                                      checked={!hiddenCrewColumns.has(column.key)}
-                                      onChange={() => toggleCrewColumn(column.key)}
-                                    />
-                                    {column.label}
-                                  </label>
-                                ))}
-                                {anyRowEditing && hiddenCrewColumns.size > 0 && (
-                                  <p className="schedule-band-columns-note">
-                                    Showing while a row is being edited.
-                                  </p>
+                                {pinnedWeekKeys.has(blockKey) ? (
+                                  <PinOff size={14} />
+                                ) : (
+                                  <Pin size={14} />
+                                )}
+                              </button>
+                              <span className="schedule-band-week">
+                                Week {weekRangeLabel(group.installationDate)}
+                              </span>
+                            </div>
+                          </th>
+                        </tr>
+                        <tr
+                          className={`schedule-band rti-team-band rti-team-band-main ${teamClass}${
+                            pinnedWeekKeys.has(blockKey) ? " is-pinned" : ""
+                          }`}
+                        >
+                          <th colSpan={visibleColumnCount} scope="colgroup">
+                            <div className="rti-team-header-main">
+                              <div className="rti-team-title-wrap">
+                                <span className="rti-team-name">{teamTitle}</span>
+                                {baseLabel && (
+                                  <span className="rti-team-base">{baseLabel}</span>
                                 )}
                               </div>
-                            )}
-                          </span>
-                        </th>
-                      </tr>
+                              <div className="rti-crew-grid">
+                                <div className="rti-crew-col">
+                                  <label
+                                    className="rti-crew-label"
+                                    htmlFor={`arr-crew-inst-${group.id}`}
+                                  >
+                                    Installation Team
+                                  </label>
+                                  <input
+                                    id={`arr-crew-inst-${group.id}`}
+                                    type="text"
+                                    list={`arr-install-teams-list-${group.id}`}
+                                    className="rti-crew-input rti-crew-input-borderless"
+                                    value={
+                                      groupCrewDraft[group.id]?.installationTeam !==
+                                      undefined
+                                        ? groupCrewDraft[group.id]!.installationTeam
+                                        : defaultInstallTeam
+                                    }
+                                    placeholder="—"
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setGroupCrewDraft((prev) => ({
+                                        ...prev,
+                                        [group.id]: {
+                                          ...prev[group.id],
+                                          installationTeam: val,
+                                        },
+                                      }));
+                                    }}
+                                    onBlur={(e) => {
+                                      updateGroup(group.id, {
+                                        installationTeam: e.target.value,
+                                      });
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                  <datalist id={`arr-install-teams-list-${group.id}`}>
+                                    {installationTeamNames.map((name) => (
+                                      <option key={name} value={name} />
+                                    ))}
+                                  </datalist>
+                                </div>
+
+                                <div className="rti-crew-col">
+                                  <label
+                                    className="rti-crew-label"
+                                    htmlFor={`arr-crew-wir-${group.id}`}
+                                  >
+                                    Wiring Team
+                                  </label>
+                                  <input
+                                    id={`arr-crew-wir-${group.id}`}
+                                    type="text"
+                                    list={`arr-wiring-teams-list-${group.id}`}
+                                    className="rti-crew-input rti-crew-input-borderless"
+                                    value={
+                                      groupCrewDraft[group.id]?.wiringTeam !==
+                                      undefined
+                                        ? groupCrewDraft[group.id]!.wiringTeam
+                                        : defaultWiringTeam
+                                    }
+                                    placeholder="—"
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setGroupCrewDraft((prev) => ({
+                                        ...prev,
+                                        [group.id]: {
+                                          ...prev[group.id],
+                                          wiringTeam: val,
+                                        },
+                                      }));
+                                    }}
+                                    onBlur={(e) => {
+                                      updateGroup(group.id, {
+                                        wiringTeam: e.target.value,
+                                      });
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                  <datalist id={`arr-wiring-teams-list-${group.id}`}>
+                                    {wiringTeamNames.map((name) => (
+                                      <option key={name} value={name} />
+                                    ))}
+                                  </datalist>
+                                </div>
+
+                                <div className="rti-crew-col">
+                                  <label
+                                    className="rti-crew-label"
+                                    htmlFor={`arr-crew-sup-${group.id}`}
+                                  >
+                                    Site Supervisor
+                                  </label>
+                                  <input
+                                    id={`arr-crew-sup-${group.id}`}
+                                    type="text"
+                                    list={`arr-supervisors-list-${group.id}`}
+                                    className="rti-crew-input rti-crew-input-borderless"
+                                    value={
+                                      groupCrewDraft[group.id]?.siteSupervisor !==
+                                      undefined
+                                        ? groupCrewDraft[group.id]!.siteSupervisor
+                                        : defaultSupervisor
+                                    }
+                                    placeholder="—"
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setGroupCrewDraft((prev) => ({
+                                        ...prev,
+                                        [group.id]: {
+                                          ...prev[group.id],
+                                          siteSupervisor: val,
+                                        },
+                                      }));
+                                    }}
+                                    onBlur={(e) => {
+                                      const val = e.target.value;
+                                      updateGroup(group.id, {
+                                        supervisors: val
+                                          ? val
+                                              .split(",")
+                                              .map((s) => s.trim())
+                                              .filter(Boolean)
+                                          : [],
+                                      });
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                  <datalist id={`arr-supervisors-list-${group.id}`}>
+                                    {supervisorNames.map((name) => (
+                                      <option key={name} value={name} />
+                                    ))}
+                                  </datalist>
+                                </div>
+
+                                <div className="rti-crew-col">
+                                  <label
+                                    className="rti-crew-label"
+                                    htmlFor={`arr-crew-mem-${group.id}`}
+                                  >
+                                    Team Member
+                                  </label>
+                                  <input
+                                    id={`arr-crew-mem-${group.id}`}
+                                    type="text"
+                                    className="rti-crew-input rti-crew-input-borderless"
+                                    value={
+                                      groupCrewDraft[group.id]?.membersText !==
+                                      undefined
+                                        ? groupCrewDraft[group.id]!.membersText
+                                        : defaultMembers
+                                    }
+                                    placeholder="—"
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setGroupCrewDraft((prev) => ({
+                                        ...prev,
+                                        [group.id]: {
+                                          ...prev[group.id],
+                                          membersText: val,
+                                        },
+                                      }));
+                                    }}
+                                    onBlur={(e) => {
+                                      const val = e.target.value;
+                                      updateGroup(group.id, {
+                                        wiringMembers: val
+                                          ? val
+                                              .split(",")
+                                              .map((s) => s.trim())
+                                              .filter(Boolean)
+                                          : [],
+                                      });
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                </div>
+                              </div>
+                              <div className="schedule-band-actions">
+                                {isGroupEditing ? (
+                                  <span className="schedule-band-car-editor">
+                                    <div className="member-tag-input">
+                                      <div className="member-tag-list">
+                                        {cars.map((car) => (
+                                          <span className="member-tag" key={car}>
+                                            {car}
+                                            <button
+                                              type="button"
+                                              aria-label={`Remove ${car}`}
+                                              onClick={() =>
+                                                removeGroupListItem(group, "cars", car)
+                                              }
+                                            >
+                                              <X size={12} />
+                                            </button>
+                                          </span>
+                                        ))}
+                                      </div>
+                                      <div className="member-tag-add">
+                                        <input
+                                          list="car-options"
+                                          value={groupCarDraft[group.id] ?? ""}
+                                          onChange={(event) =>
+                                            setGroupCarDraft((prev) => ({
+                                              ...prev,
+                                              [group.id]: event.target.value,
+                                            }))
+                                          }
+                                          onKeyDown={(event) => {
+                                            if (event.key === "Enter") {
+                                              event.preventDefault();
+                                              addGroupListItem(
+                                                group,
+                                                "cars",
+                                                groupCarDraft[group.id] ?? "",
+                                              );
+                                              setGroupCarDraft((prev) => ({
+                                                ...prev,
+                                                [group.id]: "",
+                                              }));
+                                            }
+                                          }}
+                                          placeholder="Add car"
+                                          aria-label="Add car"
+                                        />
+                                        <button
+                                          type="button"
+                                          className="icon-button"
+                                          aria-label="Add car"
+                                          onClick={() => {
+                                            addGroupListItem(
+                                              group,
+                                              "cars",
+                                              groupCarDraft[group.id] ?? "",
+                                            );
+                                            setGroupCarDraft((prev) => ({
+                                              ...prev,
+                                              [group.id]: "",
+                                            }));
+                                          }}
+                                        >
+                                          <Plus size={14} />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </span>
+                                ) : (
+                                  cars.length > 0 && (
+                                    <span className="schedule-band-car">
+                                      Car: {cars.join(", ")}
+                                    </span>
+                                  )
+                                )}
+                              </div>
+                            </div>
+                          </th>
+                        </tr>
+                        <tr className="schedule-column-headers">
+                          <th>Slot</th>
+                          <th>Customer</th>
+                          <th>Address</th>
+                          <th>Phone</th>
+                          <th>Email</th>
+                          <th>Agent</th>
+                          <th>Phase</th>
+                          <th>Panel</th>
+                          <th>Inverter</th>
+                          <th>Remark</th>
+                        </tr>
+                      </>
                     )}
                     <tr
                       className={[
+                        "rti-row",
+                        Boolean(job && /koh\s*keng\s*kiat/i.test(job.customerName))
+                          ? "is-koh-keng-kiat"
+                          : "",
                         isEditing ? "selected" : "",
                         remarkHasOm(rowRemark) ? "is-om" : "",
                       ]
@@ -6698,21 +7411,47 @@ function InstallationGroupsView({
                         .join(" ")}
                       onClick={() => toggleRowEdit(rowKey)}
                     >
+                      {/* 1. Slot */}
+                      <td onClick={stopWhenEditing} className="rti-date">
+                        {isEditing ? (
+                          <div className="schedule-datetime">
+                            <input
+                              type="date"
+                              value={group.installationDate}
+                              onChange={(event) =>
+                                setGroupSchedule(
+                                  group,
+                                  event.target.value,
+                                  startTime,
+                                )
+                              }
+                              aria-label="Installation date"
+                            />
+                            <input
+                              type="time"
+                              value={startTime}
+                              onChange={(event) =>
+                                setGroupSchedule(group, "", event.target.value)
+                              }
+                              aria-label="Installation time"
+                            />
+                          </div>
+                        ) : (
+                          <>
+                            <strong>{formatDateOnly(group.installationDate)}</strong>
+                            <span>{startTime || "Full day"}</span>
+                          </>
+                        )}
+                      </td>
+
+                      {/* 2. Customer */}
                       <td onClick={stopWhenEditing}>
                         {isEditing ? (
                           (() => {
-                            // Falls back to the row's current customer, if it
-                            // has one, so opening an already-assigned row
-                            // reads their name back rather than going blank.
                             const searchText =
                               customerSearchByRow[rowKey] ??
                               (job ? formatPersonName(job.customerName) : "");
                             const isOpen = openCustomerRowKey === rowKey;
-                            // Only the open row's matches are ever shown, so
-                            // only it is worth computing — and off the
-                            // deferred text (see openCustomerSearchText
-                            // above), not the immediate one, to keep the
-                            // keystroke itself from waiting on it.
                             const matches =
                               isOpen && deferredCustomerSearchText.trim()
                                 ? eligibleCustomersForRow(
@@ -6729,11 +7468,6 @@ function InstallationGroupsView({
                                 jobIds: [...withoutCurrent, nextJobId],
                               });
                               const nextRowKey = `${group.id}|${nextJobId}`;
-                              // The row's key is `${group.id}|${jobId}`, so
-                              // picking a customer changes it — carry the
-                              // edit session and search text over to the new
-                              // key, or the row would read as un-clicked and
-                              // blank the instant this commits.
                               setEditingRowKeys((prev) => {
                                 const next = new Set(prev);
                                 next.delete(rowKey);
@@ -6779,11 +7513,6 @@ function InstallationGroupsView({
                                           <button
                                             type="button"
                                             className="customer-combobox-option"
-                                            // mousedown fires before the input's
-                                            // blur, so preventDefault here keeps
-                                            // focus long enough for the click to
-                                            // land instead of the list closing
-                                            // out from under it first.
                                             onMouseDown={(event) => {
                                               event.preventDefault();
                                               pickCustomer(
@@ -6807,520 +7536,171 @@ function InstallationGroupsView({
                               </div>
                             );
                           })()
-                        ) : job ? (
-                          <span className="run-field-readout">
-                            {formatPersonName(job.customerName)}
-                          </span>
                         ) : (
-                          // Either a crew booked before anyone was assigned to
-                          // it, or a customer that has since dropped out of the
-                          // pipeline — neither is a link to anywhere.
-                          <span className="run-field-readout is-empty">
-                            {jobId ? "Customer not in pipeline" : "No customer yet"}
-                          </span>
-                        )}
-                      </td>
-                      <td onClick={stopWhenEditing}>
-                        {isEditing ? (
-                          <div className="schedule-datetime">
-                            <input
-                              type="date"
-                              value={group.installationDate}
-                              onChange={(event) =>
-                                setGroupSchedule(
-                                  group,
-                                  event.target.value,
-                                  startTime,
-                                )
-                              }
-                              aria-label="Installation date"
-                            />
-                            <input
-                              type="time"
-                              value={startTime}
-                              onChange={(event) =>
-                                setGroupSchedule(group, "", event.target.value)
-                              }
-                              aria-label="Installation time"
-                            />
+                          <div className="rti-customer-wrap">
+                            {job ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="rti-name-link"
+                                  title={`SEDA approved: ${job.sedaApprovedDate ? formatDateOnly(job.sedaApprovedDate) : (job.sedaStatus || "Pending")} · 2nd payment: ${job.secondPaymentDate ? formatDateOnly(job.secondPaymentDate) : "–"}\nClick to see in queue`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOpenInQueue?.(job.id);
+                                  }}
+                                >
+                                  {formatPersonName(job.customerName)}
+                                </button>
+                                <div className="rti-customer-popover" role="tooltip">
+                                  <div className="rti-customer-popover-row">
+                                    <span className="rti-customer-popover-label">SEDA approved:</span>
+                                    <span className="rti-customer-popover-val">
+                                      {job.sedaApprovedDate
+                                        ? formatDateOnly(job.sedaApprovedDate)
+                                        : isSedaApproved(job.sedaStatus)
+                                        ? "Approved"
+                                        : (job.sedaStatus || "Pending")}
+                                    </span>
+                                  </div>
+                                  <div className="rti-customer-popover-row">
+                                    <span className="rti-customer-popover-label">2nd payment:</span>
+                                    <span className="rti-customer-popover-val">
+                                      {job.secondPaymentDate ? formatDateOnly(job.secondPaymentDate) : "–"}
+                                    </span>
+                                  </div>
+                                </div>
+                              </>
+                            ) : (
+                              <span className="run-field-readout is-empty">
+                                {jobId ? "Customer not in pipeline" : "No customer yet"}
+                              </span>
+                            )}
+                            {job?.invoiceNumber && (
+                              <span className="rti-muted rti-invoice">{job.invoiceNumber}</span>
+                            )}
                           </div>
-                        ) : (
-                          <span className="run-field-readout">
-                            {formatDateOnly(group.installationDate)}
-                            {startTime ? ` @ ${startTime}` : ""}
-                          </span>
                         )}
                       </td>
+
+                      {/* 3. Address */}
                       <td>
                         {job && job.address ? (
-                          <span className="run-field-readout">
+                          <button
+                            type="button"
+                            className={`rti-link rti-address${scheduleMapJobId === job.id ? " is-active" : ""}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setScheduleMapJobId((current) => (current === job.id ? null : job.id));
+                            }}
+                            title="Show on the map"
+                          >
+                            <MapPin size={13} />
                             {formatCustomerAddress(job.address)}
-                          </span>
+                          </button>
                         ) : (
                           <span className="run-field-readout is-empty">—</span>
                         )}
                       </td>
+
+                      {/* 4. Phone */}
                       <td>
-                        {/* Read off the invoice's own package line — "[3P]"
-                            or "[1P]" — the same parsing lib/source-api.ts
-                            already does for job.phase, so there is nothing
-                            left to derive here beyond relabelling it to match
-                            what this column is called. Not editable: unlike
-                            Power Output this is a clean two-value fact off
-                            the invoice, not free text ops fill in. */}
-                        {job && job.phase !== "Unknown" ? (
-                          <span className="run-field-readout">
-                            {job.phase.replace("phase", "Phase")}
-                          </span>
+                        {job && job.customerPhone ? (
+                          formatPhoneNumber(job.customerPhone)
                         ) : (
                           <span className="run-field-readout is-empty">—</span>
                         )}
                       </td>
-                      <td onClick={stopWhenEditing}>
-                        {/* Column F of the ops schedule sheet — panel count,
-                            brand and rating as one phrase ("16 Jinko 650W").
-                            Pulled from the invoice via derivedPowerOutput
-                            until someone types over it — see there for what
-                            it can and cannot read off the invoice text. */}
-                        {isEditing && job ? (
+
+                      {/* 5. Email */}
+                      <td className="rti-email">
+                        {job?.customerEmail || "—"}
+                      </td>
+
+                      {/* 6. Agent */}
+                      <td className="rti-agent">
+                        {job ? (job.agentName?.trim().toUpperCase() || "—") : "—"}
+                      </td>
+
+                      {/* 7. Phase */}
+                      <td>
+                        {job && job.phase && job.phase !== "Unknown" ? (
+                          job.phase.replace(/\bphase\b/i, "Phase")
+                        ) : (
+                          <span className="run-field-readout is-empty">—</span>
+                        )}
+                      </td>
+
+                      {/* 8. Panel */}
+                      <td className="rti-edit-cell" onClick={(e) => e.stopPropagation()}>
+                        {job ? (
                           (() => {
                             const effective =
                               job.powerOutput.trim() || derivedPowerOutput(job);
                             return (
                               <textarea
-                                className="schedule-remark"
-                                rows={3}
+                                className="rti-cell-textarea"
+                                rows={2}
                                 defaultValue={effective}
+                                key={`panel-${job.id}-${job.powerOutput}`}
                                 onBlur={(event) => {
                                   const text = event.target.value;
                                   if (text === effective) return;
                                   onSaveJob({ ...job, powerOutput: text });
                                 }}
                                 placeholder="e.g. 16 Jinko 650W"
-                                aria-label={`Power output for ${job.customerName}`}
+                                aria-label={`Panel for ${job.customerName}`}
                               />
                             );
                           })()
                         ) : (
-                          <span className="run-field-readout">
-                            {(job &&
-                              (job.powerOutput.trim() ||
-                                derivedPowerOutput(job))) ||
-                              "—"}
-                          </span>
+                          <span className="run-field-readout is-empty">—</span>
                         )}
                       </td>
-                      <td onClick={stopWhenEditing}>
-                        {/* Column G of the ops schedule sheet, kept as the
-                            prose ops write rather than parsed into model and
-                            quantity: one cell routinely carries the inverter,
-                            an "ADD ON 1 X ATS", a ballast count and an FOC
-                            note, and they only make sense read together.
-                            Pulled from the invoice via derivedInverterModel
-                            until someone types over it, same as Power Output
-                            beside it — see lib/source-api.ts for what it can
-                            and cannot read off the invoice text.
 
-                            A crew booking with no customer on it yet has no
-                            job to store this against, so it reads as empty
-                            until one is assigned. Same uncontrolled
-                            save-on-blur as the Remark cell beside it. */}
-                        {isEditing && job ? (
+                      {/* 9. Inverter */}
+                      <td className="rti-edit-cell" onClick={(e) => e.stopPropagation()}>
+                        {job ? (
                           (() => {
                             const effective =
                               job.inverterBattery.trim() ||
-                              job.derivedInverterModel;
+                              job.derivedInverterModel ||
+                              job.inverterType;
                             return (
                               <textarea
-                                className="schedule-remark"
-                                rows={3}
+                                className="rti-cell-textarea"
+                                rows={2}
                                 defaultValue={effective}
+                                key={`inverter-${job.id}-${job.inverterBattery}`}
                                 onBlur={(event) => {
                                   const text = event.target.value;
-                                  if (text === effective) return;
+                                  const current =
+                                    job.inverterBattery.trim() ||
+                                    job.derivedInverterModel ||
+                                    job.inverterType;
+                                  if (text === current) return;
                                   onSaveJob({ ...job, inverterBattery: text });
                                 }}
-                                placeholder="e.g. 1 X R6-10K-T2"
-                                aria-label={`Package for ${job.customerName}`}
+                                placeholder="e.g. 10kW Hybrid"
+                                aria-label={`Inverter for ${job.customerName}`}
                               />
                             );
                           })()
                         ) : (
-                          <span className="run-field-readout">
-                            {(job &&
-                              (job.inverterBattery.trim() ||
-                                job.derivedInverterModel)) ||
-                              "—"}
-                          </span>
-                        )}
-                      </td>
-                      <td>
-                        {/* Which inverter types the invoice carries — String,
-                            Hybrid, Micro, or a combination when a micro
-                            inverter add-on rides alongside the package's own
-                            string or hybrid unit. Read off every line item
-                            mentioning "inverter" at all, not just the
-                            package's — see parseInverterTypesFromText in
-                            lib/source-api.ts. Not editable, same reasoning as
-                            Power Supply beside it. */}
-                        {job && job.inverterType ? (
-                          <span className="run-field-readout">
-                            {job.inverterType}
-                          </span>
-                        ) : (
                           <span className="run-field-readout is-empty">—</span>
                         )}
                       </td>
-                      <td>
-                        {job ? (
-                          <span className="run-field-readout">
-                            {formatPersonName(job.agentName)}
-                          </span>
-                        ) : (
-                          <span className="run-field-readout is-empty">—</span>
-                        )}
-                      </td>
-                      {isCrewColumnVisible("team") && (
-                      <td onClick={stopWhenEditing}>
-                        {isEditing ? (
-                          <input
-                            value={group.teamLabel ?? ""}
-                            onChange={(event) =>
-                              updateGroupFields(group.id, {
-                                teamLabel: event.target.value,
-                              })
-                            }
-                            placeholder="Team 1"
-                            aria-label="Team label"
-                          />
-                        ) : (
-                          <span className="run-field-readout">
-                            {group.teamLabel || "—"}
-                          </span>
-                        )}
-                      </td>
-                      )}
-                      {isCrewColumnVisible("installationTeam") && (
-                      <td onClick={stopWhenEditing}>
-                        {isEditing ? (
-                          addingInstall ? (
-                            <input
-                              autoFocus
-                              value={newTeamDraft.value}
-                              onChange={(event) =>
-                                setNewTeamDraft({
-                                  rowKey,
-                                  field: "installationTeam",
-                                  value: event.target.value,
-                                })
-                              }
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter") {
-                                  event.preventDefault();
-                                  commitNewTeam(
-                                    group,
-                                    "installationTeam",
-                                    newTeamDraft.value,
-                                  );
-                                }
-                                if (event.key === "Escape") setNewTeamDraft(null);
-                              }}
-                              onBlur={() =>
-                                commitNewTeam(
-                                  group,
-                                  "installationTeam",
-                                  newTeamDraft.value,
-                                )
-                              }
-                              placeholder="New installation team"
-                              aria-label="New installation team name"
-                            />
-                          ) : (
-                            <select
-                              value={group.installationTeam}
-                              onChange={(event) => {
-                                if (event.target.value === "__add__") {
-                                  setNewTeamDraft({
-                                    rowKey,
-                                    field: "installationTeam",
-                                    value: "",
-                                  });
-                                  return;
-                                }
-                                updateGroupFields(group.id, {
-                                  installationTeam: event.target.value,
-                                });
-                              }}
-                              aria-label="Installation team"
-                            >
-                              <option value="">Not set</option>
-                              {installationTeamNames.map((name) => (
-                                <option key={name} value={name}>
-                                  {name}
-                                </option>
-                              ))}
-                              <option value="__add__">+ Add new…</option>
-                            </select>
-                          )
-                        ) : (
-                          <span className="run-field-readout">
-                            {group.installationTeam || "Not set"}
-                          </span>
-                        )}
-                      </td>
-                      )}
-                      {isCrewColumnVisible("wiringTeam") && (
-                      <td onClick={stopWhenEditing}>
-                        {isEditing ? (
-                          addingWiring ? (
-                            <input
-                              autoFocus
-                              value={newTeamDraft.value}
-                              onChange={(event) =>
-                                setNewTeamDraft({
-                                  rowKey,
-                                  field: "wiringTeam",
-                                  value: event.target.value,
-                                })
-                              }
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter") {
-                                  event.preventDefault();
-                                  commitNewTeam(
-                                    group,
-                                    "wiringTeam",
-                                    newTeamDraft.value,
-                                  );
-                                }
-                                if (event.key === "Escape") setNewTeamDraft(null);
-                              }}
-                              onBlur={() =>
-                                commitNewTeam(
-                                  group,
-                                  "wiringTeam",
-                                  newTeamDraft.value,
-                                )
-                              }
-                              placeholder="New wiring team"
-                              aria-label="New wiring team name"
-                            />
-                          ) : (
-                            <select
-                              value={group.wiringTeam}
-                              onChange={(event) => {
-                                if (event.target.value === "__add__") {
-                                  setNewTeamDraft({
-                                    rowKey,
-                                    field: "wiringTeam",
-                                    value: "",
-                                  });
-                                  return;
-                                }
-                                updateGroupFields(group.id, {
-                                  wiringTeam: event.target.value,
-                                });
-                              }}
-                              aria-label="Wiring team"
-                            >
-                              <option value="">Not set</option>
-                              {wiringTeamNames.map((name) => (
-                                <option key={name} value={name}>
-                                  {name}
-                                </option>
-                              ))}
-                              <option value="__add__">+ Add new…</option>
-                            </select>
-                          )
-                        ) : (
-                          <span className="run-field-readout">
-                            {group.wiringTeam || "Not set"}
-                          </span>
-                        )}
-                      </td>
-                      )}
-                      {isCrewColumnVisible("wiringMembers") && (
-                      <td onClick={stopWhenEditing}>
-                        {isEditing ? (
-                          <div className="member-tag-input">
-                            <div className="member-tag-list">
-                              {wiringMembers.map((member) => (
-                                <span className="member-tag" key={member}>
-                                  {member}
-                                  <button
-                                    type="button"
-                                    aria-label={`Remove ${member}`}
-                                    onClick={() =>
-                                      removeGroupListItem(
-                                        group,
-                                        "wiringMembers",
-                                        member,
-                                      )
-                                    }
-                                  >
-                                    <X size={12} />
-                                  </button>
-                                </span>
-                              ))}
-                            </div>
-                            <div className="member-tag-add">
-                              <input
-                                list="wiring-member-options"
-                                value={groupMemberDraft[group.id] ?? ""}
-                                onChange={(event) =>
-                                  setGroupMemberDraft((prev) => ({
-                                    ...prev,
-                                    [group.id]: event.target.value,
-                                  }))
-                                }
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter") {
-                                    event.preventDefault();
-                                    addGroupListItem(
-                                      group,
-                                      "wiringMembers",
-                                      groupMemberDraft[group.id] ?? "",
-                                    );
-                                    setGroupMemberDraft((prev) => ({
-                                      ...prev,
-                                      [group.id]: "",
-                                    }));
-                                  }
-                                }}
-                                placeholder="Add member"
-                                aria-label="Add wiring team member"
-                              />
-                              <button
-                                type="button"
-                                className="icon-button"
-                                aria-label="Add wiring team member"
-                                onClick={() => {
-                                  addGroupListItem(
-                                    group,
-                                    "wiringMembers",
-                                    groupMemberDraft[group.id] ?? "",
-                                  );
-                                  setGroupMemberDraft((prev) => ({
-                                    ...prev,
-                                    [group.id]: "",
-                                  }));
-                                }}
-                              >
-                                <Plus size={14} />
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <span className="run-field-readout">
-                            {wiringMembers.length > 0
-                              ? wiringMembers.join(", ")
-                              : "—"}
-                          </span>
-                        )}
-                      </td>
-                      )}
-                      {isCrewColumnVisible("supervisor") && (
-                      <td onClick={stopWhenEditing}>
-                        {isEditing ? (
-                          <div className="member-tag-input">
-                            <div className="member-tag-list">
-                              {group.supervisors.map((name) => (
-                                <span className="member-tag" key={name}>
-                                  {name}
-                                  <button
-                                    type="button"
-                                    aria-label={`Remove ${name}`}
-                                    onClick={() =>
-                                      removeGroupListItem(
-                                        group,
-                                        "supervisors",
-                                        name,
-                                      )
-                                    }
-                                  >
-                                    <X size={12} />
-                                  </button>
-                                </span>
-                              ))}
-                            </div>
-                            <div className="member-tag-add">
-                              <input
-                                list="supervisor-options"
-                                value={groupSupervisorDraft[group.id] ?? ""}
-                                onChange={(event) =>
-                                  setGroupSupervisorDraft((prev) => ({
-                                    ...prev,
-                                    [group.id]: event.target.value,
-                                  }))
-                                }
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter") {
-                                    event.preventDefault();
-                                    addGroupListItem(
-                                      group,
-                                      "supervisors",
-                                      groupSupervisorDraft[group.id] ?? "",
-                                    );
-                                    setGroupSupervisorDraft((prev) => ({
-                                      ...prev,
-                                      [group.id]: "",
-                                    }));
-                                  }
-                                }}
-                                placeholder="Add supervisor"
-                                aria-label="Add site supervisor"
-                              />
-                              <button
-                                type="button"
-                                className="icon-button"
-                                aria-label="Add site supervisor"
-                                onClick={() => {
-                                  addGroupListItem(
-                                    group,
-                                    "supervisors",
-                                    groupSupervisorDraft[group.id] ?? "",
-                                  );
-                                  setGroupSupervisorDraft((prev) => ({
-                                    ...prev,
-                                    [group.id]: "",
-                                  }));
-                                }}
-                              >
-                                <Plus size={14} />
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <span className="run-field-readout">
-                            {group.supervisors.length > 0
-                              ? group.supervisors.join(", ")
-                              : "Not assigned"}
-                          </span>
-                        )}
-                      </td>
-                      )}
-                      <td onClick={stopWhenEditing}>
-                        {/* The sheet's site notes, which belong to the
-                            customer. A customer worked over several days has a
-                            note per day, and the app already keeps the return
-                            trips as visits, so the row reads the visit's note
-                            on a return day and the customer's own note on the
-                            primary day — editing writes back to whichever is
-                            showing.
 
-                            A crew booking with nobody on it yet (what "Add
-                            Team" creates) has no customer to write against, so
-                            it holds the note itself until one is assigned.
-
-                            Uncontrolled and saved on blur, the way Customer
-                            Scheduling edits its own remarks — each keystroke
-                            would otherwise be a round trip. */}
-                        {isEditing ? (
+                      {/* 10. Remark */}
+                      <td className="rti-edit-cell rti-remark-cell" onClick={(e) => e.stopPropagation()}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                           <textarea
-                            className="schedule-remark"
-                            rows={3}
+                            className="rti-cell-textarea"
+                            rows={2}
                             defaultValue={rowRemark}
+                            key={`remark-${rowKey}-${rowRemark}`}
                             onBlur={(event) => {
                               const text = event.target.value;
+                              if (text === rowRemark) return;
                               if (!job) {
                                 updateGroupFields(group.id, { remark: text });
                                 return;
@@ -7338,40 +7718,36 @@ function InstallationGroupsView({
                                 : "Remark for this crew booking"
                             }
                           />
-                        ) : (
-                          <span className="run-field-readout">
-                            {rowRemark.trim() || "—"}
-                          </span>
-                        )}
-                      </td>
-                      <td onClick={stopWhenEditing}>
-                        {isEditing && (
-                          <div className="row-actions is-stacked">
-                            <button
-                              className="button primary"
-                              aria-label="Finish editing row"
-                              onClick={() => toggleRowEdit(rowKey)}
-                            >
-                              Done
-                            </button>
-                            <button
-                              className="button secondary"
-                              aria-label={
-                                job
-                                  ? `Remove ${job.customerName} from this booking`
-                                  : "Remove this team row"
-                              }
-                              title={
-                                job
-                                  ? "Take this customer off this crew's booking"
-                                  : "Remove this team row"
-                              }
-                              onClick={() => removeScheduleRow(group, jobId)}
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        )}
+                          {isEditing && (
+                            <div className="row-actions is-stacked" style={{ alignSelf: "flex-end" }}>
+                              <button
+                                type="button"
+                                className="button primary"
+                                aria-label="Finish editing row"
+                                onClick={() => toggleRowEdit(rowKey)}
+                              >
+                                Done
+                              </button>
+                              <button
+                                type="button"
+                                className="button secondary"
+                                aria-label={
+                                  job
+                                    ? `Remove ${job.customerName} from this booking`
+                                    : "Remove this team row"
+                                }
+                                title={
+                                  job
+                                    ? "Take this customer off this crew's booking"
+                                    : "Remove this team row"
+                                }
+                                onClick={() => removeScheduleRow(group, jobId)}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </td>
                     </tr>
                     </Fragment>
@@ -7814,7 +8190,8 @@ function InstallationGroupsView({
           onTogglePin={onTogglePin}
         />
       )}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -7919,7 +8296,7 @@ function WeekGroupCard({
       </div>
 
       <div className="week-group-card-section">
-        <h4>Stock delivery</h4>
+        <h4>Delivery Schedule</h4>
         {runs.length === 0 ? (
           <p className="week-group-card-empty">No delivery run linked yet.</p>
         ) : (
@@ -8244,7 +8621,7 @@ function GroupDrawer({
         </div>
 
         <div className="group-drawer-section">
-          <h4>Stock delivery</h4>
+          <h4>Delivery Schedule</h4>
           {runs.length === 0 ? (
             <p className="group-drawer-empty">No delivery run linked yet.</p>
           ) : (
@@ -8373,6 +8750,9 @@ function TeamPlanningView({
     setCustomerSearch("");
   });
   const [mapFocusGroupId, setMapFocusGroupId] = useState<string | null>(null);
+  // The map stays out of the way until someone clicks a customer's address,
+  // then opens zoomed to that customer. Null means the map is hidden.
+  const [mapJobId, setMapJobId] = useState<string | null>(null);
   // Customer rows start read-only; clicking one focuses it on the map (as it
   // always has) and opens just that customer's editable fields.
   const [editingJobIds, setEditingJobIds] = useState<Set<string>>(new Set());
@@ -8439,7 +8819,7 @@ function TeamPlanningView({
   // not fill up with history. All jobs is meant to be the union of every
   // stage, Complete Installation included, so it has to see them too.
   const showingCompleted =
-    planningFilter === "complete" || planningFilter === ALL_JOBS;
+    planningFilter === "complete" || planningFilter === "arranged" || planningFilter === ALL_JOBS;
   const readyJobs = jobs.filter(
     (job) =>
       belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
@@ -8804,9 +9184,27 @@ function TeamPlanningView({
           )}
         </td>
         <td className="suggestion-address-cell">
-          {job.address
-            ? formatCustomerAddress(job.address)
-            : "Address not available"}
+          {job.address ? (
+            <button
+              type="button"
+              className={`address-map-link${mapJobId === job.id ? " is-active" : ""}`}
+              title={
+                mapJobId === job.id
+                  ? "Hide the map"
+                  : `Show ${formatPersonName(job.customerName)} on the map`
+              }
+              onClick={(event) => {
+                // Kept off the row, whose own click opens the editor.
+                event.stopPropagation();
+                setMapJobId((current) => (current === job.id ? null : job.id));
+              }}
+            >
+              <MapPin size={13} />
+              {formatCustomerAddress(job.address)}
+            </button>
+          ) : (
+            "Address not available"
+          )}
         </td>
         <td>{job.paymentPercent.toFixed(0)}%</td>
         <td>
@@ -9071,13 +9469,18 @@ function TeamPlanningView({
           <p>No customers match the selected planning filters.</p>
         </div>
       ) : (
-        <div className="team-planning-workspace">
-          <PlanningMap
-            focusGroupId={mapFocusGroupId}
-            highlightedGroupId={highlightedMapGroupId}
-            highlightedCustomerId={highlightedMapCustomerId}
-            groups={planningMapGroups}
-          />
+        <div
+          className={`team-planning-workspace${mapJobId ? "" : " map-hidden"}`}
+        >
+          {mapJobId && (
+            <PlanningMap
+              focusGroupId={mapFocusGroupId}
+              highlightedGroupId={highlightedMapGroupId}
+              highlightedCustomerId={highlightedMapCustomerId ?? mapJobId}
+              groups={planningMapGroups}
+              onClose={() => setMapJobId(null)}
+            />
+          )}
           <div className="table-wrap team-planning-table">
             <table>
             <thead>
@@ -9898,40 +10301,11 @@ function DeliveryPlanningView({
     <div className="planning-panel">
       <div className="planning-heading">
         <div>
-          <h2>Stock delivery</h2>
+          <h2>Delivery Schedule</h2>
           <p>Group customer materials into warehouse delivery routes.</p>
         </div>
         <div className="planning-heading-actions">
           <div className="schedule-filters">
-            <label className="schedule-search">
-              <span>Job type</span>
-              <WorkCategorySelect
-                value={workCategoryFilter}
-                onChange={onWorkCategoryFilterChange}
-              />
-            </label>
-            <label className="schedule-search">
-              <span>Customer</span>
-              <input
-                type="search"
-                className="customer-invoice-search"
-                value={customerQuery}
-                onChange={(event) => setCustomerQuery(event.target.value)}
-                placeholder="Search customer, invoice, address, site supervisor…"
-                aria-label="Search customer name, invoice number, address or site supervisor"
-              />
-            </label>
-            <label className="schedule-search">
-              <span>Month or year</span>
-              <input
-                type="search"
-                className="second-payment-search"
-                value={periodFilter}
-                onChange={(event) => setPeriodFilter(event.target.value)}
-                placeholder="August, 2026, August 2026…"
-                aria-label="Filter by delivery month or year"
-              />
-            </label>
             <label className="schedule-search">
               <span>Planning status</span>
               <select
@@ -9947,6 +10321,28 @@ function DeliveryPlanningView({
                 ))}
               </select>
             </label>
+            <label className="schedule-search">
+              <span>Month or year</span>
+              <input
+                type="search"
+                className="second-payment-search"
+                value={periodFilter}
+                onChange={(event) => setPeriodFilter(event.target.value)}
+                placeholder="August, 2026, August 2026…"
+                aria-label="Filter by delivery month or year"
+              />
+            </label>
+            <label className="schedule-search">
+              <span>Customer</span>
+              <input
+                type="search"
+                className="customer-invoice-search"
+                value={customerQuery}
+                onChange={(event) => setCustomerQuery(event.target.value)}
+                placeholder="Search customer, invoice, address, site supervisor…"
+                aria-label="Search customer name, invoice number, address or site supervisor"
+              />
+            </label>
             {filtered && (
               <button
                 type="button"
@@ -9955,7 +10351,6 @@ function DeliveryPlanningView({
                   setPeriodFilter("");
                   setCustomerQuery("");
                   setPlanningFilter(ALL_JOBS);
-                  onWorkCategoryFilterChange(ALL_JOBS);
                 }}
               >
                 Clear

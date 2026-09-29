@@ -14,6 +14,8 @@ const ALLOWED_KEYS: (keyof OpsState)[] = [
   "teamWeekAssignments",
   "jobUpdates",
   "frozenJobIds",
+  "siteAssessments",
+  "scheduleDraft",
 ];
 
 function describe(error: unknown) {
@@ -69,6 +71,8 @@ const KEY_LABELS: Record<string, string> = {
   teamWeekAssignments: "team week assignments",
   jobUpdates: "job updates",
   frozenJobIds: "frozen jobs",
+  siteAssessments: "roof difficulty",
+  scheduleDraft: "schedule draft",
 };
 
 export async function PUT(request: Request) {

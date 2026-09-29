@@ -13,6 +13,14 @@ export type OpsState = {
   // pin, because freezing is a decision about the row itself, not about one
   // person's view of it.
   frozenJobIds: string[];
+  // The installation manager's roof/site difficulty per job id. Merged per job
+  // like jobUpdates (see MERGE_STATE_SQL), so two people rating different
+  // customers at once do not overwrite each other.
+  siteAssessments: Record<string, unknown>;
+  // Customer Scheduling's draft: the placements and removals people have made
+  // by hand on top of the automatic suggestion. The client owns and replaces
+  // the whole object, like the lists above.
+  scheduleDraft: Record<string, unknown>;
 };
 
 export const EMPTY_OPS_STATE: OpsState = {
@@ -23,6 +31,8 @@ export const EMPTY_OPS_STATE: OpsState = {
   teamWeekAssignments: [],
   jobUpdates: {},
   frozenJobIds: [],
+  siteAssessments: {},
+  scheduleDraft: {},
 };
 
 const STATE_ROW_ID = 'default';
@@ -61,7 +71,8 @@ export async function readOpsState(): Promise<{
 // client owns the whole list) but wrong for jobUpdates: there, a client sending
 // the one job it just edited would replace every other job's saved update. So
 // jobUpdates is merged a second level down, per job id, and a patch that leaves
-// it out keeps whatever is already stored.
+// it out keeps whatever is already stored. siteAssessments is keyed by job id
+// the same way and merged the same way.
 const MERGE_STATE_SQL = [
   'insert into public.installation_ops_state (id, state) values ($1, $2::jsonb)',
   'on conflict (id) do update set',
@@ -69,6 +80,9 @@ const MERGE_STATE_SQL = [
   "    || jsonb_build_object('jobUpdates',",
   "      coalesce(public.installation_ops_state.state->'jobUpdates', '{}'::jsonb)",
   "      || coalesce(excluded.state->'jobUpdates', '{}'::jsonb)",
+  "    , 'siteAssessments',",
+  "      coalesce(public.installation_ops_state.state->'siteAssessments', '{}'::jsonb)",
+  "      || coalesce(excluded.state->'siteAssessments', '{}'::jsonb)",
   '    ),',
   '  updated_at = now()',
   'returning state',

@@ -1,6 +1,6 @@
 ﻿import { NextResponse } from 'next/server';
 import { malaysiaToday, toDateOnly } from '@/lib/dates';
-import { normalizeAvailabilityStatus } from '@/lib/types';
+import { isSedaApproved, normalizeAvailabilityStatus } from '@/lib/types';
 import { resolvedAvailabilityStatus } from '@/lib/completion';
 import { readOpsState, writeOpsState } from '@/lib/ops-store';
 import {
@@ -252,6 +252,45 @@ function applyResolvedStatus(
   return { jobs: resolved, corrected };
 }
 
+// Stamps each invoice with the day this app first saw its SEDA status read
+// Approved, and hands the recorded dates back. The source keeps no approval
+// date, so this is the only way Customer Scheduling can say how long someone
+// has been cleared.
+//
+// The very first run finds hundreds of invoices approved at some unknown point
+// in the past. Dating them all to that first day would make them look newly
+// ready and bury them under genuinely new customers, so they are recorded with
+// no date instead and read as "approved before recording began".
+async function recordSedaApprovals(
+  jobs: InstallationJob[],
+  todayIso: string,
+): Promise<Map<string, string | null>> {
+  const rows = await queryProxy<{
+    source_invoice_id: string;
+    approved_on: string | null;
+  }>(
+    'select source_invoice_id, approved_on from public.installation_seda_approvals',
+  );
+  const recorded = new Map(
+    rows.map((row) => [row.source_invoice_id, toDateOnly(row.approved_on)]),
+  );
+  const firstRun = rows.length === 0;
+  const newlyApproved = jobs
+    .filter((job) => isSedaApproved(job.sedaStatus) && !recorded.has(job.id))
+    .map((job) => job.id);
+  if (newlyApproved.length > 0) {
+    const approvedOn = firstRun ? null : todayIso;
+    await queryProxy(
+      'insert into public.installation_seda_approvals (source_invoice_id, approved_on) ' +
+        'select id, $2::date from unnest($1::text[]) as id ' +
+        'on conflict (source_invoice_id) do nothing',
+      [newlyApproved, approvedOn],
+    );
+    newlyApproved.forEach((id) => recorded.set(id, approvedOn));
+  }
+  return recorded;
+}
+
 async function loadJobsPayload() {
   let source: 'live' | 'demo' = 'live';
   let warning: string | null = null;
@@ -377,8 +416,25 @@ async function loadJobsPayload() {
       }
     }
 
+    // Demo jobs are made up, so recording their approval would put invented
+    // invoices into the real table.
+    let withApprovals = resolved;
+    if (source === 'live') {
+      try {
+        const approvals = await recordSedaApprovals(resolved, malaysiaToday());
+        withApprovals = resolved.map((job) =>
+          approvals.has(job.id)
+            ? { ...job, sedaApprovedDate: approvals.get(job.id) ?? null }
+            : job,
+        );
+      } catch {
+        // The dates are a nicety on top of the pipeline, not part of it: a
+        // failed read or write leaves them blank for this load only.
+      }
+    }
+
     return {
-      jobs: resolved,
+      jobs: withApprovals,
       source,
       persistence: 'api-db',
       warning,

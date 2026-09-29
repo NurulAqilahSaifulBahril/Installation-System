@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import L from "leaflet";
+import { X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   MapContainer,
@@ -139,11 +140,13 @@ export default function PlanningMap({
   focusGroupId,
   highlightedGroupId,
   highlightedCustomerId,
+  onClose,
 }: {
   groups: MapGroup[];
   focusGroupId: string | null;
   highlightedGroupId: string | null;
   highlightedCustomerId?: string | null;
+  onClose?: () => void;
 }) {
   const [coordinates, setCoordinates] = useState<Record<string, Coordinates>>(
     {},
@@ -269,7 +272,20 @@ export default function PlanningMap({
           <strong>Customer map</strong>
           <span>Approximate postcode locations</span>
         </div>
-        <small>{locating ? "Locating…" : `${markers.length} markers`}</small>
+        <div className="planning-map-heading-actions">
+          <small>{locating ? "Locating…" : `${markers.length} markers`}</small>
+          {onClose && (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Hide map"
+              title="Hide map"
+              onClick={onClose}
+            >
+              <X size={16} />
+            </button>
+          )}
+        </div>
       </div>
       <MapContainer
         center={[4.2105, 101.9758]}
@@ -310,7 +326,7 @@ export default function PlanningMap({
         </div>
       )}
       <div className="planning-map-legend">
-        <span>Hover a group or customer name to highlight · Click a group to zoom</span>
+        <span>Hover a group or customer name to highlight · Click an address to zoom to it</span>
       </div>
     </aside>
   );

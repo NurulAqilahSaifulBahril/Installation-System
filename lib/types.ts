@@ -2,8 +2,8 @@
 // has one — a job nobody has touched reads "not_set" — so between them they
 // place every customer in the pipeline:
 //
-//   not_set / propose / reschedule -> Ready to Install
-//   pending_complete               -> Pending Complete
+//   not_set / reschedule           -> Ready to Install
+//   propose / pending_complete     -> Pending Complete
 //   complete                       -> Complete Installation
 //
 // The stage still has to be paid for: reaching Ready to Install needs the
@@ -261,6 +261,20 @@ export type InstallationJob = {
   // a customer can or cannot take a date, and `remarks` is the free-text note
   // on the customer record. This is what the crew has to know on site.
   installationRemarks: string;
+  // From the SEDA record, falling back to the customer record. Blank when
+  // neither has one.
+  customerEmail?: string;
+  // How many roof and site-assessment photos the invoice carries. Counts only:
+  // the URLs themselves are fetched per customer when someone opens them (see
+  // app/api/jobs/[id]/files), because carrying every link for every invoice
+  // would add megabytes to a pipeline load nobody looks at most of.
+  roofPhotoCount?: number;
+  sitePhotoCount?: number;
+  // The day this app first saw the job's SEDA status read Approved. The source
+  // keeps no approval date of its own, so it is recorded here going forward.
+  // Null for a job that was already approved when recording began — its real
+  // date is unknown, and inventing one would reorder the Waiting list.
+  sedaApprovedDate?: string | null;
   sourceUpdatedAt?: string;
 };
 
@@ -332,4 +346,30 @@ export function hasReachedPaymentPercent(
 // reads it, so a customer sitting exactly on 59% could be kept out of planning
 // altogether by the same rounding that misfiled MONG YEE KEONG.
 export const APPROVAL_PAYMENT_PERCENT = 59;
+
+// Whether a SEDA status counts as approved. Shared by the source import and the
+// scheduling suggestions so the two cannot disagree about who is cleared.
+export function isSedaApproved(status: string | null | undefined): boolean {
+  const normalized = status?.toLowerCase() ?? "";
+  return ["approved", "complete", "completed", "success"].some((word) =>
+    normalized.includes(word),
+  );
+}
+
+// The installation manager's read of a site, from the roof and site-assessment
+// photos. A hard job takes a crew's whole day; the others take one of its two
+// slots.
+export type SiteDifficulty = "easy" | "medium" | "hard";
+
+export type SiteAssessment = {
+  difficulty: SiteDifficulty;
+  // A few words on why — "atap, 2 storey, old tiles".
+  note: string;
+  updatedAt: string;
+  updatedBy?: string;
+  // "suggested" is a rating Claude made from the roof and site photos, still
+  // waiting for the installation manager to confirm or change it. Absent means
+  // the manager set it. The schedule uses either.
+  source?: "suggested";
+};
 

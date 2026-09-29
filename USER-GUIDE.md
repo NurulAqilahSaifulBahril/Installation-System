@@ -193,6 +193,41 @@ The team directory is on this screen too. Add teams, their members, contact
 numbers and base location, and set which township each team is working in for
 the week.
 
+#### Installation queue (Planning status: Ready to Install)
+
+On Installation groups, pick **Ready to Install** in Planning status to see the
+installation queue: one table per crew (Team 1 to Team 4, Monday to Saturday,
+9am and 2pm) for **next week (front line)** and **the week after
+(provisional)**.
+
+- **Queued** — customers paid 60% or more with SEDA approved. Each has 28
+  working days (Mon–Fri, public holidays excluded) from reaching 60% to be
+  installed. The queue runs by days left on that clock, so anyone over it goes
+  first. The **Queue** column shows their number and clock.
+- **Front line** — next week's slots, filled from the top of the queue. Team 1
+  works from Kluang; Teams 2 to 4 from JB. A day's two houses are within 10 km
+  where possible, up to 30 km. A hard roof takes the whole day.
+- **Confirm** — the customer agreed; the slot becomes a booking (**Scheduled**).
+- **Drop out** — the customer can't make the slot. Choose where they go (back
+  to the queue, another day this week, or on hold), add a remark, and pick the
+  **standby** who takes the slot.
+- **Standby** — the next customers in line. They meet every front-line rule;
+  their 60% date is just later. Anyone not used this week is at the front of
+  next week.
+- **On hold** — customer not available (clock paused), no stock, or materials
+  and equipment (clock keeps running). They keep their queue number; press
+  **Release** to bring them back. A hard roof stays in the queue until the
+  manager puts it on hold.
+- **Difficulty** — set in the Difficulty column, or via **View** in the SLD
+  column after looking at the photos. Ratings marked **Suggested by Claude**
+  come from the photos; press **Confirm** to keep one.
+- **Rain** — when rain is forecast for a day with customers on it, a notice asks
+  the manager to **Proceed** or **Put day on hold**. Nothing new is planned on a
+  day on hold; bookings already made that day are moved in the bookings.
+
+The SEDA approved date is recorded from 29 Sep 2026 onwards. Customers already
+approved before then show "Approved, date not recorded".
+
 ### 🚚 Stock delivery
 
 Delivery runs — a van going out on a date, to an area, from a warehouse.
