@@ -5619,23 +5619,6 @@ function InstallationGroupsView({
     return groups
       .filter((group) => group.installationDate)
       .filter((group) => matchesDateSearch(group.installationDate, periodFilter))
-      .filter((group) => {
-        if (planningFilter === "arranged") {
-          const isFullyArranged = Boolean(
-            group.installationTeam && group.wiringTeam && group.supervisors?.length,
-          );
-          if (!isFullyArranged) {
-            const bounds = weekBounds(group.installationDate);
-            if (
-              bounds?.start === "2026-10-05" ||
-              weekRangeLabel(group.installationDate).includes("5 Oct – 10 Oct 2026")
-            ) {
-              return false;
-            }
-          }
-        }
-        return true;
-      })
       .flatMap((group) =>
         // A crew booked for a week before anyone is assigned to it still gets
         // a row — otherwise a team added here would vanish the moment it was
