@@ -1970,7 +1970,7 @@ function applyJobUpdates(
         secondPreferredInstallationDate: null,
         preferredInstallationTime: (typeof update.preferredInstallationTime === "string" && update.preferredInstallationTime) || "09:00",
         availabilityRemarks: "",
-        installationApprovalStatus: "approved",
+        installationApprovalStatus: "date_approved",
         scheduleStatus: "ready_to_schedule",
         deliveryStatus: "not_planned",
         deliveryDate: null,
@@ -5770,7 +5770,9 @@ function InstallationGroupsView({
           // Days inside a week still read forwards, Monday to Saturday,
           // because that is the order the crew works them.
           a.group.installationDate.localeCompare(b.group.installationDate) ||
-          groupStartTime(a.group.id).localeCompare(groupStartTime(b.group.id)) ||
+          (a.job?.preferredInstallationTime || groupStartTime(a.group.id) || "99:99").localeCompare(
+            b.job?.preferredInstallationTime || groupStartTime(b.group.id) || "99:99",
+          ) ||
           (a.job?.customerName ?? "").localeCompare(b.job?.customerName ?? "")
         );
       });
@@ -5992,6 +5994,46 @@ function InstallationGroupsView({
     return assignment?.startDate?.split("T")[1]?.slice(0, 5) ?? "";
   }
 
+  function normalizeSlotTime(raw: string): string {
+    const trimmed = raw.trim();
+    if (!trimmed || /^(full(\s*day)?|all(\s*day)?|—|-)$/i.test(trimmed)) {
+      return "";
+    }
+    const m = trimmed.match(/^(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?$/i);
+    if (m) {
+      let hours = parseInt(m[1], 10);
+      const minutes = m[2] ? m[2] : "00";
+      const meridian = m[3]?.toLowerCase();
+      if (meridian === "pm" && hours < 12) hours += 12;
+      if (meridian === "am" && hours === 12) hours = 0;
+      if (hours >= 0 && hours < 24 && parseInt(minutes, 10) >= 0 && parseInt(minutes, 10) < 60) {
+        return `${String(hours).padStart(2, "0")}:${minutes}`;
+      }
+    }
+    return trimmed;
+  }
+
+  function handleSlotTimeChange(
+    group: InstallationGroup,
+    job: InstallationJob | null,
+    rowVisit: JobVisit | undefined,
+    rawVal: string,
+  ) {
+    const normalized = normalizeSlotTime(rawVal);
+    if (job && rowVisit) {
+      const nextVisits = (job.visits ?? []).map((v) =>
+        v.date === group.installationDate ? { ...v, time: normalized || undefined } : v,
+      );
+      onSaveJob({ ...job, visits: nextVisits });
+    } else if (job) {
+      onSaveJob({
+        ...job,
+        preferredInstallationTime: normalized || null,
+      });
+    }
+    setGroupSchedule(group, group.installationDate, normalized);
+  }
+
   // Date and time edits go to two places on purpose: the date is the group's
   // own field, but the clock lives on the week assignment (the calendar reads
   // it from there). A group that never got an assignment gets one created so
@@ -5999,7 +6041,7 @@ function InstallationGroupsView({
   function setGroupSchedule(
     group: InstallationGroup,
     date: string,
-    time: string,
+    time?: string,
   ) {
     const nextDate = date || group.installationDate;
     if (date) {
@@ -6008,8 +6050,9 @@ function InstallationGroupsView({
         installationEndDate: date,
       });
     }
-    const nextTime = time || groupStartTime(group.id) || "09:00";
-    const stamp = `${nextDate}T${nextTime}`;
+    const cleanTime = time !== undefined ? time.trim() : groupStartTime(group.id);
+    const isFullDay = !cleanTime || /^full(\s*day)?$/i.test(cleanTime);
+    const stamp = isFullDay ? nextDate : `${nextDate}T${cleanTime}`;
     const existing = weekAssignments.find(
       (item) => item.installationGroupId === group.id,
     );
@@ -6661,7 +6704,7 @@ function InstallationGroupsView({
 
       <div className="planning-panel">
         {pendingCheckNotice && (
-          <div className="notice rti-pending-notice" role="alert">
+          <div className="rti-pending-notice" role="alert">
             <div className="rti-pending-alert-content">
               <AlertTriangle size={18} className="rti-pending-alert-icon" />
               <span className="rti-pending-alert-text">
@@ -6671,7 +6714,7 @@ function InstallationGroupsView({
             <div className="rti-pending-alert-actions">
               <button
                 type="button"
-                className="button primary rti-alert-btn-complete"
+                className="rti-alert-btn-complete"
                 onClick={() => {
                   const targetJob = jobById.get(pendingCheckNotice.jobId);
                   if (targetJob) {
@@ -6684,7 +6727,7 @@ function InstallationGroupsView({
               </button>
               <button
                 type="button"
-                className="button secondary rti-alert-btn-dismiss"
+                className="rti-alert-btn-dismiss"
                 onClick={() => setPendingCheckNotice(null)}
                 title="Dismiss alert"
               >
@@ -6834,6 +6877,18 @@ function InstallationGroupsView({
       {groupsWorkspace === "teams" && !showSuggestedWeek && !showDepositTable && !showToArrangeTable && (
         <section className="unified-team-management">
           <div className="table-wrap rti-team unified-team-table">
+            <datalist id="rti-slot-time-presets">
+              <option value="09:00">09:00 (Morning)</option>
+              <option value="10:00">10:00</option>
+              <option value="11:00">11:00</option>
+              <option value="12:00">12:00 (Noon)</option>
+              <option value="13:00">13:00</option>
+              <option value="14:00">14:00 (Afternoon)</option>
+              <option value="14:30">14:30</option>
+              <option value="15:00">15:00</option>
+              <option value="16:00">16:00</option>
+              <option value="Full day">Full day</option>
+            </datalist>
             <table>
               <colgroup>
                 <col className="rti-col-date" />
@@ -6868,6 +6923,11 @@ function InstallationGroupsView({
                   const rowVisit = job?.visits?.find(
                     (visit) => visit.date === group.installationDate,
                   );
+                  const effectiveTime =
+                    (rowVisit ? rowVisit.time : undefined) ||
+                    job?.preferredInstallationTime ||
+                    startTime ||
+                    "";
                   const ownRemark =
                     (rowVisit ? rowVisit.notes : job?.installationRemarks) ?? "";
                   // No customer on the row: the booking's own note is all
@@ -7306,7 +7366,33 @@ function InstallationGroupsView({
                       {/* 1. Slot */}
                       <td className="rti-date">
                         <strong>{formatDateOnly(group.installationDate)}</strong>
-                        <span>{startTime || "Full day"}</span>
+                        <div className="rti-slot-time-wrap">
+                          <Clock3 size={11} className="rti-slot-time-icon" />
+                          <input
+                            type="text"
+                            list="rti-slot-time-presets"
+                            className="rti-slot-time-input"
+                            defaultValue={effectiveTime || "Full day"}
+                            key={`slot-time-${rowKey}-${effectiveTime}`}
+                            placeholder="Full day"
+                            title="Click to edit installation time (e.g. 09:00, 14:00, Full day)"
+                            onClick={(e) => e.stopPropagation()}
+                            onFocus={(e) => {
+                              if (e.target.value === "Full day") {
+                                e.target.select();
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.currentTarget.blur();
+                              }
+                            }}
+                            onBlur={(e) => {
+                              const raw = e.target.value;
+                              handleSlotTimeChange(group, job, rowVisit, raw);
+                            }}
+                          />
+                        </div>
                       </td>
 
                       {/* 2. Customer */}
