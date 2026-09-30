@@ -1843,6 +1843,8 @@ function matchesPipelineStage(
     return isJobReschedule(job) || isJobPending(job);
   }
   if (stage === "arranged") {
+    const group = lookup.groupByJobId.get(job.id) ?? null;
+    if (group && group.installationDate) return true;
     const stages = pipelineStagesOf(job, todayIso, lookup);
     return (
       stages.has("ready") ||
@@ -1927,7 +1929,72 @@ function applyJobUpdates(
   groups.forEach((group) => {
     group.jobIds.forEach((id) => groupByJobId.set(id, group));
   });
-  return jobs.map((job) => {
+  const existingJobIds = new Set(jobs.map((j) => j.id));
+  const syntheticJobs: InstallationJob[] = [];
+
+  groups.forEach((group) => {
+    group.jobIds.forEach((jobId) => {
+      if (!jobId || existingJobIds.has(jobId)) return;
+      existingJobIds.add(jobId);
+      const update = (updates[jobId] ?? {}) as Record<string, unknown>;
+      const cleanName =
+        (typeof update.customerName === "string" && update.customerName) ||
+        group.name.replace(/^Team\s*[0-9A-Za-z\s]+?[·-]\s*/i, "").trim() ||
+        "Scheduled Customer";
+      syntheticJobs.push({
+        id: jobId,
+        invoiceNumber: (typeof update.invoiceNumber === "string" && update.invoiceNumber) || "",
+        customerName: cleanName,
+        customerPhone: (typeof update.customerPhone === "string" && update.customerPhone) || "",
+        address: (typeof update.address === "string" && update.address) || group.area || "",
+        city: group.area || "",
+        state: "",
+        agentName: "",
+        totalAmount: 0,
+        paymentPercent: 100,
+        paymentBalance: 0,
+        panelQuantity: 0,
+        panelRating: 0,
+        inverter: "",
+        battery: "",
+        phase: "Three phase",
+        inverterType: "",
+        derivedInverterModel: "",
+        sedaStatus: "Approved",
+        sldUrl: null,
+        packageName: "",
+        packageType: "Residential",
+        installationDate: group.installationDate || null,
+        customerAvailabilityStatus: "complete",
+        preferredInstallationDate: group.installationDate || null,
+        secondPreferredInstallationDate: null,
+        preferredInstallationTime: (typeof update.preferredInstallationTime === "string" && update.preferredInstallationTime) || "09:00",
+        availabilityRemarks: "",
+        installationApprovalStatus: "approved",
+        scheduleStatus: "ready_to_schedule",
+        deliveryStatus: "not_planned",
+        deliveryDate: null,
+        arrivalDate: null,
+        arrivalTime: null,
+        stockDetails: "",
+        deliveryContactNumber: "",
+        warehouseLocation: "",
+        panelDetails: "",
+        wiringDetails: "",
+        batteryDetails: "",
+        inverterBattery: "",
+        powerOutput: "",
+        paymentOverrideStatus: "none",
+        paymentOverrideReason: "",
+        teams: [],
+        remarks: (typeof update.remarks === "string" && update.remarks) || group.remark || "",
+        installationRemarks: (typeof update.installationRemarks === "string" && update.installationRemarks) || group.remark || "",
+      });
+    });
+  });
+
+  const allJobs = [...jobs, ...syntheticJobs];
+  return allJobs.map((job) => {
     const merged = { ...job, ...(updates[job.id] ?? {}) };
     // Stored updates predate the five-value availability scheme, so a saved
     // "available" or "cancelled" is translated before anything reads it.
