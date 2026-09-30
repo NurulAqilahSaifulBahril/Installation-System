@@ -2429,6 +2429,16 @@ tr.needs-reschedule-date.selected td {
   background: #000000 !important;
 }
 
+.unified-team-table tbody tr.schedule-band.rti-team-band-sub.is-pinned th {
+  background: #dc2626 !important;
+  color: #ffffff !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.unified-team-table tbody tr.schedule-band.rti-team-band-sub.is-pinned:hover th {
+  background: #b91c1c !important;
+}
+
 .schedule-band-sub-content {
   display: flex;
   align-items: center;
@@ -2699,9 +2709,14 @@ tr.needs-reschedule-date.selected td {
 .installation-schedule-filter-bar {
   display: flex;
   align-items: flex-end;
-  justify-content: flex-start;
+  justify-content: flex-end;
   margin-bottom: 16px;
   gap: 10px;
+}
+
+.installation-schedule-filter-bar .schedule-filters {
+  margin-left: auto;
+  justify-content: flex-end;
 }
 
 .schedule-filters {
@@ -4306,33 +4321,32 @@ a.phone-number:hover {
 }
 
 .metric-accent-amber {
-  border-color: var(--amber);
-  background: var(--amber-soft);
+  border-color: var(--line);
+  background: var(--surface);
 }
 
 .metric-accent-amber.metric-clickable:hover {
-  box-shadow: 0 2px 6px rgba(152, 107, 22, 0.16);
+  box-shadow: 0 2px 6px rgba(20, 20, 18, 0.1);
 }
 
 .metric-accent-red {
-  border-color: var(--red);
-  background: var(--red-soft);
+  border-color: var(--line);
+  background: var(--surface);
 }
 
 .metric-accent-red .metric-icon {
-  color: var(--red);
-  background: rgba(179, 58, 50, 0.12);
+  color: var(--ink);
+  background: var(--surface-soft);
 }
 
 :root[data-theme="dark"] .metric-accent-red .metric-icon {
-  background: rgba(236, 130, 122, 0.16);
+  background: var(--surface-soft);
 }
 
-/* The stage whose filter is currently applied to the pipeline below. Declared
-   after the accent rules so the selected outline still shows on the amber and
-   red cards, which set a border colour of their own. */
+/* The stage whose filter is currently applied to the pipeline below. */
 .metric-selected {
   border-color: var(--primary);
+  background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--primary);
 }
 
@@ -5664,6 +5678,15 @@ a.phone-number:hover {
   border-top: none;
 }
 
+.rti-team-band.rti-team-band-sub.is-pinned th {
+  background: #dc2626 !important;
+  color: #ffffff !important;
+}
+
+.rti-team-band.rti-team-band-sub.is-pinned:hover th {
+  background: #b91c1c !important;
+}
+
 .rti-team-1 .rti-team-band-main th,
 .rti-team-band-main.rti-team-1 th,
 tr.schedule-band.rti-team-1 th {
@@ -5817,10 +5840,10 @@ tr.schedule-band.rti-team-other .rti-crew-input:focus {
 
 .rti-crew-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
   gap: 12px;
   flex: 1;
-  max-width: 1100px;
+  max-width: 1350px;
 }
 
 .rti-crew-col {
@@ -5948,8 +5971,8 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
 .rti-col-phone { width: 104px; }
 .rti-col-email { width: 150px; }
 .rti-col-phase { width: 60px; }
-.rti-col-panel { width: 110px; }
-.rti-col-inverter { width: 130px; }
+.rti-col-panel { min-width: 135px; width: 145px; }
+.rti-col-inverter { min-width: 145px; width: 155px; }
 .rti-col-agent { width: 100px; }
 .rti-agent {
   text-transform: uppercase;
@@ -5959,7 +5982,7 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
 .rti-col-seda { width: 100px; }
 .rti-col-payment { width: 96px; }
 .rti-col-sld { width: 120px; }
-.rti-col-remark { width: 170px; }
+.rti-col-remark { min-width: 260px; width: 280px; }
 
 .rti-edit-cell {
   padding: 3px 4px !important;
@@ -5971,15 +5994,23 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   box-sizing: border-box;
   font-family: inherit;
   font-size: 12px;
-  line-height: 1.35;
+  line-height: 1.4;
   color: var(--ink);
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;
-  padding: 4px 6px;
+  padding: 6px 8px;
   resize: vertical;
-  min-height: 36px;
+  min-height: 56px;
+  field-sizing: content;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
   transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.rti-cell-textarea::-webkit-scrollbar {
+  display: none;
 }
 
 .rti-cell-textarea:hover {
@@ -6000,7 +6031,7 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
 }
 
 .rti-remark-cell {
-  max-width: 240px;
+  min-width: 260px;
 }
 
 .rti-remark-text {
@@ -6027,6 +6058,13 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   display: block;
 }
 
+.rti-name {
+  font-weight: 600;
+  color: var(--ink);
+  cursor: default;
+  user-select: text;
+}
+
 .rti-name-link {
   display: block;
   padding: 0;
@@ -6047,7 +6085,10 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
 
 .rti-customer-wrap {
   position: relative;
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   max-width: 100%;
 }
 
@@ -6808,8 +6849,8 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
 }
 
 /* Awaiting Review row backgrounds */
-.rti-row.is-new-ready > td {
-  background: #f0fdf4 !important;
+.rti-row.is-special-case > td {
+  background: #faf5ff !important;
 }
 
 .rti-row.is-reschedule > td {
@@ -6824,8 +6865,12 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   background: #fee2e2 !important;
 }
 
-.rti-row.is-new-ready:hover > td {
-  background: #dcfce7 !important;
+.rti-row.is-om > td {
+  background: #fff7ed !important;
+}
+
+.rti-row.is-special-case:hover > td {
+  background: #f3e8ff !important;
 }
 
 .rti-row.is-reschedule:hover > td {
@@ -6840,13 +6885,17 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   background: #fecaca !important;
 }
 
+.rti-row.is-om:hover > td {
+  background: #ffedd5 !important;
+}
+
 :root[data-theme="dark"] .rti-row.is-remarked > td,
 :root[data-theme="dark"] .rti-row.is-koh-keng-kiat > td {
   background: #1a2332;
 }
 
-:root[data-theme="dark"] .rti-row.is-new-ready > td {
-  background: #143521 !important;
+:root[data-theme="dark"] .rti-row.is-special-case > td {
+  background: #2e1065 !important;
 }
 
 :root[data-theme="dark"] .rti-row.is-reschedule > td {
@@ -6861,14 +6910,18 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   background: #4c1d1d !important;
 }
 
+:root[data-theme="dark"] .rti-row.is-om > td {
+  background: #431407 !important;
+}
+
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .rti-row.is-remarked > td,
   :root:not([data-theme="light"]) .rti-row.is-koh-keng-kiat > td {
     background: #1a2332;
   }
-  :root:not([data-theme="light"]) .rti-row.is-new-ready > td {
-  background: #143521 !important;
-}
+  :root:not([data-theme="light"]) .rti-row.is-special-case > td {
+    background: #2e1065 !important;
+  }
 
 :root:not([data-theme="light"]) .rti-row.is-reschedule > td {
     background: #1e3a5f !important;
@@ -6878,6 +6931,9 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   }
   :root:not([data-theme="light"]) .rti-row.is-attention > td {
     background: #4c1d1d !important;
+  }
+  :root:not([data-theme="light"]) .rti-row.is-om > td {
+    background: #431407 !important;
   }
 }
 
@@ -6934,14 +6990,26 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
 }
 
 .awaiting-pill.is-new-ready {
-  background: #dcfce7;
-  color: #15803d;
-  border-color: #bbf7d0;
+  background: var(--surface-subtle, #f1f5f9);
+  color: var(--foreground, #0f172a);
+  border-color: var(--border, #cbd5e1);
 }
 .awaiting-pill.is-new-ready.is-active {
-  background: #bbf7d0;
-  border-color: #16a34a;
-  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.25);
+  background: var(--foreground, #0f172a);
+  color: var(--background, #ffffff);
+  border-color: var(--foreground, #0f172a);
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.25);
+}
+
+.awaiting-pill.is-special-case {
+  background: #f3e8ff;
+  color: #6b21a8;
+  border-color: #e9d5ff;
+}
+.awaiting-pill.is-special-case.is-active {
+  background: #e9d5ff;
+  border-color: #9333ea;
+  box-shadow: 0 0 0 2px rgba(147, 51, 234, 0.25);
 }
 
 .awaiting-pill.is-reschedule {
@@ -6975,6 +7043,17 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   background: #fecaca;
   border-color: #dc2626;
   box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.25);
+}
+
+.awaiting-pill.is-om {
+  background: #ffedd5;
+  color: #c2410c;
+  border-color: #fed7aa;
+}
+.awaiting-pill.is-om.is-active {
+  background: #fed7aa;
+  border-color: #ea580c;
+  box-shadow: 0 0 0 2px rgba(234, 88, 12, 0.25);
 }
 
 /* Awaiting Review select in filter toolbar */
@@ -7035,9 +7114,15 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
 }
 
 .rti-review-badge.is-new-ready {
-  background: #dcfce7;
-  color: #15803d;
-  border: 1px solid #86efac;
+  background: var(--surface-subtle, #f1f5f9);
+  color: var(--muted, #64748b);
+  border: 1px solid var(--border, #cbd5e1);
+}
+
+.rti-review-badge.is-special-case {
+  background: #f3e8ff;
+  color: #6b21a8;
+  border: 1px solid #d8b4fe;
 }
 
 .rti-review-badge.is-reschedule {
@@ -7058,6 +7143,12 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   border: 1px solid #fca5a5;
 }
 
+.rti-review-badge.is-om {
+  background: #ffedd5;
+  color: #c2410c;
+  border: 1px solid #fed7aa;
+}
+
 /* Column headers for every week team group in Arranged Installation */
 .schedule-column-headers th {
   color: var(--muted, #64748b);
@@ -7075,5 +7166,150 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   background: #1e293b !important;
   color: #94a3b8;
   border-bottom: 1px solid #334155;
+}
+
+/* Complete status checkmark button before customer name */
+.rti-row-complete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line, #cbd5e1);
+  background: var(--surface, #ffffff);
+  color: #94a3b8;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+  padding: 0;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.rti-row-complete-btn:hover {
+  border-color: #22c55e;
+  color: #16a34a;
+  background: #f0fdf4;
+  transform: scale(1.1);
+}
+
+/* When complete: vibrant green indicator before customer name */
+.rti-row-complete-btn.is-complete {
+  border-color: #16a34a;
+  background: #16a34a;
+  color: #ffffff;
+  box-shadow: 0 1px 3px rgba(22, 163, 74, 0.35);
+}
+
+.rti-row-complete-btn.is-complete:hover {
+  background: #15803d;
+  border-color: #15803d;
+}
+
+:root[data-theme="dark"] .rti-row-complete-btn {
+  background: #1e293b;
+  border-color: #475569;
+  color: #64748b;
+}
+
+:root[data-theme="dark"] .rti-row-complete-btn:hover {
+  background: #064e3b;
+  border-color: #10b981;
+  color: #86efac;
+}
+
+:root[data-theme="dark"] .rti-row-complete-btn.is-complete {
+  background: #16a34a;
+  border-color: #22c55e;
+  color: #ffffff;
+}
+
+/* Pending / Reschedule case alert notice */
+.rti-pending-notice {
+  background: #fef9c3 !important;
+  border: 1px solid #facc15 !important;
+  color: #854d0e !important;
+  border-radius: 8px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  font-size: 13px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.rti-pending-alert-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+
+.rti-pending-alert-icon {
+  color: #ca8a04;
+  flex-shrink: 0;
+}
+
+.rti-pending-alert-text {
+  line-height: 1.4;
+}
+
+.rti-pending-alert-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.rti-alert-btn-complete {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #16a34a !important;
+  color: #ffffff !important;
+  border: none !important;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.rti-alert-btn-complete:hover {
+  background: #15803d !important;
+}
+
+.rti-alert-btn-dismiss {
+  background: transparent !important;
+  color: #854d0e !important;
+  border: 1px solid #ca8a04 !important;
+  border-radius: 6px;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.rti-alert-btn-dismiss:hover {
+  background: #fef08a !important;
+}
+
+:root[data-theme="dark"] .rti-pending-notice {
+  background: #3c3214 !important;
+  border-color: #785a1a !important;
+  color: #fef08a !important;
+}
+
+:root[data-theme="dark"] .rti-alert-btn-dismiss {
+  color: #fef08a !important;
+  border-color: #a16207 !important;
+}
+
+:root[data-theme="dark"] .rti-alert-btn-dismiss:hover {
+  background: #4a3e1c !important;
 }
 

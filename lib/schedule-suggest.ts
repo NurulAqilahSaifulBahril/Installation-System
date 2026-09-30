@@ -113,6 +113,7 @@ export type TeamCrewAssignment = {
   wiringTeam?: string;
   siteSupervisor?: string;
   membersText?: string;
+  car?: string;
 };
 
 export type ScheduleDraft = {
@@ -205,6 +206,7 @@ export function normalizeDraft(value: unknown): ScheduleDraft {
         wiringTeam: typeof c.wiringTeam === "string" ? c.wiringTeam : undefined,
         siteSupervisor: typeof c.siteSupervisor === "string" ? c.siteSupervisor : undefined,
         membersText: typeof c.membersText === "string" ? c.membersText : undefined,
+        car: typeof c.car === "string" ? c.car : undefined,
       };
     }
   }

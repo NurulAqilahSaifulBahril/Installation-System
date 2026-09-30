@@ -32,10 +32,93 @@ function formatPhone(value: string) {
     : value;
 }
 
-function panelText(job: InstallationJob) {
-  if (job.powerOutput.trim()) return job.powerOutput.trim();
-  if (!job.panelQuantity) return "";
-  return `${job.panelQuantity}${job.panelRating ? ` × ${job.panelRating}W` : " panels"}`;
+function extractPanelBrand(text: string): string {
+  if (!text) return "";
+  if (/jinko(?:solar)?|tiger\s*neo/i.test(text)) return "Jinko";
+  if (/astronergy(?:\s*astro(?:\s*\d+)?)?|chint/i.test(text)) return "Astronergy";
+  if (/longi|hi-?mo/i.test(text)) return "Longi";
+  if (/trina(?:solar)?|vertex/i.test(text)) return "Trina";
+  if (/ja\s*solar/i.test(text)) return "JA Solar";
+  if (/canadian\s*solar/i.test(text)) return "Canadian Solar";
+  if (/risen/i.test(text)) return "Risen";
+  if (/tongwei|tw\s*solar/i.test(text)) return "Tongwei";
+  if (/ae\s*solar/i.test(text)) return "AE Solar";
+  if (/suntech/i.test(text)) return "Suntech";
+  if (/maxeon|sunpower/i.test(text)) return "Maxeon";
+  if (/qcells|hanwha/i.test(text)) return "Qcells";
+  if (/hyundai/i.test(text)) return "Hyundai";
+  if (/seraphim/i.test(text)) return "Seraphim";
+  if (/dah\s*solar/i.test(text)) return "DAH Solar";
+
+  const leadMatch = text.match(
+    /^\d+\s*[xX]\s*(?:\d{3,4}\s*W(?:p|att)?\b\s*)?([A-Za-z][A-Za-z-]*)/i,
+  );
+  if (leadMatch && !/^(?:pcs|panels?|watts?)$/i.test(leadMatch[1])) {
+    return leadMatch[1];
+  }
+
+  const pcsMatch = text.match(
+    /\b\d+\s*(?:pcs|panels?)\s+(?:of\s+)?([A-Za-z][A-Za-z-]*)/i,
+  );
+  if (pcsMatch && !/^(?:pcs|panels?|watts?|mono|poly|bifacial)$/i.test(pcsMatch[1])) {
+    return pcsMatch[1];
+  }
+
+  const beforePcsMatch = text.match(
+    /\b([A-Za-z][A-Za-z-]*)\s+\d+\s*(?:pcs|panels?)\b/i,
+  );
+  if (
+    beforePcsMatch &&
+    !/^(?:pcs|panels?|watts?|mono|poly|bifacial|hybrid|string|single|three|phase)$/i.test(
+      beforePcsMatch[1],
+    )
+  ) {
+    return beforePcsMatch[1];
+  }
+
+  return "";
+}
+
+function panelText(job: InstallationJob): string {
+  const existing = job.powerOutput?.trim() || "";
+  const existingBrand = extractPanelBrand(existing);
+  if (existing) {
+    if (existingBrand) return existing;
+    const isGenericOldFormat =
+      /^\d+\s*(?:×|x|panels?\b)\s*(?:\d{3,4}\s*W)?$/i.test(existing) ||
+      /^\d{3,4}\s*W$/i.test(existing);
+    if (!isGenericOldFormat) return existing;
+  }
+
+  const brand =
+    extractPanelBrand(existing) ||
+    extractPanelBrand(job.packageName || "") ||
+    extractPanelBrand(job.remarks || "") ||
+    extractPanelBrand(job.installationRemarks || "") ||
+    extractPanelBrand(job.availabilityRemarks || "");
+
+  const qty =
+    job.panelQuantity ??
+    (() => {
+      const m = (job.packageName || existing).match(/(\d+)\s*(?:pcs|panels\b|[xX×]\b)/i);
+      return m ? Number(m[1]) : null;
+    })();
+
+  const rating =
+    job.panelRating ??
+    (() => {
+      const m = (job.packageName || existing).match(/(\d{3,4})\s*W(?:p|att)?\b/i);
+      return m ? Number(m[1]) : null;
+    })();
+
+  if (qty && brand && rating) return `${qty} ${brand} ${rating}W`;
+  if (qty && brand) return `${qty} ${brand}`;
+  if (brand && rating) return `${brand} ${rating}W`;
+  if (brand) return brand;
+  if (qty && rating) return `${qty} × ${rating}W`;
+  if (qty) return `${qty} panels`;
+  if (rating) return `${rating}W`;
+  return existing;
 }
 
 function inverterText(job: InstallationJob) {
@@ -86,7 +169,33 @@ export function isKohKengKiatCustomer(job: InstallationJob): boolean {
   return name.includes("koh keng kiat");
 }
 
-export type AwaitingReviewCategory = "new_ready" | "reschedule" | "pending" | "attention";
+export type AwaitingReviewCategory = "new_ready" | "reschedule" | "pending" | "special_case" | "attention" | "om";
+
+export function isJobOM(job: InstallationJob): boolean {
+  if (job.visits?.some((v) => /o\s*&\s*m/i.test(v.kind ?? ""))) return true;
+  const remarks = [
+    job.installationRemarks,
+    job.remarks,
+    job.availabilityRemarks,
+    job.packageType,
+    job.packageName,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /\b(o&m|om|o\s*&\s*m)\b/i.test(remarks);
+}
+
+export function isSpecialCaseApproval(job: InstallationJob): boolean {
+  const remarks = [
+    job.installationRemarks,
+    job.remarks,
+    job.availabilityRemarks,
+    ...(job.visits ?? []).flatMap((v) => [v.kind, v.notes]),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /special\s*case\s*approval/i.test(remarks);
+}
 
 export function isJobReschedule(job: InstallationJob): boolean {
   if (job.customerAvailabilityStatus === "reschedule") return true;
@@ -124,13 +233,15 @@ export function isJobNeedAttention(
 }
 
 export function isJobNewReady(job: InstallationJob, todayIso?: string): boolean {
-  return !isJobReschedule(job) && !isJobPending(job) && !isJobNeedAttention(job, todayIso);
+  return !isJobOM(job) && !isSpecialCaseApproval(job) && !isJobReschedule(job) && !isJobPending(job) && !isJobNeedAttention(job, todayIso);
 }
 
 export function getJobReviewColor(
   job: InstallationJob,
   todayIso?: string,
 ): AwaitingReviewCategory {
+  if (isJobOM(job)) return "om";
+  if (isSpecialCaseApproval(job)) return "special_case";
   if (isJobReschedule(job)) return "reschedule";
   if (isJobPending(job)) return "pending";
   if (isJobNeedAttention(job, todayIso)) return "attention";
@@ -150,9 +261,11 @@ export default function DepositScheduleTable({
   awaitingReviewFilter = "all",
   onAwaitingReviewChange,
   newReadyCount,
+  specialCaseCount,
   rescheduleCount,
   pendingCount,
   attentionCount,
+  omCount,
 }: {
   jobs: InstallationJob[];
   assessments: Record<string, SiteAssessment>;
@@ -166,9 +279,11 @@ export default function DepositScheduleTable({
   awaitingReviewFilter?: string;
   onAwaitingReviewChange?: (value: string) => void;
   newReadyCount?: number;
+  specialCaseCount?: number;
   rescheduleCount?: number;
   pendingCount?: number;
   attentionCount?: number;
+  omCount?: number;
 }) {
   const [filesJobId, setFilesJobId] = useState<string | null>(null);
   const [filesByJob, setFilesByJob] = useState<Record<string, FilesState>>({});
@@ -345,6 +460,13 @@ export default function DepositScheduleTable({
             </button>
             <button
               type="button"
+              className={`awaiting-pill is-special-case ${awaitingReviewFilter === "special_case" ? "is-active" : ""}`}
+              onClick={() => onAwaitingReviewChange("special_case")}
+            >
+              Special Case {specialCaseCount !== undefined ? `(${specialCaseCount})` : ""}
+            </button>
+            <button
+              type="button"
               className={`awaiting-pill is-reschedule ${awaitingReviewFilter === "reschedule" ? "is-active" : ""}`}
               onClick={() => onAwaitingReviewChange("reschedule")}
             >
@@ -363,6 +485,13 @@ export default function DepositScheduleTable({
               onClick={() => onAwaitingReviewChange("attention")}
             >
               Need Attention {attentionCount !== undefined ? `(${attentionCount})` : ""}
+            </button>
+            <button
+              type="button"
+              className={`awaiting-pill is-om ${awaitingReviewFilter === "om" ? "is-active" : ""}`}
+              onClick={() => onAwaitingReviewChange("om")}
+            >
+              O&M {omCount !== undefined ? `(${omCount})` : ""}
             </button>
           </div>
         </div>
@@ -406,7 +535,7 @@ export default function DepositScheduleTable({
               [...jobs].sort((a, b) => {
                 const aType = getJobReviewColor(a, todayIso);
                 const bType = getJobReviewColor(b, todayIso);
-                const order: Record<string, number> = { new_ready: 0, reschedule: 1, pending: 2, attention: 3 };
+                const order: Record<string, number> = { new_ready: 0, special_case: 1, reschedule: 2, pending: 3, attention: 4, om: 5 };
                 if (aType !== bType) {
                   return (order[aType] ?? 9) - (order[bType] ?? 9);
                 }
@@ -415,14 +544,14 @@ export default function DepositScheduleTable({
                 const paymentLabel = job.secondPaymentDate ? "2nd payment:" : "Deposit payment:";
                 const paymentDateVal = job.secondPaymentDate || job.firstPaymentDate;
                 const isKoh = isKohKengKiatCustomer(job);
-                const reviewType = getJobReviewColor(job, todayIso);
+                const reviewType = showAwaitingReviewFilter ? getJobReviewColor(job, todayIso) : null;
                 return (
                   <Fragment key={job.id}>
                     <tr
                       id={`deposit-row-${job.id}`}
                       className={[
                         "rti-row",
-                        reviewType ? `is-${reviewType}` : "",
+                        reviewType ? `is-${reviewType.replace(/_/g, "-")}` : "",
                         isKoh ? "is-koh-keng-kiat" : "",
                       ]
                         .filter(Boolean)
@@ -513,7 +642,7 @@ export default function DepositScheduleTable({
                       <td className="rti-edit-cell">
                         <textarea
                           className="rti-cell-textarea"
-                          rows={2}
+                          rows={3}
                           value={remarkDraft[job.id] ?? job.installationRemarks ?? ""}
                           placeholder="Add remark…"
                           aria-label={`Remarks for ${displayName(job.customerName)}`}

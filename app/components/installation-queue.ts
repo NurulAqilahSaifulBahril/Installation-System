@@ -19,6 +19,7 @@ import {
   type TeamNumber,
 } from "@/lib/schedule-suggest";
 import type { InstallationJob, SiteAssessment } from "@/lib/types";
+import { isJobPending, isJobReschedule } from "@/app/components/DepositScheduleTable";
 
 // The installation queue, worked out once from the shared data so the two
 // pages that show it can never disagree: Customer Scheduling lists it (queue
@@ -40,6 +41,7 @@ export type ScheduleGroup = {
   supervisors: string[];
   teamLabel?: string;
   wiringMembers?: string[];
+  cars?: string[];
 };
 
 export type ScheduleWeekAssignment = {
@@ -124,7 +126,13 @@ export function useInstallationQueue({
     groups.forEach((group) => {
       group.jobIds.forEach((jobId) => {
         const job = jobById.get(jobId);
-        if (job?.customerAvailabilityStatus !== "reschedule") ids.add(jobId);
+        const isPendingOrReschedule =
+          Boolean(job) &&
+          job?.customerAvailabilityStatus !== "complete" &&
+          (job?.customerAvailabilityStatus === "reschedule" ||
+            isJobPending(job!) ||
+            isJobReschedule(job!));
+        if (!isPendingOrReschedule) ids.add(jobId);
         if (group.installationDate) dates.set(jobId, group.installationDate.slice(0, 10));
       });
       const team = teamOfGroup(group);

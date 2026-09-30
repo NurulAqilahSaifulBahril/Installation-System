@@ -115,6 +115,7 @@ const PENDING_SEDA_PHRASE = /pending\s*seda[a-z\s]*/gi;
 // it is on almost every unapproved job and means only that the paperwork is
 // with SEDA.
 export function signalsPendingComplete(job: InstallationJob) {
+  if (job.customerAvailabilityStatus === "complete") return false;
   if (job.customerAvailabilityStatus === "pending_complete") return true;
   return /pending/i.test(remarkText(job).replace(PENDING_SEDA_PHRASE, " "));
 }

@@ -115,10 +115,93 @@ function formatPhone(value: string) {
     : value;
 }
 
-function panelText(job: InstallationJob) {
-  if (job.powerOutput.trim()) return job.powerOutput.trim();
-  if (!job.panelQuantity) return "";
-  return `${job.panelQuantity}${job.panelRating ? ` × ${job.panelRating}W` : " panels"}`;
+function extractPanelBrand(text: string): string {
+  if (!text) return "";
+  if (/jinko(?:solar)?|tiger\s*neo/i.test(text)) return "Jinko";
+  if (/astronergy(?:\s*astro(?:\s*\d+)?)?|chint/i.test(text)) return "Astronergy";
+  if (/longi|hi-?mo/i.test(text)) return "Longi";
+  if (/trina(?:solar)?|vertex/i.test(text)) return "Trina";
+  if (/ja\s*solar/i.test(text)) return "JA Solar";
+  if (/canadian\s*solar/i.test(text)) return "Canadian Solar";
+  if (/risen/i.test(text)) return "Risen";
+  if (/tongwei|tw\s*solar/i.test(text)) return "Tongwei";
+  if (/ae\s*solar/i.test(text)) return "AE Solar";
+  if (/suntech/i.test(text)) return "Suntech";
+  if (/maxeon|sunpower/i.test(text)) return "Maxeon";
+  if (/qcells|hanwha/i.test(text)) return "Qcells";
+  if (/hyundai/i.test(text)) return "Hyundai";
+  if (/seraphim/i.test(text)) return "Seraphim";
+  if (/dah\s*solar/i.test(text)) return "DAH Solar";
+
+  const leadMatch = text.match(
+    /^\d+\s*[xX]\s*(?:\d{3,4}\s*W(?:p|att)?\b\s*)?([A-Za-z][A-Za-z-]*)/i,
+  );
+  if (leadMatch && !/^(?:pcs|panels?|watts?)$/i.test(leadMatch[1])) {
+    return leadMatch[1];
+  }
+
+  const pcsMatch = text.match(
+    /\b\d+\s*(?:pcs|panels?)\s+(?:of\s+)?([A-Za-z][A-Za-z-]*)/i,
+  );
+  if (pcsMatch && !/^(?:pcs|panels?|watts?|mono|poly|bifacial)$/i.test(pcsMatch[1])) {
+    return pcsMatch[1];
+  }
+
+  const beforePcsMatch = text.match(
+    /\b([A-Za-z][A-Za-z-]*)\s+\d+\s*(?:pcs|panels?)\b/i,
+  );
+  if (
+    beforePcsMatch &&
+    !/^(?:pcs|panels?|watts?|mono|poly|bifacial|hybrid|string|single|three|phase)$/i.test(
+      beforePcsMatch[1],
+    )
+  ) {
+    return beforePcsMatch[1];
+  }
+
+  return "";
+}
+
+function panelText(job: InstallationJob): string {
+  const existing = job.powerOutput?.trim() || "";
+  const existingBrand = extractPanelBrand(existing);
+  if (existing) {
+    if (existingBrand) return existing;
+    const isGenericOldFormat =
+      /^\d+\s*(?:×|x|panels?\b)\s*(?:\d{3,4}\s*W)?$/i.test(existing) ||
+      /^\d{3,4}\s*W$/i.test(existing);
+    if (!isGenericOldFormat) return existing;
+  }
+
+  const brand =
+    extractPanelBrand(existing) ||
+    extractPanelBrand(job.packageName || "") ||
+    extractPanelBrand(job.remarks || "") ||
+    extractPanelBrand(job.installationRemarks || "") ||
+    extractPanelBrand(job.availabilityRemarks || "");
+
+  const qty =
+    job.panelQuantity ??
+    (() => {
+      const m = (job.packageName || existing).match(/(\d+)\s*(?:pcs|panels\b|[xX×]\b)/i);
+      return m ? Number(m[1]) : null;
+    })();
+
+  const rating =
+    job.panelRating ??
+    (() => {
+      const m = (job.packageName || existing).match(/(\d{3,4})\s*W(?:p|att)?\b/i);
+      return m ? Number(m[1]) : null;
+    })();
+
+  if (qty && brand && rating) return `${qty} ${brand} ${rating}W`;
+  if (qty && brand) return `${qty} ${brand}`;
+  if (brand && rating) return `${brand} ${rating}W`;
+  if (brand) return brand;
+  if (qty && rating) return `${qty} × ${rating}W`;
+  if (qty) return `${qty} panels`;
+  if (rating) return `${rating}W`;
+  return existing;
 }
 
 function inverterText(job: InstallationJob) {
@@ -309,6 +392,16 @@ export default function ReadyToInstallSchedule({
     return Array.from(set);
   }, [teams, groups]);
 
+  const availableCars = useMemo(() => {
+    const set = new Set<string>();
+    groups.forEach((g) => {
+      g.cars?.forEach((c) => {
+        if (c) set.add(c);
+      });
+    });
+    return Array.from(set).sort();
+  }, [groups]);
+
   function checkAndGraduateTeam(
     teamNum: TeamNumber,
     crews: Partial<Record<TeamNumber, TeamCrewAssignment>>,
@@ -347,6 +440,13 @@ export default function ReadyToInstallSchedule({
           .filter(Boolean)
       : [];
 
+    const cars = crew?.car
+      ? crew.car
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+
     const bookings = entriesToMove.map((item) => {
       const job = jobById.get(item.jobId);
       const town = job ? townOf(job) : "";
@@ -363,6 +463,7 @@ export default function ReadyToInstallSchedule({
           wiringTeam: wir,
           supervisors: [sup],
           wiringMembers,
+          cars,
           teamLabel: `Team ${teamNum}`,
         } as ScheduleGroup,
         assignment: {
@@ -643,6 +744,12 @@ export default function ReadyToInstallSchedule({
           .map((s) => s.trim())
           .filter(Boolean)
       : [];
+    const cars = crew?.car
+      ? crew.car
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
     onBook(
       {
         id,
@@ -655,6 +762,7 @@ export default function ReadyToInstallSchedule({
         wiringTeam: crew?.wiringTeam || "",
         supervisors: crew?.siteSupervisor ? [crew.siteSupervisor] : [],
         wiringMembers,
+        cars,
         teamLabel: `Team ${team}`,
       },
       {
@@ -1185,6 +1293,30 @@ export default function ReadyToInstallSchedule({
                             placeholder="e.g. Ali, Ah Hock, Kumar..."
                             onChange={(e) => updateCrewField(team.team, "membersText", e.target.value)}
                           />
+                        </div>
+
+                        <div className="rti-crew-col">
+                          <label className="rti-crew-label" htmlFor={`crew-car-${team.team}`}>
+                            Car
+                          </label>
+                          <input
+                            id={`crew-car-${team.team}`}
+                            type="text"
+                            list={`cars-list-${team.team}`}
+                            className="rti-crew-input"
+                            value={scheduleDraft.teamCrews?.[team.team]?.car ?? ""}
+                            placeholder="e.g. Van, Hilux..."
+                            onChange={(e) => updateCrewField(team.team, "car", e.target.value)}
+                            onBlur={(e) => handleCrewBlur(team.team, "car", e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
+                          />
+                          <datalist id={`cars-list-${team.team}`}>
+                            {availableCars.map((name) => (
+                              <option key={name} value={name} />
+                            ))}
+                          </datalist>
                         </div>
                       </div>
                     </div>
