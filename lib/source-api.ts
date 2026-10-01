@@ -678,6 +678,22 @@ function resolvePaymentBalance(row: ProxyRow, paymentPercent: number): number {
   return Math.max(0, total * (1 - paymentPercent / 100));
 }
 
+function resolveSourceAddress(
+  installationAddress: string | null,
+  customerAddress: string | null,
+): string {
+  const inst = (installationAddress || "").trim();
+  if (
+    !inst ||
+    /^(same(\s+as\s+(above|customer|billing))?|as\s+above|same\s+address|n\/?a|-)$/i.test(
+      inst,
+    )
+  ) {
+    return (customerAddress || "").trim();
+  }
+  return inst;
+}
+
 function rowToJob(row: ProxyRow): InstallationJob {
   const paymentPercent = resolvePaymentPercent(row);
   // Compared through the shared test rather than with a bare `<`: an invoice
@@ -689,7 +705,7 @@ function rowToJob(row: ProxyRow): InstallationJob {
     APPROVAL_PAYMENT_PERCENT,
   );
   const sedaApproved = hasSedaApproval(row.seda_status);
-  const sourceAddress = row.installation_address || row.address || "";
+  const sourceAddress = resolveSourceAddress(row.installation_address, row.address);
 
   const packageLine = firstPackageLine(row.package_item_description);
   const resolvedPanelQty = parsePanelQtyFromPackageLine(packageLine) ?? row.panel_qty;

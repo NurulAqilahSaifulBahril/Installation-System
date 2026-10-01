@@ -1655,6 +1655,8 @@ function isHiddenAsCompleted(
   todayIso: string,
   group: InstallationGroup | null | undefined,
 ) {
+  if (job.customerAvailabilityStatus === "complete") return true;
+  if (group && group.installationDate) return false;
   return (
     isCompleteInstallation(job, todayIso, group) && !signalsPendingComplete(job)
   );
@@ -1783,10 +1785,15 @@ function matchesPipelineStage(
   }
   if (stage === "to_arrange") {
     const group = lookup.groupByJobId.get(job.id) ?? null;
-    if (
-      job.customerAvailabilityStatus === "complete" ||
-      isCompleteInstallation(job, todayIso, group)
-    ) {
+    if (job.customerAvailabilityStatus === "complete") {
+      return false;
+    }
+    // Rule: if no '✓' on arranged install, customer is copied to propose to install.
+    // Does not depend on pending, reschedule, etc.
+    if (group && group.installationDate) {
+      return true;
+    }
+    if (isCompleteInstallation(job, todayIso, group)) {
       return false;
     }
     if (isSpecialCaseApproval(job)) {
@@ -6683,7 +6690,6 @@ function InstallationGroupsView({
             </label>
             {(periodFilter ||
               customerQuery ||
-              planningFilter !== "propose" ||
               awaitingReviewFilter !== "all") && (
               <button
                 type="button"
@@ -6691,7 +6697,6 @@ function InstallationGroupsView({
                 onClick={() => {
                   setPeriodFilter("");
                   setCustomerQuery("");
-                  setPlanningFilter("propose");
                   setAwaitingReviewFilter("all");
                 }}
               >

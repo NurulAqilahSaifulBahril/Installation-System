@@ -6083,6 +6083,82 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   text-decoration: underline;
 }
 
+.rti-row-remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+  padding: 0;
+  margin-right: 2px;
+  vertical-align: middle;
+}
+
+.rti-row-remove-btn:hover {
+  border-color: #dc2626;
+  background: #dc2626;
+  color: #ffffff;
+  transform: scale(1.1);
+  box-shadow: 0 1px 4px rgba(220, 38, 38, 0.35);
+}
+
+:root[data-theme="dark"] .rti-row-remove-btn {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #f87171;
+}
+
+:root[data-theme="dark"] .rti-row-remove-btn:hover {
+  background: #dc2626;
+  border-color: #ef4444;
+  color: #ffffff;
+}
+
+.rti-slot-select {
+  display: block;
+  width: 100%;
+  min-width: 104px;
+  margin-top: 4px;
+  padding: 3px 6px;
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--surface-card, #ffffff);
+  border: 1px solid var(--border-color, #cbd5e1);
+  border-radius: 4px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.rti-slot-select:hover {
+  border-color: var(--frost, #3b82f6);
+}
+
+.rti-slot-select:focus {
+  border-color: var(--frost, #3b82f6);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+:root[data-theme="dark"] .rti-slot-select {
+  background: #232328;
+  border-color: #3f3f46;
+  color: #f4f4f5;
+}
+
+:root[data-theme="dark"] .rti-slot-select:hover,
+:root[data-theme="dark"] .rti-slot-select:focus {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.25);
+}
+
 .rti-customer-wrap {
   position: relative;
   display: inline-flex;
@@ -6258,7 +6334,7 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
 }
 
 .rti-row.is-booked td:first-child {
-  box-shadow: inset 3px 0 0 var(--green);
+  /* Vertical green bar removed as requested */
 }
 
 .rti-row.is-placed td:first-child {

@@ -36,3 +36,5 @@ npm-debug.log*
 /rebuild-dashboard.bat
 /check-build.bat
 /register-dashboard-task.ps1
+
+/scratch/

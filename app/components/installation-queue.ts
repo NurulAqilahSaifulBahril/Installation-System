@@ -125,14 +125,11 @@ export function useInstallationQueue({
     const dates = new Map<string, string>();
     groups.forEach((group) => {
       group.jobIds.forEach((jobId) => {
+        // If no '✓' (not complete), customer is copied/available in Propose to Install.
+        // It does not depend on pending, reschedule, etc.
         const job = jobById.get(jobId);
-        const isPendingOrReschedule =
-          Boolean(job) &&
-          job?.customerAvailabilityStatus !== "complete" &&
-          (job?.customerAvailabilityStatus === "reschedule" ||
-            isJobPending(job!) ||
-            isJobReschedule(job!));
-        if (!isPendingOrReschedule) ids.add(jobId);
+        const hasCheck = Boolean(job) && job?.customerAvailabilityStatus === "complete";
+        if (hasCheck) ids.add(jobId);
         if (group.installationDate) dates.set(jobId, group.installationDate.slice(0, 10));
       });
       const team = teamOfGroup(group);

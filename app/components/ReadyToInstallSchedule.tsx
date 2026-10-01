@@ -1,6 +1,6 @@
 "use client";
 
-import { CloudRain, FileText, MapPin, X } from "lucide-react";
+import { CloudRain, FileText, MapPin, Minus, X } from "lucide-react";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { fetchDailyWeather, type DailyWeather } from "@/lib/calendar-weather";
 import { distanceKm } from "@/lib/postcode-coords";
@@ -234,32 +234,7 @@ const DIFFICULTY_LABEL: Record<SiteDifficulty, string> = {
   hard: "Hard",
 };
 
-// Keywords in the remark that signal the customer should be held / removed
-// from this week's Propose to Install and returned to Ready to Install.
-const HOLD_KEYWORDS = [
-  "reschedule",
-  "on hold",
-  "hold",
-  "renovation",
-  "construction",
-  "book date",
-  "booked on",
-  "to arrange",
-  "arrange",
-  "postpone",
-  "delay",
-  "pending",
-  "cancel",
-  "not ready",
-  "unavailable",
-  "overseas",
-];
 
-function containsHoldKeyword(text: string): boolean {
-  if (!text.trim()) return false;
-  const lower = text.toLowerCase();
-  return HOLD_KEYWORDS.some((kw) => lower.includes(kw));
-}
 
 function isImageUrl(url: string) {
   return /\.(jpe?g|png|webp|gif|bmp|heic)(\?|$)/i.test(url);
@@ -409,10 +384,11 @@ export default function ReadyToInstallSchedule({
     const crew = crews[teamNum];
     const inst = crew?.installationTeam?.trim() || "";
     const wir = crew?.wiringTeam?.trim() || "";
+    const mem = crew?.membersText?.trim() || "";
     const sup = crew?.siteSupervisor?.trim() || "";
 
-    // All 3 fields must be filled
-    if (!inst || !wir || !sup) return;
+    // Moves once at least installation team and wiring team (or member) are assigned
+    if (!inst || (!wir && !mem)) return;
 
     // Find all slotted jobs for this team in the proposed schedule that aren't booked yet
     const teamSchedule = schedule.teams.find((t) => t.team === teamNum);
@@ -460,8 +436,8 @@ export default function ReadyToInstallSchedule({
           installationEndDate: item.date,
           jobIds: [item.jobId],
           installationTeam: inst,
-          wiringTeam: wir,
-          supervisors: [sup],
+          wiringTeam: wir || (mem ? `Team ${teamNum}` : ""),
+          supervisors: sup ? [sup] : [],
           wiringMembers,
           cars,
           teamLabel: `Team ${teamNum}`,
@@ -490,10 +466,13 @@ export default function ReadyToInstallSchedule({
     });
     onChangeDraft(nextDraft);
 
+    const details = [inst, wir || (wiringMembers.length ? wiringMembers.join(", ") : ""), sup]
+      .filter(Boolean)
+      .join(", ");
     setNotice(
       `Team ${teamNum} (${entriesToMove.length} customer${
         entriesToMove.length === 1 ? "" : "s"
-      }) moved to Arranged Installation with ${inst}, ${wir} and ${sup}.`,
+      }) moved to Arranged Installation with ${details}.`,
     );
   }
 
@@ -513,14 +492,13 @@ export default function ReadyToInstallSchedule({
 
     const inst = (field === "installationTeam" ? value : (currentCrew.installationTeam ?? "")).trim();
     const wir = (field === "wiringTeam" ? value : (currentCrew.wiringTeam ?? "")).trim();
-    const sup = (field === "siteSupervisor" ? value : (currentCrew.siteSupervisor ?? "")).trim();
+    const mem = (field === "membersText" ? value : (currentCrew.membersText ?? "")).trim();
 
     const isOptionMatch =
       (field === "installationTeam" && availableInstallTeams.includes(value.trim())) ||
-      (field === "wiringTeam" && availableWiringTeams.includes(value.trim())) ||
-      (field === "siteSupervisor" && availableSupervisors.includes(value.trim()));
+      (field === "wiringTeam" && availableWiringTeams.includes(value.trim()));
 
-    if (isOptionMatch && inst && wir && sup) {
+    if (isOptionMatch && inst && (wir || mem)) {
       checkAndGraduateTeam(team, nextCrews);
     }
   }
@@ -575,27 +553,6 @@ export default function ReadyToInstallSchedule({
     const draftVal = remarkDraft[job.id];
     if (draftVal !== undefined && draftVal !== (job.installationRemarks || "")) {
       onSaveJob?.({ ...job, installationRemarks: draftVal });
-
-      // Auto-remove: if the remark contains hold/remove keywords, pull the
-      // customer out of this week's schedule and return them to the
-      // Ready to Install queue automatically.
-      if (containsHoldKeyword(draftVal)) {
-        const position = positions.get(job.id);
-        if (position) {
-          const next: ScheduleDraft = {
-            ...scheduleDraft,
-            placements: scheduleDraft.placements.filter((p) => p.jobId !== job.id),
-            removals: [
-              ...scheduleDraft.removals,
-              { jobId: job.id, weekStart, remark: draftVal.trim() },
-            ],
-          };
-          onChangeDraft(next);
-          setNotice(
-            `${displayName(job.customerName)} moved back to Ready to Install (remark: "${draftVal.trim()}").`,
-          );
-        }
-      }
     }
   }
   // The drop-out form. One panel is open at a time, so one set of fields
@@ -695,10 +652,20 @@ export default function ReadyToInstallSchedule({
   // it.
   function placementDraft(base: ScheduleDraft, jobId: string, target: SlotRef): ScheduleDraft {
     const hard = assessments[jobId]?.difficulty === "hard";
-    const slot: Slot = hard ? "full" : target.slot === "full" ? "am" : target.slot;
+    const slot: Slot = hard ? "full" : target.slot;
     const cleared = withoutJob(base, jobId);
+    const nextOpenSlots = (cleared.openSlots || []).filter(
+      (s) =>
+        !(
+          s.weekStart === target.weekStart &&
+          s.team === target.team &&
+          s.date === target.date &&
+          slotsConflict(s.slot, slot)
+        ),
+    );
     return {
       ...cleared,
+      openSlots: nextOpenSlots,
       placements: [
         ...cleared.placements.filter(
           (placement) =>
@@ -712,6 +679,195 @@ export default function ReadyToInstallSchedule({
         { jobId, weekStart: target.weekStart, team: target.team, date: target.date, slot } as Placement,
       ],
     };
+  }
+
+  function removeCustomerFromSlot(jobId: string, ref: SlotRef) {
+    let next = withoutJob(scheduleDraft, jobId);
+    const nextRemovals = [
+      ...next.removals.filter((r) => !(r.jobId === jobId && r.weekStart === ref.weekStart)),
+      { jobId, weekStart: ref.weekStart, remark: "Removed by user" },
+    ];
+    const nextOpenSlots = [
+      ...(next.openSlots || []).filter(
+        (s) => !(s.weekStart === ref.weekStart && s.team === ref.team && s.date === ref.date && s.slot === ref.slot),
+      ),
+      { weekStart: ref.weekStart, team: ref.team, date: ref.date, slot: ref.slot },
+    ];
+    next = {
+      ...next,
+      removals: nextRemovals,
+      openSlots: nextOpenSlots,
+    };
+    onChangeDraft(next);
+    const job = jobById.get(jobId);
+    setNotice(`${displayName(job?.customerName ?? "")} removed. Slot is now open.`);
+  }
+
+  function changeSlot(jobId: string, currentRef: SlotRef, newSlot: Slot) {
+    if (newSlot === currentRef.slot) return;
+
+    const teamSchedule = schedule.teams.find((t) => t.team === currentRef.team);
+    const daySchedule = teamSchedule?.days.find((d) => d.date === currentRef.date);
+    const entries = daySchedule?.entries ?? [];
+
+    let next = { ...scheduleDraft };
+
+    // Case 1: Switching between AM and PM (e.g. AM -> PM or PM -> AM)
+    if ((currentRef.slot === "am" && newSlot === "pm") || (currentRef.slot === "pm" && newSlot === "am")) {
+      const otherSlot: Slot = newSlot;
+      const otherEntry = entries.find((e) => e.slot === otherSlot && e.jobId);
+
+      if (otherEntry && otherEntry.jobId) {
+        // Swap with the job in the target slot!
+        const otherJobId = otherEntry.jobId;
+        next = withoutJob(next, jobId);
+        next = withoutJob(next, otherJobId);
+
+        next.openSlots = (next.openSlots || []).filter(
+          (s) => !(s.weekStart === currentRef.weekStart && s.team === currentRef.team && s.date === currentRef.date),
+        );
+
+        next.placements = [
+          ...next.placements.filter(
+            (p) => !(p.weekStart === currentRef.weekStart && p.team === currentRef.team && p.date === currentRef.date),
+          ),
+          { jobId, weekStart: currentRef.weekStart, team: currentRef.team, date: currentRef.date, slot: newSlot },
+          { jobId: otherJobId, weekStart: currentRef.weekStart, team: currentRef.team, date: currentRef.date, slot: currentRef.slot },
+        ];
+
+        onChangeDraft(next);
+        const job = jobById.get(jobId);
+        const otherJob = jobById.get(otherJobId);
+        setNotice(
+          `Swapped slots: ${displayName(job?.customerName ?? "")} is now ${SLOT_LABEL[newSlot]}, and ${displayName(otherJob?.customerName ?? "")} is now ${SLOT_LABEL[currentRef.slot]}.`,
+        );
+        return;
+      } else {
+        // Target slot is empty or open:
+        next = withoutJob(next, jobId);
+
+        // Remove old openSlots for target slot
+        next.openSlots = (next.openSlots || []).filter(
+          (s) =>
+            !(
+              s.weekStart === currentRef.weekStart &&
+              s.team === currentRef.team &&
+              s.date === currentRef.date &&
+              s.slot === newSlot
+            ),
+        );
+        // The slot we vacated (currentRef.slot) now becomes an open slot
+        next.openSlots.push({
+          weekStart: currentRef.weekStart,
+          team: currentRef.team,
+          date: currentRef.date,
+          slot: currentRef.slot,
+        });
+
+        next.placements = [
+          ...next.placements.filter(
+            (p) =>
+              !(
+                p.weekStart === currentRef.weekStart &&
+                p.team === currentRef.team &&
+                p.date === currentRef.date &&
+                slotsConflict(p.slot, newSlot)
+              ),
+          ),
+          { jobId, weekStart: currentRef.weekStart, team: currentRef.team, date: currentRef.date, slot: newSlot },
+        ];
+
+        onChangeDraft(next);
+        const job = jobById.get(jobId);
+        setNotice(
+          `${displayName(job?.customerName ?? "")} moved to ${SLOT_LABEL[newSlot]}. The ${SLOT_LABEL[currentRef.slot]} slot is now open.`,
+        );
+        return;
+      }
+    }
+
+    // Case 2: Changing to "full" (Full day)
+    if (newSlot === "full") {
+      const conflictingJobs = entries.filter((e) => e.jobId && e.jobId !== jobId);
+      next = withoutJob(next, jobId);
+      conflictingJobs.forEach((e) => {
+        if (e.jobId) {
+          next = withoutJob(next, e.jobId);
+          next.removals = [
+            ...next.removals.filter((r) => !(r.jobId === e.jobId && r.weekStart === currentRef.weekStart)),
+            { jobId: e.jobId, weekStart: currentRef.weekStart, remark: "Bumped for full day slot" },
+          ];
+        }
+      });
+
+      next.openSlots = (next.openSlots || []).filter(
+        (s) => !(s.weekStart === currentRef.weekStart && s.team === currentRef.team && s.date === currentRef.date),
+      );
+
+      next.placements = [
+        ...next.placements.filter(
+          (p) => !(p.weekStart === currentRef.weekStart && p.team === currentRef.team && p.date === currentRef.date),
+        ),
+        { jobId, weekStart: currentRef.weekStart, team: currentRef.team, date: currentRef.date, slot: "full" },
+      ];
+
+      onChangeDraft(next);
+      const job = jobById.get(jobId);
+      setNotice(`${displayName(job?.customerName ?? "")} set to Full day.`);
+      return;
+    }
+
+    // Case 3: Changing from "full" to "am" or "pm"
+    if (currentRef.slot === "full" && (newSlot === "am" || newSlot === "pm")) {
+      next = withoutJob(next, jobId);
+      const otherSlot: Slot = newSlot === "am" ? "pm" : "am";
+
+      next.openSlots = (next.openSlots || []).filter(
+        (s) => !(s.weekStart === currentRef.weekStart && s.team === currentRef.team && s.date === currentRef.date),
+      );
+      next.openSlots.push({
+        weekStart: currentRef.weekStart,
+        team: currentRef.team,
+        date: currentRef.date,
+        slot: otherSlot,
+      });
+
+      next.placements = [
+        ...next.placements.filter(
+          (p) => !(p.weekStart === currentRef.weekStart && p.team === currentRef.team && p.date === currentRef.date),
+        ),
+        { jobId, weekStart: currentRef.weekStart, team: currentRef.team, date: currentRef.date, slot: newSlot },
+      ];
+
+      onChangeDraft(next);
+      const job = jobById.get(jobId);
+      setNotice(
+        `${displayName(job?.customerName ?? "")} changed to ${SLOT_LABEL[newSlot]}. The ${SLOT_LABEL[otherSlot]} slot is now open.`,
+      );
+      return;
+    }
+  }
+
+  function changeOpenSlot(ref: SlotRef, newSlot: Slot) {
+    if (newSlot === ref.slot) return;
+    let next = { ...scheduleDraft };
+    next.openSlots = (next.openSlots || []).filter(
+      (s) =>
+        !(
+          s.weekStart === ref.weekStart &&
+          s.team === ref.team &&
+          s.date === ref.date &&
+          slotsConflict(s.slot, ref.slot)
+        ),
+    );
+    next.openSlots.push({
+      weekStart: ref.weekStart,
+      team: ref.team,
+      date: ref.date,
+      slot: newSlot,
+    });
+    onChangeDraft(next);
+    setNotice(`Slot updated to ${SLOT_LABEL[newSlot]}.`);
   }
 
   function addToSlot(jobId: string, target: SlotRef) {
@@ -1292,6 +1448,10 @@ export default function ReadyToInstallSchedule({
                             value={scheduleDraft.teamCrews?.[team.team]?.membersText ?? ""}
                             placeholder="e.g. Ali, Ah Hock, Kumar..."
                             onChange={(e) => updateCrewField(team.team, "membersText", e.target.value)}
+                            onBlur={(e) => handleCrewBlur(team.team, "membersText", e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
                           />
                         </div>
 
@@ -1341,17 +1501,33 @@ export default function ReadyToInstallSchedule({
                   day.entries.map((entry, index) => {
                     const ref: SlotRef = { weekStart, team: team.team, date: day.date, slot: entry.slot };
                     const key = `${day.date}-${entry.slot}-${index}`;
-                    const slotCell = (
+                    const renderSlotCell = (job?: InstallationJob | null) => (
                       <td className="rti-date">
                         <strong>{dayLabel(day.date)}</strong>
-                        <span>{SLOT_LABEL[entry.slot]}</span>
+                        <select
+                          className="rti-slot-select"
+                          value={entry.slot}
+                          aria-label={`Slot for ${job ? displayName(job.customerName) : `Team ${team.team}`} on ${dayLabel(day.date)}`}
+                          onChange={(e) => {
+                            const nextSlot = e.target.value as Slot;
+                            if (job) {
+                              changeSlot(job.id, ref, nextSlot);
+                            } else {
+                              changeOpenSlot(ref, nextSlot);
+                            }
+                          }}
+                        >
+                          <option value="am">Morning (AM)</option>
+                          <option value="pm">Afternoon (PM)</option>
+                          <option value="full">Full day</option>
+                        </select>
                         {renderSlotRain(team.team, day.date)}
                       </td>
                     );
                     if (!entry.jobId) {
                       return (
                         <tr key={key} className="rti-open-row">
-                          {slotCell}
+                          {renderSlotCell(null)}
                           <td colSpan={COLUMN_COUNT - 1}>
                             <span className="rti-muted">
                               Open{entry.openReason ? ` · ${entry.openReason}` : ""}
@@ -1389,9 +1565,21 @@ export default function ReadyToInstallSchedule({
                           id={`rti-row-${job.id}`}
                           className={`rti-row is-${entry.source}${focused ? " is-focused" : ""}`}
                         >
-                          {slotCell}
+                          {renderSlotCell(job)}
                           <td>
                             <div className="rti-customer-wrap">
+                              <button
+                                type="button"
+                                className="rti-row-remove-btn"
+                                title="Remove customer from list (-)"
+                                aria-label={`Remove ${displayName(job.customerName)} from schedule`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  removeCustomerFromSlot(job.id, ref);
+                                }}
+                              >
+                                <Minus size={11} strokeWidth={2.8} />
+                              </button>
                               <button
                                 type="button"
                                 className="rti-name-link"

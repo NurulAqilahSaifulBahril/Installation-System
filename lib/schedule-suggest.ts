@@ -116,10 +116,18 @@ export type TeamCrewAssignment = {
   car?: string;
 };
 
+export type OpenSlot = {
+  weekStart: string;
+  team: TeamNumber;
+  date: string;
+  slot: Slot;
+};
+
 export type ScheduleDraft = {
   placements: Placement[];
   removals: Removal[];
   holds: Hold[];
+  openSlots?: OpenSlot[];
   // Days the manager put on hold for rain: nothing is suggested on them.
   rainHoldDays: string[];
   // Days with rain forecast that the manager chose to go ahead with, so the
@@ -132,6 +140,7 @@ export const EMPTY_DRAFT: ScheduleDraft = {
   placements: [],
   removals: [],
   holds: [],
+  openSlots: [],
   rainHoldDays: [],
   rainProceedDays: [],
   teamCrews: {},
@@ -160,6 +169,7 @@ export function normalizeDraft(value: unknown): ScheduleDraft {
     placements?: unknown;
     removals?: unknown;
     holds?: unknown;
+    openSlots?: unknown;
     rainHoldDays?: unknown;
     rainProceedDays?: unknown;
     teamCrews?: unknown;
@@ -189,6 +199,15 @@ export function normalizeDraft(value: unknown): ScheduleDraft {
           (item?.to === null || isIsoDate(item?.to)),
       )
     : [];
+  const openSlots = Array.isArray(raw.openSlots)
+    ? raw.openSlots.filter(
+        (item): item is OpenSlot =>
+          isIsoDate(item?.weekStart) &&
+          isTeamNumber(item?.team) &&
+          isIsoDate(item?.date) &&
+          isSlot(item?.slot),
+      )
+    : [];
   const dates = (list: unknown) =>
     Array.isArray(list) ? list.filter((item): item is string => isIsoDate(item)) : [];
 
@@ -215,6 +234,7 @@ export function normalizeDraft(value: unknown): ScheduleDraft {
     placements,
     removals,
     holds,
+    openSlots,
     rainHoldDays: dates(raw.rainHoldDays),
     rainProceedDays: dates(raw.rainProceedDays),
     teamCrews,
@@ -519,8 +539,14 @@ export function buildWeek(input: WeekInput): WeekSchedule {
   }
 
   const inWeek = new Set(days);
+  const removedThisWeek = new Set(
+    draft.removals
+      .filter((item) => item.weekStart === weekStart)
+      .map((item) => item.jobId),
+  );
+
   booked
-    .filter((item) => inWeek.has(item.date))
+    .filter((item) => inWeek.has(item.date) && !removedThisWeek.has(item.jobId))
     .forEach((item) =>
       put(item.team, item.date, {
         slot: item.slot,
@@ -532,7 +558,10 @@ export function buildWeek(input: WeekInput): WeekSchedule {
   draft.placements
     .filter(
       (item) =>
-        item.weekStart === weekStart && inWeek.has(item.date) && !used.has(item.jobId),
+        item.weekStart === weekStart &&
+        inWeek.has(item.date) &&
+        !used.has(item.jobId) &&
+        !removedThisWeek.has(item.jobId),
     )
     .forEach((item) =>
       put(item.team, item.date, {
@@ -542,11 +571,21 @@ export function buildWeek(input: WeekInput): WeekSchedule {
       }),
     );
 
-  const removedThisWeek = new Set(
-    draft.removals
-      .filter((item) => item.weekStart === weekStart)
-      .map((item) => item.jobId),
-  );
+  // User-opened slots: kept open to other customers rather than auto-suggested
+  (draft.openSlots || [])
+    .filter((item) => item.weekStart === weekStart && inWeek.has(item.date))
+    .forEach((item) => {
+      const cell = cellFor(item.team, item.date);
+      (["am", "pm", "full"] as Slot[]).forEach((slot) => {
+        if (conflicts(slot, item.slot) && !cell[slot]?.jobId) {
+          cell[slot] = {
+            slot,
+            jobId: null,
+            source: "open",
+          };
+        }
+      });
+    });
   const pool = allowSuggestions
     ? candidates.filter(
         (candidate) =>
