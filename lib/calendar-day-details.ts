@@ -72,11 +72,30 @@ type CrewHeading = {
   wiringTeam: string;
 };
 
+export type CalendarPlacement = {
+  jobId: string;
+  team: number;
+  date: string;
+  slot: "am" | "pm" | "full";
+};
+
+export type CalendarScheduleDraft = {
+  placements?: CalendarPlacement[];
+  teamCrews?: Partial<Record<number, { installationTeam?: string; wiringTeam?: string }>>;
+};
+
+const SLOT_TIME: Record<string, string> = {
+  am: "09:00",
+  pm: "14:00",
+  full: "09:00",
+};
+
 export function buildCalendarDayDetails(
   jobs: InstallationJob[],
   groups: CalendarGroup[],
   assignments: CalendarAssignment[],
   deliveryRuns: CalendarDeliveryRun[] = [],
+  scheduleDraft?: CalendarScheduleDraft,
 ): Record<string, CalendarDayDetail> {
   const assignmentsByGroup = new Map<string, CalendarAssignment[]>();
   assignments.forEach((assignment) => {
@@ -84,6 +103,16 @@ export function buildCalendarDayDetails(
     list.push(assignment);
     assignmentsByGroup.set(assignment.installationGroupId, list);
   });
+
+  const placementsByJobId = new Map<string, CalendarPlacement[]>();
+  if (scheduleDraft?.placements) {
+    scheduleDraft.placements.forEach((placement) => {
+      if (!placement.jobId || !placement.date) return;
+      const list = placementsByJobId.get(placement.jobId) ?? [];
+      list.push(placement);
+      placementsByJobId.set(placement.jobId, list);
+    });
+  }
 
   // Every group a job belongs to, not just one — a customer moved to a new
   // booking without being taken out of the old one (a reschedule picked up
@@ -138,16 +167,26 @@ export function buildCalendarDayDetails(
   };
 
   jobs.forEach((job) => {
+    const jobPlacements = placementsByJobId.get(job.id) ?? [];
     const jobGroups = (groupsByJobId.get(job.id) ?? []).filter(
       (group) => group.installationDate,
     );
 
-    // One entry per group the job is in, each on that group's own date —
-    // deliberately not deduplicated to whichever is latest, the way the
-    // dashboard's own summary fields are. A job not yet in any group falls
-    // back to its own date, or the date proposed on Customer Scheduling.
-    const installDays: { date: string; group: CalendarGroup | null }[] =
-      jobGroups.length > 0
+    const placementDays = jobPlacements.map((placement) => ({
+      date: placement.date,
+      group: null as CalendarGroup | null,
+      placement,
+    }));
+
+    // One entry per placement or group the job is in, each on that slot/group's own date
+    const installDays: {
+      date: string;
+      group: CalendarGroup | null;
+      placement?: CalendarPlacement;
+    }[] =
+      placementDays.length > 0
+        ? placementDays
+        : jobGroups.length > 0
         ? jobGroups.map((group) => ({ date: group.installationDate, group }))
         : (() => {
             const date = job.installationDate || job.preferredInstallationDate;
@@ -156,10 +195,7 @@ export function buildCalendarDayDetails(
 
     // Every return-trip visit is its own day too, on top of the install
     // day(s) above, unless a visit happens to land on a date already
-    // covered by one of them. A visit carries no group of its own, so it is
-    // credited to whichever of the job's groups has the latest date — a
-    // cosmetic heading choice only, since the date itself comes from the
-    // visit either way.
+    // covered by one of them.
     const installDates = new Set(installDays.map((entry) => entry.date));
     const latestGroup = jobGroups.length
       ? jobGroups.reduce((latest, group) =>
@@ -168,47 +204,51 @@ export function buildCalendarDayDetails(
       : null;
     const visitDays = (job.visits ?? [])
       .filter((visit) => visit.date && !installDates.has(visit.date))
-      .map((visit) => ({ date: visit.date, group: latestGroup, visit }));
+      .map((visit) => ({ date: visit.date, group: latestGroup, placement: undefined as CalendarPlacement | undefined, visit }));
 
     const days: {
       date: string;
       group: CalendarGroup | null;
+      placement?: CalendarPlacement;
       visit: JobVisit | null;
     }[] = [
-      ...installDays.map(({ date, group }) => ({
+      ...installDays.map(({ date, group, placement }) => ({
         date,
         group,
+        placement,
         visit: null as JobVisit | null,
       })),
       ...visitDays,
     ];
 
-    days.forEach(({ date, group, visit }) => {
-      // The crew's start time stands in as the installation time — the schema
-      // carries no per-customer clock. Only this customer's own group counts,
-      // and only a booking on this day. A visit that names its own time is
-      // trusted ahead of the crew's, being the more specific answer.
+    days.forEach(({ date, group, placement, visit }) => {
+      const slotTime = placement ? (SLOT_TIME[placement.slot] ?? "09:00") : null;
       const startTimes = (group ? (assignmentsByGroup.get(group.id) ?? []) : [])
         .filter((assignment) => assignment.startDate.slice(0, 10) === date)
         .map((assignment) => timeOfDay(assignment.startDate))
         .filter((time): time is string => Boolean(time))
         .sort();
 
+      const teamCrew = placement ? scheduleDraft?.teamCrews?.[placement.team] : undefined;
+
       const entry = {
         id: job.id,
         name: formatPersonName(job.customerName),
-        // Delivery is now its own separate calendar entry (see jobRuns
-        // below), so an installation or return-trip day never carries a
-        // stock time of its own — one is not necessarily the other's date.
-        stockDelivery: null,
-        installTime: visit?.time ?? startTimes[0] ?? null,
+        stockDelivery: slotTime ?? null,
+        installTime: visit?.time ?? slotTime ?? startTimes[0] ?? null,
         visitKind: visit?.kind ?? null,
       };
       const day = dayFor(date);
       day.customers.push(entry);
       crewFor(
         day,
-        group
+        placement
+          ? {
+              teamLabel: `Team ${placement.team}`,
+              installationTeam: teamCrew?.installationTeam || `Team ${placement.team}`,
+              wiringTeam: teamCrew?.wiringTeam || "",
+            }
+          : group
           ? {
               teamLabel: group.teamLabel ?? "",
               installationTeam: group.installationTeam,

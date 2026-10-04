@@ -372,7 +372,7 @@ function textUrl(value: string[] | string | null): string | null {
   return value || null;
 }
 
-function phaseLabel(value: string | null): InstallationJob["phase"] {
+export function phaseLabel(value: string | null): InstallationJob["phase"] {
   const normalized = value?.trim().toLowerCase() ?? "";
   if (
     normalized === "1" ||
@@ -488,36 +488,22 @@ function linesMatching(value: string | null, pattern: RegExp): string {
 // text typed by sales, e.g. "19X Jinko Tiger Neo N-type 72HL4-(V) TOPCon |
 // Bi-Facial" on its own first line, followed by "1X SAJ R6 10KW String
 // Inverter" and other lines.
-function firstPackageLine(text: string | null): string {
+export function firstPackageLine(text: string | null): string {
   if (!text) return "";
   return (text.split(/\r?\n/)[0] ?? "").trim();
 }
 
-function parsePanelQtyFromPackageLine(line: string): number | null {
+export function parsePanelQtyFromPackageLine(line: string): number | null {
   const match = line.match(/^(\d+)\s*[xX]\b/);
   return match ? Number(match[1]) : null;
 }
 
-// The wattage sits in the same package line as the quantity — "17X 650W
-// JinkoSolar TIGER NEO 3.0 Panel" — but only the quantity was ever read off
-// it, and invoice.panel_rating is empty on every one of the 2,702 live
-// invoices whose line states a wattage. So the record said "17 panels · rating
-// not provided" about a line that plainly says 650W.
-//
-// The column still wins where it is filled in; it never disagreed with the
-// text on any invoice, so this only fills blanks. Bounded to three or four
-// digits so a price or a model number cannot be read as a panel rating.
-function parsePanelRatingFromPackageLine(line: string): number | null {
+export function parsePanelRatingFromPackageLine(line: string): number | null {
   const match = line.match(/^\d+\s*[xX]\s*(\d{3,4})\s*W(?:p|att)?\b/i);
   return match ? Number(match[1]) : null;
 }
 
-// Matches "String Inverter"/"Hybrid Inverter" and the "Hybird Inverter"
-// typo that recurs throughout the source data (the word "Inverter" itself
-// is spelled correctly, so matching on it alone still catches it). NEP BDM
-// micro-inverter lines never say the word "inverter" at all, so they need
-// their own fallback.
-function parseInverterFromText(text: string | null): string {
+export function parseInverterFromText(text: string | null): string {
   if (!text) return "";
   const lines = text.split(/\r?\n/);
   const line =
@@ -526,15 +512,21 @@ function parseInverterFromText(text: string | null): string {
   return line?.trim() ?? "";
 }
 
-// Phase shows up two ways in the source text: an inline [1P]/[3P] tag, or
-// spelled out as "single phase"/"3-phase"/"three-phase" etc. Most package
-// lines mention neither (phase is implied by the inverter model, not
-// stated) — that's an expected "Unknown", not a parsing miss.
-function parsePhaseFromText(text: string | null): InstallationJob["phase"] {
+export function parsePhaseFromText(text: string | null): InstallationJob["phase"] {
   if (!text) return "Unknown";
   if (/\[3P\]|3[\s-]?phase/i.test(text)) return "Three phase";
   if (/\[1P\]|1[\s-]?phase|single[\s-]?phase/i.test(text)) return "Single phase";
   return "Unknown";
+}
+
+export function extractPanelBrand(text: string): string {
+  if (/jinko/i.test(text)) return "Jinko";
+  if (/astronergy/i.test(text)) return "Astronergy";
+  if (/ja\s*solar/i.test(text)) return "JA Solar";
+  if (/longi/i.test(text)) return "Longi";
+  if (/trina/i.test(text)) return "Trina";
+  if (/canadian/i.test(text)) return "Canadian Solar";
+  return "";
 }
 
 // Which inverter types the invoice actually carries — String, Hybrid, Micro,

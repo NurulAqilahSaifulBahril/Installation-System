@@ -1,4 +1,4 @@
-﻿import { NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { malaysiaToday, toDateOnly } from '@/lib/dates';
 import { isSedaApproved, normalizeAvailabilityStatus } from '@/lib/types';
 import { resolvedAvailabilityStatus } from '@/lib/completion';
@@ -13,6 +13,7 @@ import { demoJobs } from '@/lib/demo-data';
 import { ensureInstallationSchema } from '@/lib/installation-schema';
 import { queryProxy } from '@/lib/proxy-db';
 import { fetchEligibleSourceJobs } from '@/lib/source-api';
+import { fetchActiveSupportTicketJobs } from '@/lib/support-tickets';
 import type { InstallationJob } from '@/lib/types';
 
 import { getCached, getInflight, setCached, setInflight } from '@/lib/jobs-cache';
@@ -301,6 +302,10 @@ async function loadJobsPayload() {
   // one after the other. Each is still awaited inside the block that owns its
   // failure mode, so the fallbacks below are unchanged.
   const sourcePromise = fetchEligibleSourceJobs();
+  const supportTicketPromise = fetchActiveSupportTicketJobs().catch((err) => {
+    console.error('Failed to fetch support tickets:', err);
+    return [] as InstallationJob[];
+  });
   const schemaPromise = ensureInstallationSchema();
   // schemaPromise is not awaited until the second block, and a rejection with
   // nothing attached in the meantime is an unhandled rejection — fatal on
@@ -309,8 +314,11 @@ async function loadJobsPayload() {
   schemaPromise.catch(() => {});
 
   try {
-    const result = await sourcePromise;
-    jobs = result.jobs;
+    const [result, supportJobs] = await Promise.all([
+      sourcePromise,
+      supportTicketPromise,
+    ]);
+    jobs = [...result.jobs, ...supportJobs];
     if (result.truncated) {
       warning =
         'Source returned the maximum number of rows, so some jobs are missing. ' +

@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  Calendar,
   CalendarDays,
   CalendarOff,
   Check,
@@ -31,6 +32,7 @@ import {
   ShieldCheck,
   Snowflake,
   Sun,
+  Trash2,
   Truck,
   Users,
   Wallet,
@@ -1463,7 +1465,7 @@ const PIPELINE_STAGES = [
   {
     value: "attention",
     label: "Need Attention",
-    note: "Ready to Install awaiting review",
+    note: "Awaiting review, 2nd payment more than 28 working days",
     hint: "Customers in Ready to Install awaiting review (over 28 working days or attention remarks).",
   },
   {
@@ -1640,6 +1642,7 @@ function belongsInPlanning(
   lookup: PlanningLookup,
 ) {
   if (isBookedIn(job, group, lookup)) return true;
+  if (job.supportTicket || job.issueCategory || job.id.startsWith("ticket-")) return true;
   return hasPlanningEligibility(job) || hasCountedDeposit(job);
 }
 
@@ -1683,6 +1686,7 @@ function pipelineStagesOf(
     job.customerAvailabilityStatus !== "complete" &&
     !isCompleteInstallation(job, todayIso, group) &&
     !isHiddenAsCompleted(job, todayIso, group) &&
+    !isJobOM(job) &&
     matchesPipelineStage(job, "to_arrange", todayIso, lookup) &&
     !isSpecialCaseApproval(job) &&
     !isJobReschedule(job) &&
@@ -1705,6 +1709,7 @@ function pipelineStagesOf(
   // Pending Complete follows sum of Reschedule and Pending from Ready to Install
   if (
     matchesPipelineStage(job, "to_arrange", todayIso, lookup) &&
+    !isJobOM(job) &&
     !isSpecialCaseApproval(job) &&
     (isJobReschedule(job) || isJobPending(job))
   ) {
@@ -1715,6 +1720,7 @@ function pipelineStagesOf(
   // Ready to Install follows sum of New Ready to Install and Special Case
   if (
     matchesPipelineStage(job, "to_arrange", todayIso, lookup) &&
+    !isJobOM(job) &&
     (isSpecialCaseApproval(job) ||
       (!isJobReschedule(job) &&
         !isJobPending(job) &&
@@ -1788,6 +1794,14 @@ function matchesPipelineStage(
     if (job.customerAvailabilityStatus === "complete") {
       return false;
     }
+    // Support ticket jobs belong in Ready to Install until arranged into a group
+    if (job.supportTicket || job.issueCategory || job.id.startsWith("ticket-")) {
+      return !group || !group.installationDate;
+    }
+    // O&M jobs that are already in an arranged group stay on Arranged Installation
+    if (isJobOM(job) && group && group.installationDate) {
+      return false;
+    }
     // Rule: if no '✓' on arranged install, customer is copied to propose to install.
     // Does not depend on pending, reschedule, etc.
     if (group && group.installationDate) {
@@ -1817,6 +1831,9 @@ function matchesPipelineStage(
     ) {
       return false;
     }
+    if (isJobOM(job)) {
+      return false;
+    }
     if (!matchesPipelineStage(job, "to_arrange", todayIso, lookup)) {
       return false;
     }
@@ -1839,6 +1856,9 @@ function matchesPipelineStage(
       isCompleteInstallation(job, todayIso, group) ||
       isHiddenAsCompleted(job, todayIso, group)
     ) {
+      return false;
+    }
+    if (isJobOM(job)) {
       return false;
     }
     if (!matchesPipelineStage(job, "to_arrange", todayIso, lookup)) {
@@ -1866,6 +1886,9 @@ function matchesPipelineStage(
       isCompleteInstallation(job, todayIso, group) ||
       isHiddenAsCompleted(job, todayIso, group)
     ) {
+      return false;
+    }
+    if (isJobOM(job)) {
       return false;
     }
     return (
@@ -3693,8 +3716,8 @@ export default function DashboardPage() {
   // this one cannot disagree about a day.
   const calendarDayDetails = useMemo(
     () =>
-      buildCalendarDayDetails(jobs, groups, teamWeekAssignments, deliveryRuns),
-    [jobs, groups, teamWeekAssignments, deliveryRuns],
+      buildCalendarDayDetails(jobs, groups, teamWeekAssignments, deliveryRuns, scheduleDraft),
+    [jobs, groups, teamWeekAssignments, deliveryRuns, scheduleDraft],
   );
 
   // Everything but the jobs someone has frozen off the active pipeline. Used
@@ -4565,6 +4588,7 @@ export default function DashboardPage() {
             onTogglePin={togglePinJob}
             workCategoryFilter={workCategoryFilter}
             onWorkCategoryFilterChange={setWorkCategoryFilter}
+            onSelectJob={(jobId) => setSelectedId(jobId)}
           />
         )}
 
@@ -5541,11 +5565,20 @@ function InstallationGroupsView({
                   !isJobReschedule(job) &&
                   !isJobPending(job) &&
                   !(needsAttention(job, todayIso, groupByJobId.get(job.id)) || isJobNeedAttention(job, todayIso))) ||
-                (awaitingReviewFilter === "reschedule" && !isJobOM(job) && !isSpecialCaseApproval(job) && isJobReschedule(job)) ||
-                (awaitingReviewFilter === "pending" && !isJobOM(job) && !isSpecialCaseApproval(job) && isJobPending(job)) ||
+                (awaitingReviewFilter === "reschedule" &&
+                  !isJobOM(job) &&
+                  !isSpecialCaseApproval(job) &&
+                  isJobReschedule(job)) ||
+                (awaitingReviewFilter === "pending" &&
+                  !isJobOM(job) &&
+                  !isSpecialCaseApproval(job) &&
+                  !isJobReschedule(job) &&
+                  isJobPending(job)) ||
                 (awaitingReviewFilter === "attention" &&
                   !isJobOM(job) &&
                   !isSpecialCaseApproval(job) &&
+                  !isJobReschedule(job) &&
+                  !isJobPending(job) &&
                   (needsAttention(job, todayIso, groupByJobId.get(job.id)) || isJobNeedAttention(job, todayIso)))) &&
               (!customerQuery ||
                 job.customerName?.toLowerCase().includes(customerQuery.toLowerCase()) ||
@@ -5688,6 +5721,38 @@ function InstallationGroupsView({
     field: "installationTeam" | "wiringTeam";
     value: string;
   } | null>(null);
+
+  // Precompute the latest scheduled date for every job across groups and visits,
+  // so multi-visit / multi-date customers only display the completed checkmark (✓ in green)
+  // on their latest date once complete.
+  const latestScheduledDateByJobId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const group of groups) {
+      const gDate = (group.installationDate || "").slice(0, 10);
+      if (!gDate) continue;
+      for (const jId of group.jobIds || []) {
+        if (!jId) continue;
+        const currentLatest = map.get(jId);
+        if (!currentLatest || gDate > currentLatest) {
+          map.set(jId, gDate);
+        }
+      }
+    }
+    for (const j of jobs) {
+      if (j.visits && j.visits.length > 0) {
+        for (const v of j.visits) {
+          const vDate = (v.date || "").slice(0, 10);
+          if (vDate) {
+            const currentLatest = map.get(j.id);
+            if (!currentLatest || vDate > currentLatest) {
+              map.set(j.id, vDate);
+            }
+          }
+        }
+      }
+    }
+    return map;
+  }, [groups, jobs]);
 
   const scheduleRows = useMemo(() => {
     return groups
@@ -6592,7 +6657,14 @@ function InstallationGroupsView({
   }
 
   function deliveryRunsForGroup(groupId: string) {
-    return deliveryRuns.filter((run) => run.installationGroupId === groupId);
+    const group = groups.find((g) => g.id === groupId);
+    const groupJobSet = new Set(group?.jobIds ?? []);
+    return deliveryRuns.filter(
+      (run) =>
+        run.installationGroupId === groupId ||
+        (groupJobSet.size > 0 &&
+          run.jobIds.some((id) => groupJobSet.has(id))),
+    );
   }
 
   function groupsForWeek(weekDates: Date[]): InstallationGroup[] {
@@ -7405,26 +7477,37 @@ function InstallationGroupsView({
                         <div className="rti-customer-wrap">
                           {job ? (
                             <>
-                              <button
-                                type="button"
-                                className={`rti-row-complete-btn${job.customerAvailabilityStatus === "complete" ? " is-complete" : ""}`}
-                                title={
-                                  job.customerAvailabilityStatus === "complete"
-                                    ? "Complete (Click to reopen)"
-                                    : "Mark as complete (✓)"
-                                }
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const isComplete = job.customerAvailabilityStatus === "complete";
-                                  const nextStatus: CustomerAvailabilityStatus = isComplete ? "propose" : "complete";
-                                  onSaveJob({ ...job, customerAvailabilityStatus: nextStatus });
-                                  if (!isComplete && pendingCheckNotice?.jobId === job.id) {
-                                    setPendingCheckNotice(null);
-                                  }
-                                }}
-                              >
-                                <Check size={13} strokeWidth={2.8} />
-                              </button>
+                              {(() => {
+                                const rowDate = (rowVisit?.date || group.installationDate || "").slice(0, 10);
+                                const latestDate = latestScheduledDateByJobId.get(job.id);
+                                const isLatestDate = !latestDate || !rowDate || rowDate >= latestDate;
+                                const isJobComplete = job.customerAvailabilityStatus === "complete";
+                                const isRowComplete = isJobComplete && isLatestDate;
+
+                                return (
+                                  <button
+                                    type="button"
+                                    className={`rti-row-complete-btn${isRowComplete ? " is-complete" : ""}`}
+                                    title={
+                                      isRowComplete
+                                        ? "Complete (Click to reopen)"
+                                        : isJobComplete && !isLatestDate
+                                          ? `Intermediate visit on ${shortDate(rowDate)} · Final completion date: ${shortDate(latestDate)}`
+                                          : "Mark as complete (✓)"
+                                    }
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const nextStatus: CustomerAvailabilityStatus = isJobComplete ? "propose" : "complete";
+                                      onSaveJob({ ...job, customerAvailabilityStatus: nextStatus });
+                                      if (!isJobComplete && pendingCheckNotice?.jobId === job.id) {
+                                        setPendingCheckNotice(null);
+                                      }
+                                    }}
+                                  >
+                                    <Check size={13} strokeWidth={2.8} />
+                                  </button>
+                                );
+                              })()}
                               <span
                                 className="rti-name"
                                 title={`SEDA approved: ${job.sedaApprovedDate ? shortDate(job.sedaApprovedDate) : isSedaApproved(job.sedaStatus) ? "Approved" : (job.sedaStatus || "Pending")} · 2nd payment: ${shortDate(job.secondPaymentDate) || "–"}`}
@@ -7446,6 +7529,12 @@ function InstallationGroupsView({
                                   <span className="rti-customer-popover-label">2nd payment:</span>
                                   <span className="rti-customer-popover-val">
                                     {shortDate(job.secondPaymentDate) || "–"}
+                                  </span>
+                                </div>
+                                <div className="rti-customer-popover-row">
+                                  <span className="rti-customer-popover-label">Payment status:</span>
+                                  <span className="rti-customer-popover-val">
+                                    {(job.paymentPercent ?? 0).toFixed(2)}% paid
                                   </span>
                                 </div>
                               </div>
@@ -9661,6 +9750,7 @@ function DeliveryPlanningView({
   onTogglePin,
   workCategoryFilter,
   onWorkCategoryFilterChange,
+  onSelectJob,
 }: {
   runs: DeliveryRun[];
   jobs: InstallationJob[];
@@ -9673,42 +9763,21 @@ function DeliveryPlanningView({
   onTogglePin: (id: string) => void;
   workCategoryFilter: string;
   onWorkCategoryFilterChange: (next: string) => void;
+  onSelectJob?: (jobId: string) => void;
 }) {
   const todayIso = malaysiaToday();
-  // Every customer by id, built once per jobs change. The tables here are
-  // keyed by job id throughout, and looking each one up by scanning the whole
-  // customer list is what made typing into a field feel slow.
   const jobById = useMemo(
     () => new Map(jobs.map((job) => [job.id, job])),
     [jobs],
   );
   const [stockDraft, setStockDraft] = useState<Record<string, string>>({});
-  // Each run's fields start read-only; clicking its row (on anything but an
-  // input/select/button, which stop the click from bubbling) toggles that one
-  // run in or out of this set — independent of every other run's state.
-  const [editingRunIds, setEditingRunIds] = useState<Set<string>>(new Set());
   const [etaFeedback, setEtaFeedback] = useState<Record<string, EtaFeedback>>({});
-  // The customer combobox's typed text per stop, keyed by `${run.id}|${index}`
-  // rather than by job id — the slot's position, not whichever job currently
-  // fills it, so picking a customer does not orphan the box's own state.
-  const [customerSearchByStop, setCustomerSearchByStop] = useState<
-    Record<string, string>
-  >({});
-  // Which stop's match list is currently dropped open — at most one at a time.
-  const [openCustomerStopKey, setOpenCustomerStopKey] = useState<string | null>(
-    null,
-  );
-  // Same three filters Installation groups carries, over the same kind of
-  // data: 25 imported August runs turned this into a log, and a log needs a
-  // way to ask for one month or one customer. Empty means "everything" —
-  // the table opens showing all of it rather than hiding work behind a
-  // default period.
-  // One box rather than the month and year dropdowns it replaces — see the
-  // same filter on Installation groups.
+  const [pinnedWeekKeys, setPinnedWeekKeys] = useState<Set<string>>(new Set());
+  const [activeAddRunId, setActiveAddRunId] = useState<string | null>(null);
+  const [addSearch, setAddSearch] = useState("");
+
   const [periodFilter, setPeriodFilter] = useState("");
   const [customerQuery, setCustomerQuery] = useState("");
-  // The same stage filter Customer Scheduling and Installation groups carry,
-  // reading the same predicate, so a stage means one thing everywhere.
   const [planningFilter, setPlanningFilter] = useState<string>(ALL_JOBS);
   const planningLookup = useMemo<PlanningLookup>(
     () => ({
@@ -9718,34 +9787,37 @@ function DeliveryPlanningView({
     [groupByJobId, runs],
   );
 
-  // Creates a blank run and drops it straight into edit mode — the row-level
-  // equivalent of the old "Create delivery run" popup. Customers are linked
-  // to it afterward from Customer details, same as any existing run.
-  //
-  // Prepended, not appended: a new run is the one being worked on, and at the
-  // bottom of 25 imported August runs it would open off-screen.
+  function togglePinnedWeek(weekKey: string) {
+    setPinnedWeekKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(weekKey)) {
+        next.delete(weekKey);
+      } else {
+        next.add(weekKey);
+      }
+      return next;
+    });
+  }
+
   function createRun() {
     const id = crypto.randomUUID();
     const nextRun: DeliveryRun = {
       id,
       name: "",
-      deliveryDate: "",
-      warehouse: "",
-      deliveryTeam: "",
+      deliveryDate: todayIso,
+      warehouse: warehouses[0]?.name || "",
+      deliveryTeam: "Delivery Team 1",
       deliveryPic: "",
       contactNumber: "",
+      departureTime: "09:00",
       installationGroupId: "",
       status: "pending_stock",
       jobIds: [],
     };
     onChange([nextRun, ...runs]);
-    setEditingRunIds((prev) => new Set(prev).add(id));
   }
 
   async function calculateEtas(run: DeliveryRun) {
-    // Finished stops are listed in the table but not routed to: an arrival
-    // time for a delivery that already happened is noise, and putting one
-    // back on the map would move the whole chain behind it.
     const runJobs = jobs.filter(
       (job) =>
         run.jobIds.includes(job.id) &&
@@ -9753,10 +9825,6 @@ function DeliveryPlanningView({
     );
     const linkedCount = run.jobIds.length;
 
-    // The address is no longer typed into the run — it is looked up from the
-    // warehouse table below by the name the run has selected. Runs saved
-    // before that table existed still carry their own address, so that is
-    // kept as the fallback rather than breaking their ETAs.
     const warehouseAddress =
       warehouses.find((item) => item.name === run.warehouse)?.address?.trim() ||
       run.warehouseAddress?.trim() ||
@@ -9781,9 +9849,6 @@ function DeliveryPlanningView({
         [run.id]: {
           busy: false,
           failed: true,
-          // Distinguishes an empty run from one whose stops are all done —
-          // the second still shows its customers, so "no customers" alone
-          // would read as a bug.
           message: linkedCount
             ? "Every customer on this run has completed installation, so there is nothing left to route."
             : "This run has no customers to route to.",
@@ -9802,7 +9867,6 @@ function DeliveryPlanningView({
           warehouseAddress,
           deliveryDate: run.deliveryDate,
           departureTime: run.departureTime || "09:00",
-          // Array order is the delivery order the chain is built from.
           stops: runJobs.map((job) => ({
             jobId: job.id,
             address: jobFullAddress(job),
@@ -9852,8 +9916,6 @@ function DeliveryPlanningView({
         ...prev,
         [run.id]: {
           busy: false,
-          // A straight-line estimate is a materially weaker number than a real
-          // road route, so it is flagged rather than reported as a plain success.
           failed: payload.method === "straight-line",
           message:
             `${estimated.length} stop${estimated.length === 1 ? "" : "s"} — ` +
@@ -9875,31 +9937,6 @@ function DeliveryPlanningView({
         },
       }));
     }
-  }
-
-  function toggleRunEdit(id: string) {
-    if (editingRunIds.has(id)) {
-      // Closing the editor — via Done, or clicking the row again — implicitly
-      // finishes anything still sitting in a stock-item box. Without this, a
-      // typed item that was never confirmed with Enter or + is silently lost:
-      // Done reads as "save and close", not "discard and close".
-      const run = runs.find((candidate) => candidate.id === id);
-      for (const jobId of run?.jobIds ?? []) {
-        const job = jobById.get(jobId);
-        if (job && (stockDraft[jobId] ?? "").trim()) {
-          addStockTag(job);
-        }
-      }
-    }
-    setEditingRunIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
   }
 
   function updateRun(id: string, update: Partial<DeliveryRun>) {
@@ -9943,8 +9980,6 @@ function DeliveryPlanningView({
     );
   }
 
-  // Renaming a warehouse carries every run that departs from it, so a run
-  // never silently loses the address its ETAs are counted from.
   function renameWarehouse(id: string, name: string) {
     const previous = warehouses.find((item) => item.id === id)?.name ?? "";
     updateWarehouse(id, { name });
@@ -9961,9 +9996,6 @@ function DeliveryPlanningView({
     onChangeWarehouses(warehouses.filter((item) => item.id !== id));
   }
 
-  // The Warehouse column is a pick from the table below. A run saved before
-  // that table existed can name a warehouse that is not in it (yet), so its
-  // own value is offered too rather than being silently reset to blank.
   function warehouseOptions(current: string) {
     const names = warehouses.map((item) => item.name).filter(Boolean);
     return current && !names.includes(current) ? [current, ...names] : names;
@@ -10056,27 +10088,14 @@ function DeliveryPlanningView({
     </section>
   );
 
-
-  // --- Run schedule table: one row per customer, with each run's own fields
-  // carried by a band above its rows rather than by six columns spanned down
-  // them. Same shape as Installation groups, for the same reason — the run
-  // fields belong to the run, not to any one stop, and repeating them as
-  // columns is what made this table too wide to read.
   const query = customerQuery.trim().toLowerCase();
-
-  // A run survives the period filters; its stops survive the name search and
-  // the planning status. A run whose every stop is filtered out drops away
-  // with them, so either filter returns the runs that carry those customers
-  // rather than a page of empty bands.
   const stopFiltered =
     Boolean(query) ||
     planningFilter !== ALL_JOBS ||
     workCategoryFilter !== ALL_JOBS;
+
   const visibleRuns = runs
     .map((run) => {
-      // Walk the run's own stops rather than the whole customer list. Scanning
-      // all 8,000-odd jobs once per run cost ~45ms of every render — and every
-      // render is every keystroke, because editing a field re-renders the page.
       const runJobs = run.jobIds
         .map((id) => jobById.get(id))
         .filter((job): job is InstallationJob => Boolean(job));
@@ -10084,20 +10103,12 @@ function DeliveryPlanningView({
         (job) =>
           (!query ||
             jobMatchesSearch(job, query) ||
-            // Site supervisor is the group's own field, not the job's —
-            // looked up the same way every other group fact is here, off
-            // the stop's own job id.
             (groupByJobId.get(job.id)?.supervisors ?? []).some((name) =>
               name.toLowerCase().includes(query),
             )) &&
           matchesPipelineStage(job, planningFilter, todayIso, planningLookup) &&
           matchesWorkCategory(job, workCategoryFilter),
       );
-      // Pinned stops lead their run. To the top of the run rather than of the
-      // page, because a stop only means anything under the run that carries
-      // it — lifting it clear of its band would strip it of its date, crew and
-      // warehouse. Everything else holds its existing order; Array.sort is
-      // stable, so unpinned stops are not reshuffled around the pinned ones.
       const ordered = matching
         .slice()
         .sort(
@@ -10107,53 +10118,28 @@ function DeliveryPlanningView({
       return { run, runJobs: ordered };
     })
     .filter(({ run, runJobs }) => {
-      // A run that is open for editing always shows, whatever the filters
-      // say. It is the one being worked on, and a just-created run has no
-      // date and no customers yet — so any active filter would hide it the
-      // instant it was created, and changing an open run's date would yank
-      // it off screen mid-edit.
-      if (editingRunIds.has(run.id)) return true;
       if (!matchesDateSearch(run.deliveryDate, periodFilter)) return false;
-      // A run with no customers at all still shows: it is a run being built,
-      // and hiding it would make "Create delivery run" look like it failed.
       if (stopFiltered && !runJobs.length) return false;
       return true;
     })
-    // Runs sharing a heading read as one block. Every run carries its own
-    // heading — that row is also where its date, status, warehouse and PIC are
-    // edited — so this puts the identical ones next to each other rather than
-    // merging them.
-    //
-    // The list had no order at all before this, which is how six runs headed
-    // "Week 26 Jul · PIC Khairul" ended up split between positions 26 and 144
-    // of 145. Week first because that is what the heading leads with, then the
-    // PIC named beside it, then the date inside the week.
-    //
-    // A run still being filled in stays at the top until it is closed, and
-    // only then drops into its week. The filter above already refuses to hide
-    // an open run for the same reason — "changing an open run's date would
-    // yank it off screen mid-edit" — and sorting on the date alone brought
-    // that straight back: typing 16 Mar into a new run sent it to position 123
-    // of 146 while the PIC and warehouse were still blank.
-    //
-    // An undated run is treated the same way even when closed. It has no week
-    // to sort into, and burying it at the bottom of a hundred-odd rows would
-    // lose a run somebody had just created.
     .sort((a, b) => {
-      const week = (entry: typeof a) =>
-        entry.run.deliveryDate
-          ? (weekBounds(entry.run.deliveryDate)?.start ?? "")
-          : "";
-      const held = (entry: typeof a) =>
-        editingRunIds.has(entry.run.id) || !entry.run.deliveryDate ? 0 : 1;
+      const weekA = a.run.deliveryDate
+        ? (weekBounds(a.run.deliveryDate)?.start ?? "")
+        : "";
+      const weekB = b.run.deliveryDate
+        ? (weekBounds(b.run.deliveryDate)?.start ?? "")
+        : "";
+      const weekKeyA = weekA || "undated";
+      const weekKeyB = weekB || "undated";
+      const pinA = pinnedWeekKeys.has(weekKeyA) ? 0 : 1;
+      const pinB = pinnedWeekKeys.has(weekKeyB) ? 0 : 1;
       return (
-        held(a) - held(b) ||
-        // Newest week first, matching Installation groups.
-        week(b).localeCompare(week(a)) ||
-        (a.run.deliveryPic ?? "").localeCompare(b.run.deliveryPic ?? "") ||
-        // Days inside a week read forwards, the order they are worked.
+        pinA - pinB ||
+        weekB.localeCompare(weekA) ||
         (a.run.deliveryDate ?? "").localeCompare(b.run.deliveryDate ?? "") ||
         (a.run.departureTime ?? "").localeCompare(b.run.departureTime ?? "") ||
+        (a.run.deliveryTeam ?? "").localeCompare(b.run.deliveryTeam ?? "") ||
+        (a.run.name ?? "").localeCompare(b.run.name ?? "") ||
         a.run.id.localeCompare(b.run.id)
       );
     });
@@ -10167,7 +10153,7 @@ function DeliveryPlanningView({
 
   return (
     <div className="planning-panel">
-      <div className="planning-heading">
+      <div className="planning-heading delivery-schedule-heading">
         <div>
           <h2>Delivery Schedule</h2>
           <p>Group customer materials into warehouse delivery routes.</p>
@@ -10232,211 +10218,269 @@ function DeliveryPlanningView({
         </div>
       </div>
       <section className="planning-group">
-        <div className="table-wrap unified-team-table delivery-schedule-table">
+        <div className="table-wrap rti-team unified-team-table delivery-schedule-table">
           <table>
             <colgroup>
-              <col className="col-customer" />
-              <col className="col-location" />
-              <col className="col-stock" />
-              <col className="col-eta" />
-              <col className="col-pin" />
+              <col className="rti-col-date" />
+              <col className="rti-col-customer" />
+              <col className="rti-col-address" />
+              <col className="rti-col-agent" />
+              <col className="rti-col-phase" />
+              <col className="rti-col-panel" />
+              <col className="rti-col-inverter" />
+              <col className="rti-col-eta" />
+              <col className="rti-col-inst-date" />
+              <col className="rti-col-remark" />
             </colgroup>
-            <thead>
-              <tr>
-                <th>Customer</th>
-                <th>Location</th>
-                <th>Stock details</th>
-                <th>ETA</th>
-                <th aria-label="Pin"></th>
-              </tr>
-            </thead>
             <tbody>
               {visibleRuns.length === 0 && (
                 <tr className="delivery-run-placeholder-row">
-                  <td colSpan={5}>
+                  <td colSpan={10}>
                     {runs.length
                       ? "No delivery run matches these filters."
                       : "No delivery runs yet."}
                   </td>
                 </tr>
               )}
-              {visibleRuns.map(({ run, runJobs }) => {
-                const isEditing = editingRunIds.has(run.id);
+              {visibleRuns.map(({ run, runJobs }, index) => {
                 const feedback = etaFeedback[run.id];
-                // No customers linked yet — still render one row so a new
-                // run has somewhere to pick its first customer.
-                const displayRows: (InstallationJob | null)[] = runJobs.length
-                  ? runJobs
-                  : [null];
+                const weekKey = run.deliveryDate
+                  ? (weekBounds(run.deliveryDate)?.start ?? "undated")
+                  : "undated";
+                const startsWeek =
+                  index === 0 ||
+                  (visibleRuns[index - 1].run.deliveryDate
+                    ? (weekBounds(visibleRuns[index - 1].run.deliveryDate)?.start ?? "undated")
+                    : "undated") !== weekKey;
+
+                const rawTeamNum = (() => {
+                  const raw = `${run.deliveryTeam || ""} ${run.name || ""}`;
+                  const m =
+                    raw.match(/\bteam\s*(\d+)\b/i) ||
+                    (run.deliveryTeam || "").match(/\b(\d+)\b/);
+                  return m ? Number(m[1]) : null;
+                })();
+                const isStandardTeam =
+                  rawTeamNum !== null && rawTeamNum >= 1 && rawTeamNum <= 4;
+                const teamNum = isStandardTeam ? rawTeamNum : null;
+                const teamClass = isStandardTeam
+                  ? `rti-team-${teamNum}`
+                  : "rti-team-other rti-team-default";
+                const runTitle = (() => {
+                  if (run.name) return run.name;
+                  if (rawTeamNum) return `Delivery Team ${rawTeamNum}`;
+                  if (run.deliveryTeam) return run.deliveryTeam;
+                  return "Delivery Run";
+                })();
+                const baseLabel = run.warehouse
+                  ? `${run.warehouse} Depot`
+                  : null;
+
                 return (
                   <Fragment key={run.id}>
-                    <tr
-                      className={`schedule-band delivery-band${isEditing ? " is-editing" : ""}`}
-                      onClick={() => toggleRunEdit(run.id)}
-                    >
-                      <th colSpan={5} scope="colgroup">
-                        {isEditing ? (
-                          <div
-                            className="delivery-band-fields"
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            <label>
-                              <span>Run name</span>
-                              <input
-                                value={run.name}
-                                onChange={(event) =>
-                                  updateRun(run.id, { name: event.target.value })
-                                }
-                                aria-label="Delivery run name"
-                              />
-                            </label>
-                            <label>
-                              <span>Status</span>
-                              <select
-                                value={run.status}
-                                onChange={(event) =>
-                                  updateRun(run.id, {
-                                    status: event.target.value as DeliveryRun["status"],
-                                  })
-                                }
-                                aria-label="Delivery run status"
-                              >
-                                <option value="pending_stock">Pending stock</option>
-                                <option value="ready">Ready</option>
-                                <option value="in_transit">In transit</option>
-                                <option value="delivered">Delivered</option>
-                              </select>
-                            </label>
-                            <label>
-                              <span>Delivery date</span>
-                              <input
-                                type="date"
-                                value={run.deliveryDate}
-                                onChange={(event) =>
-                                  updateRun(run.id, { deliveryDate: event.target.value })
-                                }
-                                aria-label="Delivery date"
-                              />
-                            </label>
-                            <label>
-                              <span>Departure</span>
-                              <input
-                                type="time"
-                                value={run.departureTime || "09:00"}
-                                onChange={(event) =>
-                                  updateRun(run.id, { departureTime: event.target.value })
-                                }
-                                aria-label="Departure time from warehouse"
-                                title="Time the lorry leaves the warehouse — each customer's ETA counts up from here."
-                              />
-                            </label>
-                            <label>
-                              <span>Warehouse</span>
-                              <select
-                                value={run.warehouse}
-                                onChange={(event) =>
-                                  updateRun(run.id, { warehouse: event.target.value })
-                                }
-                                aria-label="Warehouse"
-                              >
-                                <option value="">Select warehouse</option>
-                                {warehouseOptions(run.warehouse).map((name) => (
-                                  <option value={name} key={name}>
-                                    {name}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              <span>Delivery PIC</span>
-                              <input
-                                value={run.deliveryPic || ""}
-                                onChange={(event) =>
-                                  updateRun(run.id, { deliveryPic: event.target.value })
-                                }
-                                aria-label="Delivery PIC"
-                              />
-                            </label>
-                            <label>
-                              <span>Contact number</span>
-                              <input
-                                type="tel"
-                                value={run.contactNumber || ""}
-                                onChange={(event) =>
-                                  updateRun(run.id, { contactNumber: event.target.value })
-                                }
-                                aria-label="Contact number"
-                              />
-                            </label>
-                            <div className="row-actions delivery-band-actions">
-                              <button
-                                type="button"
-                                className="button primary"
-                                aria-label={`Finish editing delivery run ${run.name}`}
-                                onClick={() => toggleRunEdit(run.id)}
-                              >
-                                Done
-                              </button>
-                              <button
-                                type="button"
-                                className="button secondary"
-                                aria-label={`Calculate ETAs for delivery run ${run.name}`}
-                                onClick={() => void calculateEtas(run)}
-                                disabled={feedback?.busy}
-                              >
-                                {feedback?.busy ? (
-                                  <LoaderCircle size={15} className="spin" />
-                                ) : (
-                                  <MapPin size={15} />
-                                )}
-                                {feedback?.busy ? "Calculating…" : "Calculate ETAs"}
-                              </button>
-                              <button
-                                type="button"
-                                className="button secondary"
-                                aria-label={`Remove delivery run ${run.name}`}
-                                onClick={() =>
-                                  onChange(runs.filter((item) => item.id !== run.id))
-                                }
-                              >
-                                Remove
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <>
+                    {startsWeek && (
+                      <tr
+                        className={`schedule-band rti-team-band rti-team-band-sub${
+                          pinnedWeekKeys.has(weekKey) ? " is-pinned" : ""
+                        }`}
+                      >
+                        <th colSpan={10} scope="colgroup">
+                          <div className="schedule-band-sub-content">
+                            <button
+                              type="button"
+                              className="schedule-band-pin"
+                              aria-pressed={pinnedWeekKeys.has(weekKey)}
+                              aria-label={`${
+                                pinnedWeekKeys.has(weekKey) ? "Unpin" : "Pin"
+                              } week ${
+                                run.deliveryDate
+                                  ? weekRangeLabel(run.deliveryDate)
+                                  : "Unscheduled"
+                              }`}
+                              title={
+                                pinnedWeekKeys.has(weekKey)
+                                  ? "Unpin this week"
+                                  : "Pin this week to the top"
+                              }
+                              onClick={() => togglePinnedWeek(weekKey)}
+                            >
+                              {pinnedWeekKeys.has(weekKey) ? (
+                                <PinOff size={14} />
+                              ) : (
+                                <Pin size={14} />
+                              )}
+                            </button>
                             <span className="schedule-band-week">
+                              Week{" "}
                               {run.deliveryDate
-                                ? `Week ${weekRangeLabel(run.deliveryDate)}`
+                                ? weekRangeLabel(run.deliveryDate)
                                 : "Unscheduled"}
                             </span>
-                            <span className="schedule-band-crew">
-                              {[
-                                run.deliveryDate
-                                  ? `${run.deliveryDate} · ${run.departureTime || "09:00"}`
-                                  : "Date not arranged",
-                                DELIVERY_RUN_STATUS_LABELS[run.status],
-                                run.warehouse
-                                  ? `From: ${run.warehouse}`
-                                  : "Warehouse not selected",
-                                run.deliveryPic
-                                  ? `PIC: ${run.deliveryPic}${
-                                      run.contactNumber
-                                        ? ` ${formatPhoneNumber(run.contactNumber)}`
-                                        : ""
-                                    }`
-                                  : "",
-                                `${run.jobIds.length} ${
-                                  run.jobIds.length === 1 ? "customer" : "customers"
-                                }`,
-                              ]
-                                .filter(Boolean)
-                                .join("  ·  ")}
-                            </span>
-                          </>
-                        )}
+                          </div>
+                        </th>
+                      </tr>
+                    )}
+                    <tr
+                      className={`schedule-band rti-team-band rti-team-band-main delivery-run-band${
+                        pinnedWeekKeys.has(weekKey) ? " is-pinned" : ""
+                      }`}
+                    >
+                      <th colSpan={10} scope="colgroup">
+                        <div className="rti-team-header-main">
+                          <div className="rti-team-title-wrap">
+                            <span className="rti-team-name">{runTitle}</span>
+                            {baseLabel && (
+                              <span className="rti-team-base">{baseLabel}</span>
+                            )}
+                          </div>
+                          <div className="rti-crew-grid">
+                            <div className="rti-crew-col">
+                              <label
+                                className="rti-crew-label"
+                                htmlFor={`del-team-${run.id}`}
+                              >
+                                Delivery Team
+                              </label>
+                              <input
+                                id={`del-team-${run.id}`}
+                                type="text"
+                                list={`del-teams-list-${run.id}`}
+                                className="rti-crew-input rti-crew-input-borderless"
+                                value={run.deliveryTeam || ""}
+                                placeholder="Select team…"
+                                onChange={(e) =>
+                                  updateRun(run.id, {
+                                    deliveryTeam: e.target.value,
+                                  })
+                                }
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                              <datalist id={`del-teams-list-${run.id}`}>
+                                {deliveryTeams.map((name) => (
+                                  <option key={name} value={name} />
+                                ))}
+                              </datalist>
+                            </div>
+
+                            <div className="rti-crew-col">
+                              <label
+                                className="rti-crew-label"
+                                htmlFor={`del-pic-${run.id}`}
+                              >
+                                Delivery PIC
+                              </label>
+                              <input
+                                id={`del-pic-${run.id}`}
+                                type="text"
+                                className="rti-crew-input rti-crew-input-borderless"
+                                value={run.deliveryPic || ""}
+                                placeholder="e.g. Khairul"
+                                onChange={(e) =>
+                                  updateRun(run.id, {
+                                    deliveryPic: e.target.value,
+                                  })
+                                }
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            </div>
+
+                            <div className="rti-crew-col">
+                              <label
+                                className="rti-crew-label"
+                                htmlFor={`del-contact-${run.id}`}
+                              >
+                                Contact Number
+                              </label>
+                              <input
+                                id={`del-contact-${run.id}`}
+                                type="tel"
+                                className="rti-crew-input rti-crew-input-borderless"
+                                value={run.contactNumber || ""}
+                                placeholder="e.g. 012-3456789"
+                                onChange={(e) =>
+                                  updateRun(run.id, {
+                                    contactNumber: e.target.value,
+                                  })
+                                }
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            </div>
+
+                            <div className="rti-crew-col">
+                              <label
+                                className="rti-crew-label"
+                                htmlFor={`del-warehouse-${run.id}`}
+                              >
+                                Warehouse
+                              </label>
+                              <select
+                                id={`del-warehouse-${run.id}`}
+                                className="rti-crew-input rti-crew-input-borderless"
+                                value={run.warehouse || ""}
+                                onChange={(e) =>
+                                  updateRun(run.id, {
+                                    warehouse: e.target.value,
+                                  })
+                                }
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <option value="">Select warehouse</option>
+                                {warehouseOptions(run.warehouse).map(
+                                  (name) => (
+                                    <option key={name} value={name}>
+                                      {name}
+                                    </option>
+                                  ),
+                                )}
+                              </select>
+                            </div>
+                          </div>
+
+                          <div className="rti-run-actions">
+                            <button
+                              type="button"
+                              className="button secondary rti-run-calc-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void calculateEtas(run);
+                              }}
+                              disabled={feedback?.busy}
+                              title="Calculate driving times and estimated arrival for stops"
+                            >
+                              {feedback?.busy ? (
+                                <LoaderCircle size={13} className="spin" />
+                              ) : (
+                                <MapPin size={13} />
+                              )}
+                              {feedback?.busy ? "Calculating…" : "Calculate ETAs"}
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button rti-run-delete-btn"
+                              title="Delete delivery run"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (
+                                  window.confirm(
+                                    `Delete delivery run "${
+                                      run.name ||
+                                      run.deliveryTeam ||
+                                      "unnamed"
+                                    }"?`,
+                                  )
+                                ) {
+                                  onChange(
+                                    runs.filter((item) => item.id !== run.id),
+                                  );
+                                }
+                              }}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </div>
                         {feedback?.message && (
-                          <span
+                          <div
                             className={
                               feedback.failed
                                 ? "run-route-note failed"
@@ -10445,292 +10489,624 @@ function DeliveryPlanningView({
                             role={feedback.failed ? "alert" : undefined}
                           >
                             {feedback.message}
-                          </span>
+                          </div>
                         )}
                       </th>
                     </tr>
-                    {displayRows.map((job, stopIndex) => {
-                      const stopKey = `${run.id}|${stopIndex}`;
-                      // Customer Scheduling's own definition of "in play":
-                      // available or still waiting on confirmation. A row's
-                      // own current customer stays selectable even if their
-                      // status has since moved on, and a customer already
-                      // parked in another row of this same run is hidden so
-                      // the same person can't end up double-booked.
-                      const eligibleJobs = jobs.filter(
-                        (candidate) =>
-                          isSchedulingInPlay(candidate) &&
-                          (candidate.id === job?.id ||
-                            !run.jobIds.includes(candidate.id)),
-                      );
-                      const complete =
-                        job &&
-                        isCompleteInstallation(
-                          job,
-                          todayIso,
-                          groupByJobId.get(job.id),
-                        );
+
+                    <tr className="schedule-column-headers">
+                      <th>Slot</th>
+                      <th>Customer</th>
+                      <th>Address</th>
+                      <th>Agent</th>
+                      <th>Phase</th>
+                      <th>Panel</th>
+                      <th>Inverter</th>
+                      <th>ETA</th>
+                      <th>Installation Date</th>
+                      <th>Stock / Remark</th>
+                    </tr>
+
+                    {runJobs.length === 0 && (
+                      <tr>
+                        <td
+                          colSpan={10}
+                          style={{
+                            padding: "12px",
+                            textAlign: "center",
+                            color: "var(--muted, #64748b)",
+                            fontStyle: "italic",
+                            fontSize: "12px",
+                          }}
+                        >
+                          No customers in this run yet. Use the selector below to add a customer.
+                        </td>
+                      </tr>
+                    )}
+
+                    {runJobs.map((job, stopIndex) => {
+                      const assignedGroup = groupByJobId.get(job.id);
+                      const instDate =
+                        assignedGroup?.installationDate ||
+                        job.preferredInstallationDate ||
+                        job.visits?.[0]?.date ||
+                        null;
+                      const rowRemark =
+                        job.stockDetails || job.installationRemarks || "";
+
+                      const installTeam =
+                        assignedGroup?.installationTeam ||
+                        job.teams?.find((t) => t.role === "roof")?.teamName ||
+                        "";
+                      const wiringTeam =
+                        assignedGroup?.wiringTeam ||
+                        job.teams?.find((t) => t.role === "wiring")?.teamName ||
+                        "";
+                      const supervisorText =
+                        (assignedGroup?.supervisors && assignedGroup.supervisors.length
+                          ? assignedGroup.supervisors.filter(Boolean).join(", ")
+                          : assignedGroup?.supervisor) ||
+                        job.teams?.find((t) => t.role === "supervisor")?.teamName ||
+                        "";
+
+                      const rawTeamNum = (() => {
+                        if (!assignedGroup) return null;
+                        const raw = `${assignedGroup.teamLabel || ""} ${assignedGroup.name || ""} ${assignedGroup.installationTeam || ""}`;
+                        const m =
+                          raw.match(/\bteam\s*(\d+)\b/i) ||
+                          (assignedGroup.teamLabel || "").match(/\b(\d+)\b/);
+                        return m ? Number(m[1]) : null;
+                      })();
+                      const isStandardTeam =
+                        rawTeamNum !== null && rawTeamNum >= 1 && rawTeamNum <= 4;
+                      const teamNum = isStandardTeam ? rawTeamNum : null;
+                      const teamColorClass = isStandardTeam
+                        ? `team-${teamNum}`
+                        : assignedGroup
+                        ? "team-default"
+                        : "team-unassigned";
+
                       return (
                         <tr
-                          key={job ? job.id : "empty"}
+                          key={`${run.id}-${job.id}-${stopIndex}`}
                           className={[
-                            complete ? "run-stop-complete" : "",
-                            job && remarkHasOm(job.installationRemarks)
-                              ? "is-om"
+                            "rti-row",
+                            Boolean(/koh\s*keng\s*kiat/i.test(job.customerName))
+                              ? "is-koh-keng-kiat"
                               : "",
+                            remarkHasOm(rowRemark) ? "is-om" : "",
                           ]
                             .filter(Boolean)
                             .join(" ")}
-                          onClick={() => toggleRunEdit(run.id)}
                         >
-                          <td
-                            className="run-stop-customer"
-                            title={
-                              complete
-                                ? "Installation already done — this stop is history, and Calculate ETAs skips it."
-                                : undefined
-                            }
-                            onClick={isEditing ? (event) => event.stopPropagation() : undefined}
-                          >
-                            {isEditing ? (
-                              (() => {
-                                // Falls back to the stop's current customer,
-                                // if it has one, so opening an already-filled
-                                // stop reads their name back rather than
-                                // going blank.
-                                const searchText =
-                                  customerSearchByStop[stopKey] ??
-                                  (job ? formatPersonName(job.customerName) : "");
-                                const isOpen = openCustomerStopKey === stopKey;
-                                const matches = searchText.trim()
-                                  ? eligibleJobs.filter((candidate) =>
-                                      jobMatchesSearch(candidate, searchText),
-                                    )
-                                  : [];
-                                function pickCustomer(
-                                  nextJobId: string,
-                                  name: string,
-                                ) {
-                                  const withoutCurrent = run.jobIds.filter(
-                                    (id) => id !== job?.id,
-                                  );
+                          {/* 1. Slot */}
+                          <td className="rti-date">
+                            <strong>
+                              {run.deliveryDate
+                                ? formatDateOnly(run.deliveryDate)
+                                : "—"}
+                            </strong>
+                            <div className="rti-slot-time-wrap">
+                              <Clock3 size={11} className="rti-slot-time-icon" />
+                              <input
+                                type="text"
+                                list="rti-slot-time-presets"
+                                className="rti-slot-time-input"
+                                defaultValue={run.departureTime || "09:00"}
+                                key={`run-departure-${run.id}-${run.departureTime}`}
+                                placeholder="09:00"
+                                title="Run departure time"
+                                onClick={(e) => e.stopPropagation()}
+                                onBlur={(e) =>
                                   updateRun(run.id, {
-                                    jobIds: [...withoutCurrent, nextJobId],
-                                  });
-                                  setCustomerSearchByStop((prev) => ({
-                                    ...prev,
-                                    [stopKey]: name,
-                                  }));
-                                  setOpenCustomerStopKey(null);
+                                    departureTime: e.target.value,
+                                  })
                                 }
-                                return (
-                                  <div className="customer-combobox">
-                                    <input
-                                      type="search"
-                                      placeholder="Type a name to search"
-                                      value={searchText}
-                                      onFocus={() =>
-                                        setOpenCustomerStopKey(stopKey)
-                                      }
-                                      onChange={(event) => {
-                                        setCustomerSearchByStop((prev) => ({
-                                          ...prev,
-                                          [stopKey]: event.target.value,
-                                        }));
-                                        setOpenCustomerStopKey(stopKey);
-                                      }}
-                                      onBlur={() =>
-                                        setOpenCustomerStopKey((current) =>
-                                          current === stopKey ? null : current,
-                                        )
-                                      }
-                                      aria-label="Customer"
-                                    />
-                                    {isOpen && searchText.trim() && (
-                                      <ul className="customer-combobox-results">
-                                        {matches.length === 0 ? (
-                                          <li className="customer-combobox-empty">
-                                            No matching customers
-                                          </li>
-                                        ) : (
-                                          matches.map((candidate) => (
-                                            <li key={candidate.id}>
-                                              <button
-                                                type="button"
-                                                className="customer-combobox-option"
-                                                // mousedown fires before the
-                                                // input's blur, so
-                                                // preventDefault here keeps
-                                                // focus long enough for the
-                                                // click to land instead of the
-                                                // list closing out from under
-                                                // it first.
-                                                onMouseDown={(event) => {
-                                                  event.preventDefault();
-                                                  pickCustomer(
-                                                    candidate.id,
-                                                    formatPersonName(
-                                                      candidate.customerName,
-                                                    ),
-                                                  );
-                                                }}
-                                              >
-                                                {formatPersonName(
-                                                  candidate.customerName,
-                                                )}{" "}
-                                                · {candidate.invoiceNumber}
-                                              </button>
-                                            </li>
-                                          ))
-                                        )}
-                                      </ul>
-                                    )}
-                                  </div>
-                                );
-                              })()
-                            ) : job ? (
-                              <>
-                                <strong>{formatPersonName(job.customerName)}</strong>
-                                <span>{job.invoiceNumber}</span>
-                              </>
-                            ) : (
-                              <span className="run-field-readout">No customer selected</span>
-                            )}
+                              />
+                            </div>
                           </td>
-                          {job ? (
-                            <>
-                              <td>{job.city || job.state || "Not available"}</td>
-                              <td onClick={isEditing ? (event) => event.stopPropagation() : undefined}>
-                                {isEditing ? (
-                                  <div className="member-tag-input">
-                                    <div className="member-tag-list">
-                                      {stockTags(job).map((item) => (
-                                        <span className="member-tag" key={item}>
-                                          {item}
-                                          <button
-                                            type="button"
-                                            aria-label={`Remove ${item}`}
-                                            onClick={() => removeStockTag(job, item)}
-                                          >
-                                            <X size={12} />
-                                          </button>
-                                        </span>
-                                      ))}
-                                    </div>
-                                    <div className="member-tag-add">
-                                      <input
-                                        value={stockDraft[job.id] ?? ""}
-                                        onChange={(event) =>
-                                          setStockDraft((prev) => ({
-                                            ...prev,
-                                            [job.id]: event.target.value,
-                                          }))
-                                        }
-                                        onKeyDown={(event) => {
-                                          if (event.key === "Enter") {
-                                            event.preventDefault();
-                                            addStockTag(job);
-                                          }
-                                        }}
-                                        placeholder="Add stock item"
-                                        aria-label={`Add stock item for ${job.customerName}`}
-                                      />
-                                      <button
-                                        type="button"
-                                        className="icon-button"
-                                        aria-label={`Add stock item for ${job.customerName}`}
-                                        onClick={() => addStockTag(job)}
-                                      >
-                                        <Plus size={14} />
-                                      </button>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <span className="run-field-readout">
-                                    {stockTags(job).length > 0
-                                      ? stockTags(job).join(", ")
-                                      : "No stock details"}
+
+                          {/* 2. Customer (Phone and Email on Hover) */}
+                          <td>
+                            <div className="rti-customer-wrap">
+                              <span
+                                className="rti-name"
+                                title={`Phone: ${
+                                  job.customerPhone || "–"
+                                } · Email: ${
+                                  job.customerEmail || "–"
+                                } · SEDA approved: ${
+                                  job.sedaApprovedDate
+                                    ? shortDate(job.sedaApprovedDate)
+                                    : isSedaApproved(job.sedaStatus)
+                                    ? "Approved"
+                                    : job.sedaStatus || "Pending"
+                                } · 2nd payment: ${
+                                  shortDate(job.secondPaymentDate) || "–"
+                                }`}
+                              >
+                                {displayName(job.customerName)}
+                              </span>
+                              <div
+                                className="rti-customer-popover"
+                                role="tooltip"
+                              >
+                                <div className="rti-customer-popover-row">
+                                  <span className="rti-customer-popover-label">
+                                    Phone:
+                                  </span>
+                                  <span className="rti-customer-popover-val">
+                                    {job.customerPhone
+                                      ? formatPhone(job.customerPhone)
+                                      : "–"}
+                                  </span>
+                                </div>
+                                <div className="rti-customer-popover-row">
+                                  <span className="rti-customer-popover-label">
+                                    Email:
+                                  </span>
+                                  <span className="rti-customer-popover-val">
+                                    {job.customerEmail || "–"}
+                                  </span>
+                                </div>
+                                <div className="rti-customer-popover-row">
+                                  <span className="rti-customer-popover-label">
+                                    SEDA approved:
+                                  </span>
+                                  <span className="rti-customer-popover-val">
+                                    {job.sedaApprovedDate
+                                      ? shortDate(job.sedaApprovedDate)
+                                      : isSedaApproved(job.sedaStatus)
+                                      ? "Approved"
+                                      : job.sedaStatus || "Pending"}
+                                  </span>
+                                </div>
+                                <div className="rti-customer-popover-row">
+                                  <span className="rti-customer-popover-label">
+                                    2nd payment:
+                                  </span>
+                                  <span className="rti-customer-popover-val">
+                                    {shortDate(job.secondPaymentDate) || "–"}
+                                  </span>
+                                </div>
+                                <div className="rti-customer-popover-row">
+                                  <span className="rti-customer-popover-label">
+                                    Payment status:
+                                  </span>
+                                  <span className="rti-customer-popover-val">
+                                    {(job.paymentPercent ?? 0).toFixed(2)}% paid
+                                  </span>
+                                </div>
+                              </div>
+                              {job.invoiceNumber && (
+                                <span className="rti-muted rti-invoice">
+                                  {job.invoiceNumber}
+                                </span>
+                              )}
+                              {isAtap(job.customerName) && (
+                                <span
+                                  className="rti-tag is-roof"
+                                  title="Roof type from customer name"
+                                >
+                                  ATAP
+                                </span>
+                              )}
+                              {job.battery &&
+                                job.battery !== "Not available" && (
+                                  <span
+                                    className="rti-tag is-battery"
+                                    title={job.battery}
+                                  >
+                                    Battery
                                   </span>
                                 )}
-                              </td>
-                              {/* Estimated arrival at the customer's address. Falls
-                                  back to the run's delivery date/departure time
-                                  until someone gives this customer their own, the
-                                  same way a job's installation date falls back to
-                                  its group's. The fallback is shown, not saved:
-                                  leaving the row alone keeps arrivalDate/arrivalTime
-                                  null, so moving the run's date or departure time
-                                  carries every un-estimated stop along with it. */}
-                              <td onClick={isEditing ? (event) => event.stopPropagation() : undefined}>
-                                {isEditing ? (
-                                  <div className="delivery-date-pair">
-                                    <input
-                                      type="date"
-                                      className={job.arrivalDate ? "" : "is-inherited"}
-                                      value={job.arrivalDate ?? run.deliveryDate ?? ""}
-                                      onChange={(event) =>
-                                        onUpdateJob({
-                                          ...job,
-                                          arrivalDate: event.target.value || null,
-                                        })
-                                      }
-                                      aria-label={`Estimated arrival date for ${job.customerName}`}
-                                      title={
-                                        job.arrivalDate
-                                          ? "Estimated for this customer. Clear it to go back to the run's delivery date."
-                                          : "Taken from the delivery run. Set a date here to estimate this stop on its own."
-                                      }
-                                    />
-                                    <input
-                                      type="time"
-                                      className={job.arrivalTime ? "" : "is-inherited"}
-                                      value={job.arrivalTime ?? run.departureTime ?? "09:00"}
-                                      onChange={(event) =>
-                                        onUpdateJob({
-                                          ...job,
-                                          arrivalTime: event.target.value || null,
-                                        })
-                                      }
-                                      aria-label={`Estimated arrival time for ${job.customerName}`}
-                                      title={
-                                        job.arrivalTime
-                                          ? "Estimated for this customer. Clear it to go back to the run's departure time."
-                                          : "Taken from the delivery run's departure time. Set a time here to estimate this stop on its own."
-                                      }
-                                    />
-                                  </div>
-                                ) : (
-                                  <span className="run-field-readout">
-                                    {job.arrivalDate ?? run.deliveryDate ?? "Not set"} ·{" "}
-                                    {job.arrivalTime ?? run.departureTime ?? "09:00"}
-                                  </span>
-                                )}
-                              </td>
-                            </>
-                          ) : (
-                            <td colSpan={3} className="run-no-customers">
-                              Select a customer above to set location, stock, and ETA.
-                            </td>
-                          )}
-                          <td className="pin-cell" onClick={(event) => event.stopPropagation()}>
-                            {job && (
+                              {job.evDetails && (
+                                <span
+                                  className="rti-tag is-ev"
+                                  title={job.evDetails}
+                                >
+                                  EV
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* 3. Address */}
+                          <td>
+                            {job.address ? (
                               <button
                                 type="button"
-                                className={`icon-button pin-toggle ${pinnedJobIds.has(job.id) ? "is-pinned" : ""}`}
-                                aria-label={pinnedJobIds.has(job.id) ? "Unpin row" : "Pin row to top"}
-                                aria-pressed={pinnedJobIds.has(job.id)}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  onTogglePin(job.id);
+                                className="rti-link rti-address"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const q = encodeURIComponent(
+                                    `${job.address}, ${job.postcode || ""} ${
+                                      job.city || ""
+                                    } ${job.state || ""}`.trim(),
+                                  );
+                                  window.open(
+                                    `https://www.google.com/maps/search/?api=1&query=${q}`,
+                                    "_blank",
+                                  );
+                                }}
+                                title="Open address in Google Maps"
+                              >
+                                <MapPin size={13} />
+                                {titleCase(job.address) ||
+                                  "Address not available"}
+                              </button>
+                            ) : (
+                              <span className="run-field-readout is-empty">
+                                —
+                              </span>
+                            )}
+                          </td>
+
+                          {/* 4. Agent */}
+                          <td className="rti-agent">
+                            {job.agentName?.trim().toUpperCase() || "–"}
+                          </td>
+
+                          {/* 5. Phase */}
+                          <td>{phaseText(job)}</td>
+
+                          {/* 6. Panel */}
+                          <td
+                            className="rti-edit-cell"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <textarea
+                              className="rti-cell-textarea"
+                              rows={2}
+                              defaultValue={derivedPowerOutput(job)}
+                              key={`panel-${run.id}-${job.id}-${stopIndex}-${job.powerOutput}`}
+                              onBlur={(event) => {
+                                const text = event.target.value;
+                                if (text === derivedPowerOutput(job)) return;
+                                onUpdateJob({ ...job, powerOutput: text });
+                              }}
+                              placeholder="e.g. 16 Jinko 650W"
+                              aria-label={`Panel for ${displayName(
+                                job.customerName,
+                              )}`}
+                            />
+                          </td>
+
+                          {/* 7. Inverter */}
+                          <td
+                            className="rti-edit-cell"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <textarea
+                              className="rti-cell-textarea"
+                              rows={2}
+                              defaultValue={inverterText(job)}
+                              key={`inverter-${run.id}-${job.id}-${stopIndex}-${job.inverterBattery}`}
+                              onBlur={(event) => {
+                                const text = event.target.value;
+                                const current = inverterText(job);
+                                if (text === current) return;
+                                onUpdateJob({ ...job, inverterBattery: text });
+                              }}
+                              placeholder="e.g. 10kW Hybrid"
+                              aria-label={`Inverter for ${displayName(
+                                job.customerName,
+                              )}`}
+                            />
+                          </td>
+
+                          {/* 8. ETA (Date and Time estimating arrival) */}
+                          <td
+                            className="rti-date rti-eta-cell"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="rti-eta-container">
+                              <div className="rti-eta-box">
+                                <Calendar
+                                  size={11}
+                                  className="rti-eta-icon"
+                                />
+                                <input
+                                  type="date"
+                                  className={`rti-eta-input ${
+                                    job.arrivalDate
+                                      ? "is-set"
+                                      : "is-inherited"
+                                  }`}
+                                  value={
+                                    job.arrivalDate ?? run.deliveryDate ?? ""
+                                  }
+                                  title={
+                                    job.arrivalDate
+                                      ? "Estimated arrival date"
+                                      : "Inherited from run date (click to customize)"
+                                  }
+                                  onChange={(e) =>
+                                    onUpdateJob({
+                                      ...job,
+                                      arrivalDate: e.target.value || null,
+                                    })
+                                  }
+                                />
+                              </div>
+                              <div className="rti-eta-box">
+                                <Clock3
+                                  size={11}
+                                  className="rti-eta-icon"
+                                />
+                                <input
+                                  type="text"
+                                  list="rti-slot-time-presets"
+                                  className={`rti-eta-input ${
+                                    job.arrivalTime
+                                      ? "is-set"
+                                      : "is-inherited"
+                                  }`}
+                                  value={
+                                    job.arrivalTime ??
+                                    run.departureTime ??
+                                    "09:00"
+                                  }
+                                  placeholder="09:00"
+                                  title="Estimated arrival time (click to edit)"
+                                  onChange={(e) =>
+                                    onUpdateJob({
+                                      ...job,
+                                      arrivalTime: e.target.value || null,
+                                    })
+                                  }
+                                />
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* 9. Installation Date with Team Hover Popover */}
+                          <td className="rti-installation-date-cell">
+                            <div className="rti-inst-date-wrap">
+                              <div
+                                className={`rti-inst-date-tag ${
+                                  instDate ? "" : "is-unassigned"
+                                }`}
+                              >
+                                <Calendar size={12} />
+                                <span className="rti-inst-date-text">
+                                  {instDate
+                                    ? formatDateOnly(instDate)
+                                    : "Unassigned"}
+                                </span>
+                              </div>
+
+                              <div
+                                className={`rti-inst-team-popover ${teamColorClass}`}
+                                role="tooltip"
+                              >
+                                <div className="rti-inst-popover-title">
+                                  {assignedGroup?.teamLabel ||
+                                    (teamNum
+                                      ? `Team ${teamNum}`
+                                      : assignedGroup?.name ||
+                                        "Installation Assignment")}
+                                </div>
+                                <div className="rti-inst-popover-row">
+                                  <span className="rti-inst-popover-label">
+                                    Installation team:
+                                  </span>
+                                  <span className="rti-inst-popover-val">
+                                    {installTeam || "–"}
+                                  </span>
+                                </div>
+                                <div className="rti-inst-popover-row">
+                                  <span className="rti-inst-popover-label">
+                                    Wiring team:
+                                  </span>
+                                  <span className="rti-inst-popover-val">
+                                    {wiringTeam || "–"}
+                                  </span>
+                                </div>
+                                <div className="rti-inst-popover-row">
+                                  <span className="rti-inst-popover-label">
+                                    Site supervisor:
+                                  </span>
+                                  <span className="rti-inst-popover-val">
+                                    {supervisorText || "–"}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* 10. Stock / Remark & Remove Stop */}
+                          <td
+                            className="rti-edit-cell rti-remark-cell"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "flex-start",
+                                gap: "4px",
+                              }}
+                            >
+                              <textarea
+                                className="rti-cell-textarea"
+                                rows={2}
+                                defaultValue={rowRemark}
+                                key={`stock-remark-${run.id}-${job.id}-${stopIndex}-${rowRemark}`}
+                                onBlur={(event) => {
+                                  const text = event.target.value;
+                                  if (text === (job.stockDetails || ""))
+                                    return;
+                                  onUpdateJob({
+                                    ...job,
+                                    stockDetails: text,
+                                  });
+                                }}
+                                placeholder="Stock items & notes"
+                                aria-label={`Stock details / Remark for ${displayName(
+                                  job.customerName,
+                                )}`}
+                              />
+                              <button
+                                type="button"
+                                className="rti-stop-remove-btn"
+                                title="Remove customer from this delivery run"
+                                onClick={() => {
+                                  updateRun(run.id, {
+                                    jobIds: run.jobIds.filter(
+                                      (_, idx) => idx !== stopIndex,
+                                    ),
+                                  });
                                 }}
                               >
-                                {pinnedJobIds.has(job.id) ? <Pin size={14} /> : <PinOff size={14} />}
+                                <X size={12} />
                               </button>
-                            )}
+                            </div>
                           </td>
                         </tr>
                       );
                     })}
+
+                    {/* Add Customer row for this run */}
+                    <tr className="rti-add-stop-row">
+                      <td
+                        colSpan={10}
+                        style={{
+                          padding: "6px 12px",
+                          background: "var(--surface-soft, #f8fafc)",
+                          borderBottom: "1px solid var(--line, #e2e8f0)",
+                        }}
+                      >
+                        {activeAddRunId !== run.id ? (
+                          <button
+                            type="button"
+                            className="button secondary"
+                            style={{
+                              fontSize: "11px",
+                              padding: "2px 10px",
+                              height: "26px",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                            }}
+                            onClick={() => {
+                              setActiveAddRunId(run.id);
+                              setAddSearch("");
+                            }}
+                          >
+                            <Plus size={13} />
+                            Add customer to this run
+                          </button>
+                        ) : (
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px",
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontSize: "11px",
+                                fontWeight: 600,
+                                color: "var(--ink, #0f172a)",
+                              }}
+                            >
+                              Search customer:
+                            </span>
+                            <input
+                              type="search"
+                              autoFocus
+                              placeholder="Type customer name, invoice or city…"
+                              value={addSearch}
+                              onChange={(e) => setAddSearch(e.target.value)}
+                              style={{
+                                fontSize: "12px",
+                                padding: "3px 8px",
+                                borderRadius: "4px",
+                                border: "1px solid var(--line, #cbd5e1)",
+                                background: "var(--surface, #ffffff)",
+                                color: "var(--ink, #0f172a)",
+                                width: "240px",
+                              }}
+                            />
+                            <select
+                              style={{
+                                fontSize: "12px",
+                                padding: "3px 8px",
+                                borderRadius: "4px",
+                                border: "1px solid var(--line, #cbd5e1)",
+                                background: "var(--surface, #ffffff)",
+                                color: "var(--ink, #0f172a)",
+                                maxWidth: "300px",
+                              }}
+                              value=""
+                              onChange={(e) => {
+                                const selectedJobId = e.target.value;
+                                if (
+                                  selectedJobId &&
+                                  !run.jobIds.includes(selectedJobId)
+                                ) {
+                                  updateRun(run.id, {
+                                    jobIds: [...run.jobIds, selectedJobId],
+                                  });
+                                  setActiveAddRunId(null);
+                                  setAddSearch("");
+                                }
+                              }}
+                            >
+                              <option value="">
+                                {(() => {
+                                  const searchTrimmed = addSearch.trim().toLowerCase();
+                                  if (!searchTrimmed) return "Type to search customers…";
+                                  const matches = jobs.filter(
+                                    (candidate) =>
+                                      !run.jobIds.includes(candidate.id) &&
+                                      jobMatchesSearch(candidate, searchTrimmed),
+                                  );
+                                  return matches.length
+                                    ? `Select customer (${matches.length} found)…`
+                                    : "No matching customers found";
+                                })()}
+                              </option>
+                              {addSearch.trim() &&
+                                jobs
+                                  .filter(
+                                    (candidate) =>
+                                      !run.jobIds.includes(candidate.id) &&
+                                      jobMatchesSearch(
+                                        candidate,
+                                        addSearch.trim().toLowerCase(),
+                                      ),
+                                  )
+                                  .slice(0, 30)
+                                  .map((candidate) => (
+                                    <option
+                                      key={candidate.id}
+                                      value={candidate.id}
+                                    >
+                                      {formatPersonName(candidate.customerName)} (
+                                      {candidate.invoiceNumber ||
+                                        candidate.city ||
+                                        "No invoice"}
+                                      )
+                                    </option>
+                                  ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              title="Cancel"
+                              onClick={() => {
+                                setActiveAddRunId(null);
+                                setAddSearch("");
+                              }}
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
                   </Fragment>
                 );
               })}

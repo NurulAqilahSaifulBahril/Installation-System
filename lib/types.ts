@@ -276,7 +276,36 @@ export type InstallationJob = {
   // date is unknown, and inventing one would reorder the Waiting list.
   sedaApprovedDate?: string | null;
   sourceUpdatedAt?: string;
+  issueCategory?: IssueCategory;
+  priority?: Exclude<IssuePriority, "all">;
+  supportTicket?: {
+    id: number;
+    bubbleId?: string | null;
+    title: string;
+    problemDescription: string;
+    technicianRemark?: string | null;
+    status: string;
+    priority?: Exclude<IssuePriority, "all">;
+    images?: string[] | null;
+    videoUrl?: string | null;
+    createdDate?: string | null;
+  };
 };
+
+export type IssueCategory =
+  | "all"
+  | "leaking"
+  | "wiring"
+  | "inverter_equipment"
+  | "generation"
+  | "other";
+
+export type IssuePriority =
+  | "all"
+  | "critical"
+  | "high"
+  | "medium"
+  | "low";
 
 export type JobUpdate = Pick<
   InstallationJob,

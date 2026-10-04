@@ -1597,6 +1597,12 @@ export default function ReadyToInstallSchedule({
                                   <span className="rti-customer-popover-label">2nd payment:</span>
                                   <span className="rti-customer-popover-val">{shortDate(job.secondPaymentDate) || "–"}</span>
                                 </div>
+                                <div className="rti-customer-popover-row">
+                                  <span className="rti-customer-popover-label">Payment status:</span>
+                                  <span className="rti-customer-popover-val">
+                                    {(job.paymentPercent ?? 0).toFixed(2)}% paid
+                                  </span>
+                                </div>
                               </div>
                             </div>
                             <span className="rti-muted rti-invoice">{job.invoiceNumber}</span>

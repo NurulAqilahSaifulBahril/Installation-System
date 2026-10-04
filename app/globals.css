@@ -2812,15 +2812,157 @@ tr.needs-reschedule-date.selected td {
    minimum width pushed the whole table into a sideways scroll. */
 .unified-team-table col.col-actions { width: 5%; }
 
-/* Stock delivery, shaped like the Installation groups schedule above: it
-   borrows .unified-team-table for the header, band and field sizing, and
-   only its own column widths and band contents live here. Five columns
-   instead of twelve — the run's own fields moved into the band. */
-.delivery-schedule-table col.col-customer { width: 24%; }
-.delivery-schedule-table col.col-location { width: 14%; }
-.delivery-schedule-table col.col-stock { width: 27%; }
-.delivery-schedule-table col.col-eta { width: 27%; }
-.delivery-schedule-table col.col-pin { width: 8%; }
+/* Delivery Schedule: column sizing with widened Inverter column and table min-width */
+.delivery-schedule-table table {
+  min-width: 1540px;
+}
+.delivery-schedule-table .rti-col-date { width: 110px; }
+.delivery-schedule-table .rti-col-customer { width: 180px; }
+.delivery-schedule-table .rti-col-address { width: 190px; }
+.delivery-schedule-table .rti-col-agent { width: 85px; }
+.delivery-schedule-table .rti-col-phase { width: 55px; }
+.delivery-schedule-table .rti-col-panel { width: 140px; }
+.delivery-schedule-table .rti-col-inverter { width: 260px; min-width: 240px; }
+.delivery-schedule-table .rti-col-eta { width: 130px; }
+.delivery-schedule-table .rti-col-inst-date { width: 140px; }
+.delivery-schedule-table .rti-col-remark { width: 250px; min-width: 220px; }
+
+/* Delivery Schedule: Header text in black */
+.delivery-schedule-table thead th {
+  color: #000000 !important;
+  border-bottom: 2px solid #000000 !important;
+}
+
+.delivery-schedule-table tbody tr.delivery-band th,
+.delivery-schedule-table tbody tr.schedule-band.rti-team-band-main th,
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band th,
+.delivery-schedule-table tbody tr.schedule-band.rti-team-1 th,
+.delivery-schedule-table tbody tr.schedule-band.rti-team-2 th,
+.delivery-schedule-table tbody tr.schedule-band.rti-team-3 th,
+.delivery-schedule-table tbody tr.schedule-band.rti-team-4 th,
+.delivery-schedule-table tbody tr.schedule-band.rti-team-default th,
+.delivery-schedule-table tbody tr.schedule-band.rti-team-other th {
+  background: var(--surface-soft, #f4f4f5) !important;
+  color: #000000 !important;
+  border-top: 1px solid var(--line, #e2e8f0) !important;
+  border-bottom: 1px solid var(--line, #e2e8f0) !important;
+}
+
+.delivery-schedule-table tbody tr.schedule-band.rti-team-band-main:hover th,
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band:hover th {
+  background: #ebebeb !important;
+}
+
+.delivery-schedule-table .rti-team-title-wrap .rti-team-name {
+  color: #000000 !important;
+}
+
+.delivery-schedule-table .rti-team-title-wrap .rti-team-base {
+  color: #64748b !important;
+}
+
+.delivery-schedule-table .rti-crew-label {
+  color: #475569 !important;
+}
+
+.delivery-schedule-table .rti-crew-input,
+.delivery-schedule-table .rti-crew-input.rti-crew-input-borderless {
+  color: #0f172a !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+}
+
+.delivery-schedule-table .rti-crew-input::placeholder,
+.delivery-schedule-table .rti-crew-input.rti-crew-input-borderless::placeholder {
+  color: #94a3b8 !important;
+}
+
+.delivery-schedule-table .rti-crew-input:hover,
+.delivery-schedule-table .rti-crew-input.rti-crew-input-borderless:hover {
+  background: rgba(0, 0, 0, 0.05) !important;
+  border: 1px dashed #cbd5e1 !important;
+}
+
+.delivery-schedule-table .rti-crew-input:focus,
+.delivery-schedule-table .rti-crew-input.rti-crew-input-borderless:focus {
+  background: #ffffff !important;
+  border: 1px solid #94a3b8 !important;
+  color: #0f172a !important;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.08) !important;
+}
+
+.delivery-schedule-table .rti-run-calc-btn {
+  background: #ffffff;
+  border: 1px solid var(--line, #cbd5e1);
+  color: var(--ink, #1e293b);
+}
+
+.delivery-schedule-table .rti-run-calc-btn:hover {
+  background: var(--surface-soft, #f8fafc);
+  border-color: #94a3b8;
+}
+
+.delivery-schedule-table .rti-run-delete-btn {
+  color: #64748b;
+}
+
+.delivery-schedule-table .rti-run-delete-btn:hover {
+  color: #ef4444;
+  background: #fee2e2;
+}
+
+:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-band-main th,
+:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.delivery-run-band th,
+:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-1 th,
+:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-2 th,
+:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-3 th,
+:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-4 th,
+:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-default th,
+:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-other th {
+  background: #182234 !important;
+  color: #f1f5f9 !important;
+  border-color: #334155 !important;
+}
+
+:root[data-theme="dark"] .delivery-schedule-table .rti-team-title-wrap .rti-team-name {
+  color: #f1f5f9 !important;
+}
+
+:root[data-theme="dark"] .delivery-schedule-table .rti-team-title-wrap .rti-team-base {
+  color: #94a3b8 !important;
+}
+
+:root[data-theme="dark"] .delivery-schedule-table .rti-crew-label {
+  color: #94a3b8 !important;
+}
+
+:root[data-theme="dark"] .delivery-schedule-table .rti-crew-input,
+:root[data-theme="dark"] .delivery-schedule-table .rti-crew-input.rti-crew-input-borderless {
+  color: #f1f5f9 !important;
+}
+
+:root[data-theme="dark"] .delivery-schedule-table .rti-crew-input:hover,
+:root[data-theme="dark"] .delivery-schedule-table .rti-crew-input.rti-crew-input-borderless:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: #475569 !important;
+}
+
+:root[data-theme="dark"] .delivery-schedule-table .rti-crew-input:focus,
+:root[data-theme="dark"] .delivery-schedule-table .rti-crew-input.rti-crew-input-borderless:focus {
+  background: #0f172a !important;
+  border-color: #64748b !important;
+  color: #ffffff !important;
+}
+
+.delivery-schedule-table tbody tr.delivery-band .schedule-band-week,
+.delivery-schedule-table tbody tr.delivery-band .schedule-band-crew,
+.delivery-schedule-table tbody tr.delivery-band .run-route-note {
+  color: #000000 !important;
+}
+
+.delivery-schedule-heading h2 {
+  color: #000000 !important;
+}
 
 /* Unlike the week band, this one IS a control: clicking it opens the run for
    editing, the same gesture as clicking one of its customer rows. */
@@ -5982,6 +6124,8 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
 .rti-col-seda { width: 100px; }
 .rti-col-payment { width: 96px; }
 .rti-col-sld { width: 120px; }
+.rti-col-eta { width: 130px; }
+.rti-col-inst-date { width: 140px; }
 .rti-col-remark { min-width: 260px; width: 280px; }
 
 .rti-edit-cell {
@@ -6168,6 +6312,18 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   max-width: 100%;
 }
 
+/* Elevated stacking context for hovered row & customer wrap */
+tbody tr:hover,
+tr.rti-row:hover {
+  position: relative;
+  z-index: 40;
+}
+
+.rti-customer-wrap:hover {
+  position: relative;
+  z-index: 60;
+}
+
 .rti-customer-wrap:hover .rti-customer-popover {
   opacity: 1;
   visibility: visible;
@@ -6180,23 +6336,23 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   left: 0;
   transform: translateY(4px);
   width: max-content;
-  max-width: 260px;
+  max-width: 280px;
   padding: 6px 10px;
-  background: rgba(30, 30, 34, 0.88);
+  background: rgba(30, 30, 34, 0.94);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   color: #ffffff;
   border-radius: 6px;
   font-size: 11.5px;
   line-height: 1.4;
   font-weight: 400;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s ease;
   pointer-events: none;
-  z-index: 60;
+  z-index: 1000 !important;
   white-space: normal;
   text-align: left;
 }
@@ -6208,7 +6364,40 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   left: 14px;
   border-width: 5px;
   border-style: solid;
-  border-color: rgba(30, 30, 34, 0.88) transparent transparent transparent;
+  border-color: rgba(30, 30, 34, 0.94) transparent transparent transparent;
+}
+
+/* For the first row(s) in a table or under group column headers, open downwards
+   so the popover is never clipped by sticky thead or top edge of .table-wrap */
+tbody tr:first-child .rti-customer-popover,
+tbody tr:nth-child(2) .rti-customer-popover,
+.schedule-column-headers + tr .rti-customer-popover,
+.schedule-column-headers + tr + tr .rti-customer-popover,
+.table-wrap tbody tr:first-child .rti-customer-popover,
+.table-wrap tbody tr:nth-child(2) .rti-customer-popover {
+  bottom: auto;
+  top: calc(100% + 6px);
+  transform: translateY(-4px);
+}
+
+tbody tr:first-child .rti-customer-wrap:hover .rti-customer-popover,
+tbody tr:nth-child(2) .rti-customer-wrap:hover .rti-customer-popover,
+.schedule-column-headers + tr .rti-customer-wrap:hover .rti-customer-popover,
+.schedule-column-headers + tr + tr .rti-customer-wrap:hover .rti-customer-popover,
+.table-wrap tbody tr:first-child .rti-customer-wrap:hover .rti-customer-popover,
+.table-wrap tbody tr:nth-child(2) .rti-customer-wrap:hover .rti-customer-popover {
+  transform: translateY(0);
+}
+
+tbody tr:first-child .rti-customer-popover::after,
+tbody tr:nth-child(2) .rti-customer-popover::after,
+.schedule-column-headers + tr .rti-customer-popover::after,
+.schedule-column-headers + tr + tr .rti-customer-popover::after,
+.table-wrap tbody tr:first-child .rti-customer-popover::after,
+.table-wrap tbody tr:nth-child(2) .rti-customer-popover::after {
+  top: auto;
+  bottom: 100%;
+  border-color: transparent transparent rgba(30, 30, 34, 0.94) transparent;
 }
 
 .rti-customer-popover-row {
@@ -7464,4 +7653,1023 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
 :root[data-theme="dark"] .rti-alert-btn-dismiss:hover {
   background: #4a3e1c !important;
 }
+
+/* Delivery Schedule table matching Arranged Installation */
+/* Delivery Schedule: ETA Date and Time boxes matching layout */
+.rti-eta-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rti-eta-box,
+.rti-eta-date-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--surface-soft, #f8fafc);
+  border: 1px solid var(--line, #cbd5e1);
+  border-radius: 4px;
+  padding: 2px 6px;
+  height: 24px;
+  box-sizing: border-box;
+  width: 112px;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.rti-eta-box:hover,
+.rti-eta-date-row:hover {
+  background: var(--surface, #ffffff);
+  border-color: #94a3b8;
+}
+
+.rti-eta-box:focus-within,
+.rti-eta-date-row:focus-within {
+  background: var(--surface, #ffffff);
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+}
+
+.rti-eta-icon {
+  color: var(--muted, #64748b);
+  opacity: 0.8;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.rti-eta-input,
+.rti-eta-date-input {
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink, #1e293b);
+  width: 100%;
+  padding: 0;
+  outline: none;
+  cursor: pointer;
+}
+
+.rti-eta-input:focus,
+.rti-eta-date-input:focus {
+  cursor: text;
+}
+
+.rti-eta-input.is-inherited,
+.rti-eta-date-input.is-inherited {
+  opacity: 0.7;
+}
+
+:root[data-theme="dark"] .rti-eta-box,
+:root[data-theme="dark"] .rti-eta-date-row {
+  background: #0f172a;
+  border-color: #334155;
+}
+
+:root[data-theme="dark"] .rti-eta-box:hover,
+:root[data-theme="dark"] .rti-eta-date-row:hover {
+  background: #1e293b;
+  border-color: #475569;
+}
+
+:root[data-theme="dark"] .rti-eta-box:focus-within,
+:root[data-theme="dark"] .rti-eta-date-row:focus-within {
+  background: #1e293b;
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.25);
+}
+
+:root[data-theme="dark"] .rti-eta-icon {
+  color: #94a3b8;
+}
+
+:root[data-theme="dark"] .rti-eta-input,
+:root[data-theme="dark"] .rti-eta-date-input {
+  color: #f1f5f9;
+}
+
+.rti-inst-date-tag,
+.rti-inst-date-hyperlink {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  background: var(--surface-soft, #f8fafc);
+  border: 1px solid var(--line, #cbd5e1);
+  border-radius: 5px;
+  color: var(--ink, #1e293b);
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: default;
+  transition: all 0.15s ease;
+}
+
+.rti-inst-date-tag svg {
+  color: var(--muted, #64748b);
+  opacity: 0.8;
+}
+
+.rti-inst-date-tag:hover,
+.rti-inst-date-hyperlink:hover {
+  background: var(--surface, #ffffff);
+  color: var(--ink, #0f172a);
+  border-color: #94a3b8;
+}
+
+.rti-inst-date-tag.is-unassigned,
+.rti-inst-date-hyperlink.is-unassigned {
+  background: var(--surface-soft, #f8fafc);
+  border-color: var(--line, #e2e8f0);
+  color: var(--muted, #64748b);
+  font-weight: 400;
+}
+
+.rti-inst-group-tag {
+  font-size: 10px;
+  background: #e0f2fe;
+  color: #0369a1;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+/* Delivery Schedule: Installation Date Hover Popover */
+.rti-inst-date-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.rti-inst-date-wrap:hover .rti-inst-team-popover {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+.rti-inst-team-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  width: max-content;
+  min-width: 220px;
+  max-width: 300px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.15);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s ease;
+  pointer-events: none;
+  z-index: 100;
+  white-space: normal;
+  text-align: left;
+}
+
+.rti-inst-team-popover::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 6px;
+  border-style: solid;
+}
+
+/* Team 1: Blue (#2563eb) from Arranged Installation */
+.rti-inst-team-popover.team-1 {
+  background: #2563eb !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+.rti-inst-team-popover.team-1::after {
+  border-color: #2563eb transparent transparent transparent;
+}
+.rti-inst-team-popover.team-1 .rti-inst-popover-label {
+  color: rgba(255, 255, 255, 0.85);
+}
+.rti-inst-team-popover.team-1 .rti-inst-popover-val {
+  color: #ffffff;
+}
+.rti-inst-team-popover.team-1 .rti-inst-popover-row + .rti-inst-popover-row {
+  border-top-color: rgba(255, 255, 255, 0.2);
+}
+/* Team 2: Orange (#ea580c) from Arranged Installation */
+.rti-inst-team-popover.team-2 {
+  background: #ea580c !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+.rti-inst-team-popover.team-2::after {
+  border-color: #ea580c transparent transparent transparent;
+}
+.rti-inst-team-popover.team-2 .rti-inst-popover-label {
+  color: rgba(255, 255, 255, 0.85);
+}
+.rti-inst-team-popover.team-2 .rti-inst-popover-val {
+  color: #ffffff;
+}
+.rti-inst-team-popover.team-2 .rti-inst-popover-row + .rti-inst-popover-row {
+  border-top-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Team 3: Green (#16a34a) from Arranged Installation */
+.rti-inst-team-popover.team-3 {
+  background: #16a34a !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+.rti-inst-team-popover.team-3::after {
+  border-color: #16a34a transparent transparent transparent;
+}
+.rti-inst-team-popover.team-3 .rti-inst-popover-label {
+  color: rgba(255, 255, 255, 0.85);
+}
+.rti-inst-team-popover.team-3 .rti-inst-popover-val {
+  color: #ffffff;
+}
+.rti-inst-team-popover.team-3 .rti-inst-popover-row + .rti-inst-popover-row {
+  border-top-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Team 4: Pink (#db2777) from Arranged Installation */
+.rti-inst-team-popover.team-4 {
+  background: #db2777 !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+.rti-inst-team-popover.team-4::after {
+  border-color: #db2777 transparent transparent transparent;
+}
+.rti-inst-team-popover.team-4 .rti-inst-popover-label {
+  color: rgba(255, 255, 255, 0.85);
+}
+.rti-inst-team-popover.team-4 .rti-inst-popover-val {
+  color: #ffffff;
+}
+.rti-inst-team-popover.team-4 .rti-inst-popover-row + .rti-inst-popover-row {
+  border-top-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Other / Default: Teal (#2dd4bf) from Arranged Installation */
+.rti-inst-team-popover.team-other,
+.rti-inst-team-popover.team-default {
+  background: #2dd4bf !important;
+  color: #042f2e !important;
+  border: 1px solid rgba(4, 47, 46, 0.25);
+}
+.rti-inst-team-popover.team-other::after,
+.rti-inst-team-popover.team-default::after {
+  border-color: #2dd4bf transparent transparent transparent;
+}
+.rti-inst-team-popover.team-other .rti-inst-popover-label,
+.rti-inst-team-popover.team-default .rti-inst-popover-label {
+  color: rgba(4, 47, 46, 0.85);
+}
+.rti-inst-team-popover.team-other .rti-inst-popover-val,
+.rti-inst-team-popover.team-default .rti-inst-popover-val {
+  color: #042f2e;
+  font-weight: 600;
+}
+.rti-inst-team-popover.team-other .rti-inst-popover-title,
+.rti-inst-team-popover.team-default .rti-inst-popover-title {
+  color: #042f2e;
+  border-bottom-color: rgba(4, 47, 46, 0.2);
+}
+.rti-inst-team-popover.team-other .rti-inst-popover-row + .rti-inst-popover-row,
+.rti-inst-team-popover.team-default .rti-inst-popover-row + .rti-inst-popover-row {
+  border-top-color: rgba(4, 47, 46, 0.2);
+}
+
+/* Unassigned */
+.rti-inst-team-popover.team-unassigned {
+  background: #334155 !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+.rti-inst-team-popover.team-unassigned::after {
+  border-color: #334155 transparent transparent transparent;
+}
+.rti-inst-team-popover.team-unassigned .rti-inst-popover-label {
+  color: rgba(255, 255, 255, 0.75);
+}
+.rti-inst-team-popover.team-unassigned .rti-inst-popover-val {
+  color: #ffffff;
+}
+.rti-inst-team-popover.team-unassigned .rti-inst-popover-row + .rti-inst-popover-row {
+  border-top-color: rgba(255, 255, 255, 0.15);
+}
+
+.rti-inst-popover-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-bottom: 4px;
+  margin-bottom: 5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.rti-inst-popover-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+}
+
+.rti-inst-popover-row + .rti-inst-popover-row {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.rti-inst-popover-label {
+  font-weight: 600;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.rti-inst-popover-val {
+  font-weight: 600;
+  text-align: right;
+  word-break: break-word;
+}
+
+:root[data-theme="dark"] .rti-inst-date-tag,
+:root[data-theme="dark"] .rti-inst-date-hyperlink {
+  background: #0f172a;
+  border-color: #334155;
+  color: #f1f5f9;
+}
+
+:root[data-theme="dark"] .rti-inst-date-tag:hover,
+:root[data-theme="dark"] .rti-inst-date-hyperlink:hover {
+  background: #1e293b;
+  border-color: #475569;
+}
+
+.rti-delivery-stock-remark-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.rti-stop-remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted, #94a3b8);
+  cursor: pointer;
+  padding: 0;
+  margin-left: 4px;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.rti-stop-remove-btn:hover {
+  color: #ef4444;
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+
+.rti-run-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.rti-run-calc-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  height: 26px;
+}
+
+.rti-run-delete-btn {
+  color: var(--muted, #94a3b8);
+  padding: 4px;
+  border-radius: 4px;
+}
+
+.rti-run-delete-btn:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.rti-customer-popover {
+  max-width: 320px !important;
+}
+
+.rti-customer-popover-val {
+  word-break: break-all;
+}
+
+/* ==========================================================================
+   Ready to Install - O&M Support Tickets & Issue Category Filter
+   ========================================================================== */
+
+.om-section-header {
+  margin: 14px 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* O&M Active Cards Bar */
+.om-active-cards-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.om-category-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  padding: 12px 14px;
+  background: var(--surface, #ffffff);
+  border: 1.5px solid var(--border, #e2e8f0);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.om-category-card:hover {
+  border-color: #cbd5e1;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+.om-card-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted, #64748b);
+  margin-bottom: 6px;
+}
+
+.om-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  color: #475569;
+  transition: all 0.15s ease;
+}
+
+.om-card-count {
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--foreground, #0f172a);
+  margin-bottom: 2px;
+}
+
+.om-card-sub {
+  font-size: 11px;
+  color: var(--muted, #94a3b8);
+  font-weight: 500;
+}
+
+/* Card Themes & Active States */
+
+/* Leaking */
+.om-category-card.is-leaking .om-card-icon {
+  background: #e0f2fe;
+  color: #0284c7;
+}
+.om-category-card.is-leaking:hover {
+  border-color: #7dd3fc;
+}
+.om-category-card.is-leaking.is-active {
+  border-color: #0284c7;
+  background: linear-gradient(to bottom, #ffffff, #f0f9ff);
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.25), 0 4px 12px rgba(2, 132, 199, 0.1);
+}
+.om-category-card.is-leaking.is-active .om-card-header {
+  color: #0369a1;
+}
+.om-category-card.is-leaking.is-active .om-card-count {
+  color: #0284c7;
+}
+
+/* Wiring */
+.om-category-card.is-wiring .om-card-icon {
+  background: #fef3c7;
+  color: #d97706;
+}
+.om-category-card.is-wiring:hover {
+  border-color: #fcd34d;
+}
+.om-category-card.is-wiring.is-active {
+  border-color: #d97706;
+  background: linear-gradient(to bottom, #ffffff, #fffbeb);
+  box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.25), 0 4px 12px rgba(217, 119, 6, 0.1);
+}
+.om-category-card.is-wiring.is-active .om-card-header {
+  color: #b45309;
+}
+.om-category-card.is-wiring.is-active .om-card-count {
+  color: #d97706;
+}
+
+/* Inverter / Equipment */
+.om-category-card.is-inverter .om-card-icon {
+  background: #ede9fe;
+  color: #7c3aed;
+}
+.om-category-card.is-inverter:hover {
+  border-color: #c4b5fd;
+}
+.om-category-card.is-inverter.is-active {
+  border-color: #7c3aed;
+  background: linear-gradient(to bottom, #ffffff, #f5f3ff);
+  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.25), 0 4px 12px rgba(124, 58, 237, 0.1);
+}
+.om-category-card.is-inverter.is-active .om-card-header {
+  color: #6d28d9;
+}
+.om-category-card.is-inverter.is-active .om-card-count {
+  color: #7c3aed;
+}
+
+/* Generation */
+.om-category-card.is-generation .om-card-icon {
+  background: #d1fae5;
+  color: #059669;
+}
+.om-category-card.is-generation:hover {
+  border-color: #6ee7b7;
+}
+.om-category-card.is-generation.is-active {
+  border-color: #059669;
+  background: linear-gradient(to bottom, #ffffff, #ecfdf5);
+  box-shadow: 0 0 0 2px rgba(5, 150, 105, 0.25), 0 4px 12px rgba(5, 150, 105, 0.1);
+}
+.om-category-card.is-generation.is-active .om-card-header {
+  color: #047857;
+}
+.om-category-card.is-generation.is-active .om-card-count {
+  color: #059669;
+}
+
+/* Other */
+.om-category-card.is-other.is-active {
+  border-color: #64748b;
+  background: linear-gradient(to bottom, #ffffff, #f8fafc);
+  box-shadow: 0 0 0 2px rgba(100, 116, 139, 0.25);
+}
+
+/* Filter Toolbar */
+.om-filter-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--surface-subtle, #f8fafc);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 9px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.om-filter-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.om-filter-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.om-filter-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted, #475569);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.om-category-select {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 7px;
+  border: 1.5px solid var(--border, #cbd5e1);
+  background: var(--background, #ffffff);
+  color: var(--foreground, #0f172a);
+  cursor: pointer;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.om-category-select:focus {
+  border-color: #0284c7;
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.2);
+}
+
+.om-priority-select {
+  border-color: #cbd5e1;
+}
+
+.om-reset-filters-btn {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  background: transparent;
+  border: 1px dashed #cbd5e1;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.om-reset-filters-btn:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+  border-color: #94a3b8;
+}
+
+.om-results-badge {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted, #64748b);
+  background: #ffffff;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e2e8f0);
+}
+
+/* Priority Pills & Badges */
+.om-priority-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.om-priority-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.om-priority-pill.is-critical {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+}
+
+.om-priority-pill.is-critical .om-priority-dot {
+  background: #ef4444;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.25);
+}
+
+.om-priority-pill.is-high {
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px solid #fdba74;
+}
+
+.om-priority-pill.is-high .om-priority-dot {
+  background: #f97316;
+}
+
+.om-priority-pill.is-medium {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.om-priority-pill.is-medium .om-priority-dot {
+  background: #3b82f6;
+}
+
+.om-priority-pill.is-low {
+  background: #f8fafc;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+
+.om-priority-pill.is-low .om-priority-dot {
+  background: #94a3b8;
+}
+
+/* Row Badges & Ticket Tags */
+.om-row-header-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+  flex-wrap: wrap;
+}
+
+.om-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.om-badge.is-leaking {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.om-badge.is-wiring {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.om-badge.is-inverter,
+.om-badge.is-inverter_equipment {
+  background: #ede9fe;
+  color: #6d28d9;
+  border: 1px solid #ddd6fe;
+}
+
+.om-badge.is-generation {
+  background: #d1fae5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.om-badge.is-other {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+
+.om-ticket-status-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  margin-left: 5px;
+}
+
+.om-ticket-status-pill.is-unread {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.om-ticket-status-pill.is-read-by-support {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.om-ticket-status-pill.is-processing {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.om-ticket-status-pill.is-solved {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.om-details-trigger-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.08);
+  border: none;
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.om-details-trigger-btn:hover {
+  background: rgba(37, 99, 235, 0.18);
+  color: #1d4ed8;
+}
+
+.om-ticket-files-btn {
+  background: #eff6ff !important;
+  color: #1d4ed8 !important;
+  border-color: #bfdbfe !important;
+}
+
+/* Modal Overlay & Card */
+.om-ticket-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.om-ticket-modal-card {
+  background: #ffffff;
+  border-radius: 16px;
+  max-width: 640px;
+  width: 100%;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+  animation: modalPop 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modalPop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.om-ticket-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 18px 22px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.om-ticket-modal-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.om-ticket-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #334155;
+  background: #e2e8f0;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+
+.om-ticket-modal-header h3 {
+  margin: 0 0 2px;
+  font-size: 18px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.om-ticket-modal-sub {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.om-ticket-modal-body {
+  padding: 22px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.om-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.om-modal-field-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.om-modal-field-val {
+  font-size: 14px;
+  line-height: 1.55;
+  color: #1e293b;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.om-modal-field-val.technician-remark {
+  background: #fefce8;
+  border-left: 3px solid #eab308;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-style: italic;
+}
+
+.om-modal-images-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.om-modal-image-thumb {
+  position: relative;
+  display: block;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  aspect-ratio: 1;
+  background: #f1f5f9;
+  text-decoration: none;
+  transition: transform 0.15s ease;
+}
+
+.om-modal-image-thumb:hover {
+  transform: scale(1.02);
+  border-color: #0284c7;
+}
+
+.om-modal-image-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.om-modal-img-zoom {
+  position: absolute;
+  bottom: 0;
+  inset-inline: 0;
+  background: rgba(15, 23, 42, 0.75);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.om-modal-image-thumb:hover .om-modal-img-zoom {
+  opacity: 1;
+}
+
+.om-modal-video-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0284c7;
+  text-decoration: underline;
+}
+
+
 
