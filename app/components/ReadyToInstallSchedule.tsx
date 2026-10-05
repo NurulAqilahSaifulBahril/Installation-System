@@ -1,7 +1,7 @@
 "use client";
 
-import { CloudRain, FileText, MapPin, Minus, X } from "lucide-react";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { CloudRain, FileText, MapPin, Minus, Plus, X } from "lucide-react";
+import { Fragment, useEffect, useMemo, useState, useDeferredValue } from "react";
 import { fetchDailyWeather, type DailyWeather } from "@/lib/calendar-weather";
 import { distanceKm } from "@/lib/postcode-coords";
 import {
@@ -31,10 +31,26 @@ import {
   type SiteDifficulty,
 } from "@/lib/types";
 import {
+  isJobNeedAttention,
+  isJobPending,
+  isJobReschedule,
+} from "@/app/components/DepositScheduleTable";
+import {
   useInstallationQueue,
+  type QueuePosition,
   type ScheduleGroup,
   type ScheduleWeekAssignment,
 } from "@/app/components/installation-queue";
+
+const DEFAULT_KNOWN_SUPERVISORS = [
+  "Chan Chee Man",
+  "Chat Cheh Man",
+  "Kaijie",
+  "Martin Hing",
+  "Ahzu",
+  "Jack",
+  "John",
+];
 
 // Installation groups under Planning status Ready to Install: next week's
 // front line from the installation queue, laid out as the four crews' tables.
@@ -104,6 +120,12 @@ function isAtap(name: string) {
 
 function displayName(name: string) {
   return titleCase(name.replace(/\(ATAP\)/gi, "").replace(/\s+/g, " "));
+}
+
+function isJobOM(job: InstallationJob): boolean {
+  if (job.visits && job.visits.length > 0) return true;
+  const remarks = ((job.installationRemarks || "") + " " + (job.preferredInstallationTime || "")).toLowerCase();
+  return /(\bo&m\b|\bmaintenance\b|\bwiring\s*only\b|\bcallback\b|\brepair\b|\brectification\b|\bservice\b)/i.test(remarks);
 }
 
 function formatPhone(value: string) {
@@ -260,6 +282,137 @@ type Panel =
   | { kind: "drop"; jobId: string; ref: SlotRef }
   | { kind: "files"; jobId: string };
 
+function OpenSlotCustomerSearch({
+  queue,
+  bookedJobIds,
+  positions,
+  onSelectCustomer,
+}: {
+  queue: Candidate[];
+  bookedJobIds: Set<string>;
+  positions: Map<string, QueuePosition>;
+  onSelectCustomer: (jobId: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [isOpen, setIsOpen] = useState(false);
+  const deferredQuery = useDeferredValue(query);
+
+  const filtered = useMemo(() => {
+    const q = deferredQuery.toLowerCase().trim();
+    return queue.filter((c) => {
+      if (bookedJobIds.has(c.job.id)) return false;
+      if (!q) return true;
+      return (
+        displayName(c.job.customerName).toLowerCase().includes(q) ||
+        c.job.invoiceNumber.toLowerCase().includes(q) ||
+        townOf(c.job).toLowerCase().includes(q)
+      );
+    });
+  }, [queue, bookedJobIds, deferredQuery]);
+
+  return (
+    <div style={{ position: "relative", display: "inline-block", marginLeft: "10px" }}>
+      <input
+        type="text"
+        className="rti-crew-input"
+        style={{
+          width: "270px",
+          padding: "4px 8px",
+          fontSize: "0.83rem",
+          borderRadius: "4px",
+          border: "1px solid #cbd5e1",
+          background: "#ffffff",
+          color: "#0f172a",
+        }}
+        placeholder="Type customer name to add (e.g. Tan Kim Whui)…"
+        value={query}
+        onFocus={() => setIsOpen(true)}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setIsOpen(true);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && filtered.length > 0) {
+            onSelectCustomer(filtered[0].job.id);
+            setQuery("");
+            setIsOpen(false);
+          } else if (e.key === "Escape") {
+            setIsOpen(false);
+          }
+        }}
+      />
+      {isOpen && (
+        <>
+          <div
+            style={{ position: "fixed", inset: 0, zIndex: 999 }}
+            onClick={() => setIsOpen(false)}
+          />
+          <ul
+            style={{
+              position: "absolute",
+              top: "calc(100% + 2px)",
+              left: 0,
+              zIndex: 1000,
+              width: "340px",
+              maxHeight: "220px",
+              overflowY: "auto",
+              padding: "4px 0",
+              margin: 0,
+              background: "#1e293b",
+              color: "#f8fafc",
+              border: "1px solid rgba(255,255,255,0.2)",
+              borderRadius: "6px",
+              boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.6)",
+              listStyle: "none",
+            }}
+          >
+            {filtered.length === 0 ? (
+              <li style={{ padding: "8px 12px", fontSize: "0.8rem", opacity: 0.7 }}>
+                No customer found matching "{query}"
+              </li>
+            ) : (
+              filtered.slice(0, 30).map((candidate) => {
+                const pos = positions.get(candidate.job.id);
+                const posLabel = pos ? ` (slotted ${shortDate(pos.date)})` : "";
+                return (
+                  <li
+                    key={candidate.job.id}
+                    style={{
+                      padding: "6px 12px",
+                      fontSize: "0.82rem",
+                      cursor: "pointer",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      borderBottom: "1px solid rgba(255,255,255,0.06)",
+                    }}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      onSelectCustomer(candidate.job.id);
+                      setQuery("");
+                      setIsOpen(false);
+                    }}
+                  >
+                    <div>
+                      <strong>{displayName(candidate.job.customerName)}</strong>
+                      <span style={{ opacity: 0.75, marginLeft: "6px" }}>· {townOf(candidate.job)}</span>
+                    </div>
+                    {posLabel && (
+                      <span style={{ fontSize: "0.74rem", opacity: 0.6, fontStyle: "italic" }}>
+                        {posLabel}
+                      </span>
+                    )}
+                  </li>
+                );
+              })
+            )}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function ReadyToInstallSchedule({
   readyJobs,
   jobById,
@@ -278,6 +431,7 @@ export default function ReadyToInstallSchedule({
   todayIso,
   onSaveJob,
   teams,
+  searchQuery = "",
 }: {
   readyJobs: InstallationJob[];
   jobById: Map<string, InstallationJob>;
@@ -302,14 +456,17 @@ export default function ReadyToInstallSchedule({
   todayIso: string;
   onSaveJob?: (job: InstallationJob) => void;
   teams?: { id: string; name: string; role: string; siteSupervisor?: string; members?: string[] }[];
+  searchQuery?: string;
 }) {
   const {
     draft: scheduleDraft,
     frontWeek: weekStart,
     candidateById,
     booked,
+    bookedJobIds,
     coordsFor,
     schedule,
+    schedules,
     positions,
     queue,
     queueNumber,
@@ -353,7 +510,7 @@ export default function ReadyToInstallSchedule({
   }, [teams, groups]);
 
   const availableSupervisors = useMemo(() => {
-    const set = new Set<string>();
+    const set = new Set<string>(DEFAULT_KNOWN_SUPERVISORS);
     if (teams) {
       teams.forEach((t) => {
         if (t.siteSupervisor) set.add(t.siteSupervisor);
@@ -364,7 +521,7 @@ export default function ReadyToInstallSchedule({
         if (s) set.add(s);
       });
     });
-    return Array.from(set);
+    return Array.from(set).sort();
   }, [teams, groups]);
 
   const availableCars = useMemo(() => {
@@ -522,6 +679,9 @@ export default function ReadyToInstallSchedule({
   const [panelDraft, setPanelDraft] = useState<Record<string, string>>({});
   const [inverterDraft, setInverterDraft] = useState<Record<string, string>>({});
   const [remarkDraft, setRemarkDraft] = useState<Record<string, string>>({});
+  const [timeDraft, setTimeDraft] = useState<Record<string, string>>({});
+  const [openSlotSearch, setOpenSlotSearch] = useState<Record<string, string>>({});
+  const [replacementSearch, setReplacementSearch] = useState("");
 
   function handlePanelChange(jobId: string, value: string) {
     setPanelDraft((prev) => ({ ...prev, [jobId]: value }));
@@ -631,6 +791,15 @@ export default function ReadyToInstallSchedule({
   /* ------------------------------ draft edits ------------------------------ */
 
   function bookedAt(ref: SlotRef) {
+    const isOpenInDraft = (scheduleDraft.openSlots || []).some(
+      (s) =>
+        s.weekStart === ref.weekStart &&
+        s.team === ref.team &&
+        s.date === ref.date &&
+        slotsConflict(s.slot, ref.slot),
+    );
+    if (isOpenInDraft) return false;
+
     return booked.some(
       (item) =>
         item.team === ref.team && item.date === ref.date && slotsConflict(item.slot, ref.slot),
@@ -641,9 +810,7 @@ export default function ReadyToInstallSchedule({
     return {
       ...next,
       placements: next.placements.filter((placement) => placement.jobId !== jobId),
-      removals: next.removals.filter(
-        (removal) => !(removal.jobId === jobId && removal.weekStart === weekStart),
-      ),
+      removals: next.removals.filter((removal) => removal.jobId !== jobId),
     };
   }
 
@@ -1086,10 +1253,20 @@ export default function ReadyToInstallSchedule({
       <span className="rti-tag is-warning">Widened to {entry.widenedKm} km</span>
     ) : null;
 
-    if (!clock && !widened) return null;
+    let reviewBadge = null;
+    if (isJobOM(job)) {
+      reviewBadge = <span className="rti-review-badge is-om">O&M</span>;
+    } else if (isJobReschedule(job)) {
+      reviewBadge = <span className="rti-review-badge is-reschedule">Reschedule</span>;
+    } else if (isJobPending(job) || job.scheduleStatus === "pending_approval") {
+      reviewBadge = <span className="rti-review-badge is-pending">Pending</span>;
+    }
+
+    if (!clock && !widened && !reviewBadge) return null;
 
     return (
       <span className="rti-tags">
+        {reviewBadge}
         {clock}
         {widened}
       </span>
@@ -1277,20 +1454,68 @@ export default function ReadyToInstallSchedule({
         </div>
         <div className="rti-move-row">
           <span className="rti-muted">Replacement from Ready to Install:</span>
+          <input
+            type="text"
+            className="rti-crew-input"
+            style={{
+              width: "200px",
+              padding: "3px 8px",
+              fontSize: "0.82rem",
+              borderRadius: "4px",
+              border: "1px solid #cbd5e1",
+              background: "#ffffff",
+              color: "#0f172a",
+            }}
+            placeholder="Search replacement customer…"
+            value={replacementSearch}
+            onChange={(e) => setReplacementSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                const query = replacementSearch.toLowerCase().trim();
+                if (query) {
+                  const match = queue.find(
+                    (c) =>
+                      c.job.id !== jobId &&
+                      !bookedJobIds.has(c.job.id) &&
+                      (displayName(c.job.customerName).toLowerCase().includes(query) ||
+                       c.job.invoiceNumber.toLowerCase().includes(query) ||
+                       townOf(c.job).toLowerCase().includes(query)),
+                  );
+                  if (match) {
+                    setReplacementId(match.job.id);
+                  }
+                }
+              }
+            }}
+          />
           <select
             value={chosen ?? ""}
             aria-label="Replacement taking the slot"
             onChange={(event) => setReplacementId(event.target.value || null)}
           >
-            {options.map((candidate, idx) => (
-              <option key={candidate.job.id} value={candidate.job.id}>
-                {idx === 0 ? "★ Next in line eligible: " : ""}{displayName(candidate.job.customerName)} · {townOf(candidate.job)}
-                {candidate.difficulty ? ` · ${DIFFICULTY_LABEL[candidate.difficulty]}` : ""}
-              </option>
-            ))}
+            {queue
+              .filter((candidate) => {
+                if (candidate.job.id === jobId || bookedJobIds.has(candidate.job.id)) return false;
+                const q = replacementSearch.toLowerCase().trim();
+                if (!q) return true;
+                return (
+                  displayName(candidate.job.customerName).toLowerCase().includes(q) ||
+                  candidate.job.invoiceNumber.toLowerCase().includes(q) ||
+                  townOf(candidate.job).toLowerCase().includes(q)
+                );
+              })
+              .map((candidate, idx) => {
+                const pos = positions.get(candidate.job.id);
+                const posLabel = pos ? ` (slotted ${shortDate(pos.date)})` : "";
+                return (
+                  <option key={candidate.job.id} value={candidate.job.id}>
+                    {idx === 0 && !replacementSearch ? "★ Next in line eligible: " : ""}
+                    {displayName(candidate.job.customerName)} · {townOf(candidate.job)}{posLabel}
+                  </option>
+                );
+              })}
             <option value="">Leave slot for automatic suggestion to fill</option>
           </select>
-          {!options.length && <span className="rti-muted">No standby fits this slot criteria.</span>}
           <button type="button" className="button primary" onClick={() => applyDrop(jobId, ref, chosen)}>
             Confirm & Replace
           </button>
@@ -1302,18 +1527,138 @@ export default function ReadyToInstallSchedule({
     );
   }
 
+  const [activeWeekIndex, setActiveWeekIndex] = useState<number>(0);
+
   const COLUMN_COUNT = 11;
+  const currentSchedules = schedules || [schedule];
+  const currentWeekSchedule = currentSchedules[activeWeekIndex] ?? currentSchedules[0];
+  const displayedSchedules = [currentWeekSchedule];
+
+  const weekStats = useMemo(() => {
+    if (!currentWeekSchedule) {
+      return {
+        total: 0,
+        newInstall: 0,
+        reschedule: 0,
+        pending: 0,
+        attention: 0,
+        om: 0,
+        newPct: 0,
+        reschPct: 0,
+        pendPct: 0,
+        attPct: 0,
+        omPct: 0,
+      };
+    }
+    const jobIds = new Set<string>();
+    currentWeekSchedule.teams.forEach((t) =>
+      t.days.forEach((d) =>
+        d.entries.forEach((e) => {
+          if (e.jobId) jobIds.add(e.jobId);
+        }),
+      ),
+    );
+
+    let newInstall = 0;
+    let reschedule = 0;
+    let pending = 0;
+    let attention = 0;
+    let om = 0;
+
+    jobIds.forEach((jobId) => {
+      const job = jobById.get(jobId);
+      if (!job || job.customerAvailabilityStatus === "complete") return;
+      if (isJobOM(job)) {
+        om++;
+      } else if (isJobReschedule(job)) {
+        reschedule++;
+      } else if (
+        isJobPending(job) ||
+        job.scheduleStatus === "pending_approval"
+      ) {
+        pending++;
+      } else if (isJobNeedAttention(job, todayIso)) {
+        attention++;
+      } else {
+        newInstall++;
+      }
+    });
+
+    const total = newInstall + reschedule + pending + attention + om;
+    return {
+      total,
+      newInstall,
+      reschedule,
+      pending,
+      attention,
+      om,
+      newPct: total > 0 ? Math.round((newInstall / total) * 100) : 0,
+      reschPct: total > 0 ? Math.round((reschedule / total) * 100) : 0,
+      pendPct: total > 0 ? Math.round((pending / total) * 100) : 0,
+      attPct: total > 0 ? Math.round((attention / total) * 100) : 0,
+      omPct: total > 0 ? Math.round((om / total) * 100) : 0,
+    };
+  }, [currentWeekSchedule, jobById, todayIso]);
 
   return (
     <div className="rti">
-      <div className="rti-toolbar">
-        <div className="rti-week-nav">
-          <strong>Next week · {weekLabel(weekStart)}</strong>
+      <div className="rti-toolbar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          {currentSchedules.map((sch, idx) => (
+            <button
+              key={sch.weekStart}
+              type="button"
+              className={`button ${activeWeekIndex === idx ? "primary" : "secondary"}`}
+              onClick={() => setActiveWeekIndex(idx)}
+              style={{ fontSize: "0.85rem", padding: "5px 12px" }}
+            >
+              Week {weekLabel(sch.weekStart)}
+            </button>
+          ))}
         </div>
       </div>
 
-
-
+      {currentWeekSchedule && (
+        <div
+          className="rti-week-stats-bar"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: "12px",
+            padding: "10px 16px",
+            borderRadius: "8px",
+            background: "rgba(255, 255, 255, 0.05)",
+            border: "1px solid rgba(255, 255, 255, 0.1)",
+            marginBottom: "16px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", fontSize: "0.85rem" }}>
+            <strong style={{ color: "inherit" }}>
+              Week {weekLabel(currentWeekSchedule.weekStart)} Summary ({weekStats.total} scheduled):
+            </strong>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 10px", borderRadius: "12px", background: "rgba(34, 197, 94, 0.18)", color: "#4ade80", border: "1px solid rgba(34, 197, 94, 0.35)", fontWeight: 600 }}>
+              New Install: {weekStats.newInstall} ({weekStats.newPct}%)
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 10px", borderRadius: "12px", background: "rgba(59, 130, 246, 0.18)", color: "#60a5fa", border: "1px solid rgba(59, 130, 246, 0.35)", fontWeight: 600 }}>
+              Reschedule: {weekStats.reschedule} ({weekStats.reschPct}%)
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 10px", borderRadius: "12px", background: "rgba(234, 179, 8, 0.18)", color: "#facc15", border: "1px solid rgba(234, 179, 8, 0.35)", fontWeight: 600 }}>
+              Pending: {weekStats.pending} ({weekStats.pendPct}%)
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 10px", borderRadius: "12px", background: "rgba(239, 68, 68, 0.18)", color: "#f87171", border: "1px solid rgba(239, 68, 68, 0.35)", fontWeight: 600 }}>
+              Need Attention: {weekStats.attention} ({weekStats.attPct}%)
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 10px", borderRadius: "12px", background: "rgba(249, 115, 22, 0.18)", color: "#fb923c", border: "1px solid rgba(249, 115, 22, 0.35)", fontWeight: 600 }}>
+              O&M / Callbacks: {weekStats.om} ({weekStats.omPct}%)
+            </span>
+          </div>
+          <div style={{ fontSize: "0.78rem", opacity: 0.8, fontStyle: "italic" }}>
+            Suggested Ratio: <strong>65% New · 15% Reschedule · 10% Pending · 5% Need Attention · 5% O&M</strong>
+          </div>
+        </div>
+      )}
 
       {notice && (
         <div className="rti-notice" role="status">
@@ -1324,207 +1669,307 @@ export default function ReadyToInstallSchedule({
         </div>
       )}
 
-      {schedule.teams.map((team) => {
-        const filled = team.days.reduce(
-          (total, day) =>
-            total +
-            day.entries.reduce((sum, entry) => sum + (entry.jobId ? (entry.slot === "full" ? 2 : 1) : 0), 0),
-          0,
-        );
-        return (
-          <div className={`table-wrap rti-team rti-team-${team.team}`} key={team.team}>
-            <table>
-              <colgroup>
-                <col className="rti-col-date" />
-                <col className="rti-col-customer" />
-                <col className="rti-col-address" />
-                <col className="rti-col-phone" />
-                <col className="rti-col-email" />
-                <col className="rti-col-agent" />
-                <col className="rti-col-phase" />
-                <col className="rti-col-panel" />
-                <col className="rti-col-inverter" />
-                <col className="rti-col-sld" />
-                <col className="rti-col-remark" />
-              </colgroup>
-              <thead>
-                <tr className="rti-team-band rti-team-band-sub">
-                  <th colSpan={COLUMN_COUNT}>
-                    <span>Week {weekLabel(weekStart)}</span>
-                    <span>
-                      Hard {team.hard} · far {team.far}
-                    </span>
-                    <span>{Math.min(filled, 12)} of 12 slots filled</span>
-                  </th>
-                </tr>
-                <tr className="rti-team-band rti-team-band-main">
-                  <th colSpan={COLUMN_COUNT}>
-                    <div className="rti-team-header-main">
-                      <div className="rti-team-title-wrap">
-                        <span className="rti-team-name">Team {team.team}</span>
-                        <span className="rti-team-base">{REGION_LABEL[TEAM_REGION[team.team]]}</span>
+      {displayedSchedules.flatMap((weekSchedule) => {
+        const currentWeekStart = weekSchedule.weekStart;
+        return weekSchedule.teams.map((team) => {
+          const hasSearchQuery = Boolean(searchQuery && searchQuery.trim().length > 0);
+          const searchTrimmed = searchQuery?.trim().toLowerCase() ?? "";
+          const jobMatchesQuery = (job: InstallationJob) => {
+            if (!hasSearchQuery) return true;
+            return (
+              job.customerName?.toLowerCase().includes(searchTrimmed) ||
+              job.invoiceNumber?.toLowerCase().includes(searchTrimmed) ||
+              job.address?.toLowerCase().includes(searchTrimmed) ||
+              job.city?.toLowerCase().includes(searchTrimmed) ||
+              job.state?.toLowerCase().includes(searchTrimmed) ||
+              job.postcode?.toLowerCase().includes(searchTrimmed)
+            );
+          };
+
+          const matchingCustomerEntries = team.days.flatMap((day) =>
+            day.entries.filter((entry) => {
+              if (!entry.jobId) return false;
+              const job = jobById.get(entry.jobId);
+              return job ? jobMatchesQuery(job) : false;
+            }),
+          );
+
+          if (hasSearchQuery && matchingCustomerEntries.length === 0) {
+            return null;
+          }
+
+          const filled = team.days.reduce(
+            (total, day) =>
+              total +
+              day.entries.reduce((sum, entry) => sum + (entry.jobId ? (entry.slot === "full" ? 2 : 1) : 0), 0),
+            0,
+          );
+          return (
+            <div className={`table-wrap rti-team rti-team-${team.team}`} key={`${currentWeekStart}-${team.team}`}>
+              <table>
+                <colgroup>
+                  <col className="rti-col-date" />
+                  <col className="rti-col-customer" />
+                  <col className="rti-col-address" />
+                  <col className="rti-col-phone" />
+                  <col className="rti-col-email" />
+                  <col className="rti-col-agent" />
+                  <col className="rti-col-phase" />
+                  <col className="rti-col-panel" />
+                  <col className="rti-col-inverter" />
+                  <col className="rti-col-sld" />
+                  <col className="rti-col-remark" />
+                </colgroup>
+                <thead>
+                  <tr className="rti-team-band rti-team-band-sub">
+                    <th colSpan={COLUMN_COUNT}>
+                      <span>Week {weekLabel(currentWeekStart)}</span>
+                      <span>
+                        Hard {team.hard} · far {team.far}
+                      </span>
+                      <span>{Math.min(filled, 12)} of 12 slots filled</span>
+                    </th>
+                  </tr>
+                  <tr className="rti-team-band rti-team-band-main">
+                    <th colSpan={COLUMN_COUNT}>
+                      <div className="rti-team-header-main">
+                        <div className="rti-team-title-wrap">
+                          <span className="rti-team-name">Team {team.team}</span>
+                          <span className="rti-team-base">{REGION_LABEL[TEAM_REGION[team.team]]}</span>
+                        </div>
+                        <div className="rti-crew-grid">
+                          <div className="rti-crew-col">
+                            <label className="rti-crew-label" htmlFor={`crew-inst-${currentWeekStart}-${team.team}`}>
+                              Installation Team
+                            </label>
+                            <input
+                              id={`crew-inst-${currentWeekStart}-${team.team}`}
+                              type="text"
+                              list={`install-teams-list-${team.team}`}
+                              className="rti-crew-input"
+                              value={scheduleDraft.teamCrews?.[team.team]?.installationTeam ?? ""}
+                              placeholder="Assign installation team..."
+                              onChange={(e) => updateCrewField(team.team, "installationTeam", e.target.value)}
+                              onBlur={(e) => handleCrewBlur(team.team, "installationTeam", e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                              }}
+                            />
+                            <datalist id={`install-teams-list-${team.team}`}>
+                              {availableInstallTeams.map((name) => (
+                                <option key={name} value={name} />
+                              ))}
+                            </datalist>
+                          </div>
+
+                          <div className="rti-crew-col">
+                            <label className="rti-crew-label" htmlFor={`crew-wir-${currentWeekStart}-${team.team}`}>
+                              Wiring Team
+                            </label>
+                            <input
+                              id={`crew-wir-${currentWeekStart}-${team.team}`}
+                              type="text"
+                              list={`wiring-teams-list-${team.team}`}
+                              className="rti-crew-input"
+                              value={scheduleDraft.teamCrews?.[team.team]?.wiringTeam ?? ""}
+                              placeholder="Assign wiring team..."
+                              onChange={(e) => updateCrewField(team.team, "wiringTeam", e.target.value)}
+                              onBlur={(e) => handleCrewBlur(team.team, "wiringTeam", e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                              }}
+                            />
+                            <datalist id={`wiring-teams-list-${team.team}`}>
+                              {availableWiringTeams.map((name) => (
+                                <option key={name} value={name} />
+                              ))}
+                            </datalist>
+                          </div>
+
+                          <div className="rti-crew-col">
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                              <label className="rti-crew-label" htmlFor={`crew-sup-${currentWeekStart}-${team.team}`}>
+                                Site Supervisor
+                              </label>
+                              <button
+                                type="button"
+                                className="icon-button"
+                                title="Add another supervisor (+)"
+                                style={{
+                                  padding: "1px 4px",
+                                  height: "18px",
+                                  fontSize: "0.75rem",
+                                  borderRadius: "3px",
+                                  cursor: "pointer",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 2,
+                                  background: "rgba(255, 255, 255, 0.15)",
+                                  color: "inherit",
+                                  border: "none",
+                                }}
+                                 onClick={() => {
+                                  const current = scheduleDraft.teamCrews?.[team.team]?.siteSupervisor ?? "";
+                                  if (!current) {
+                                    const el = document.getElementById(`crew-sup-${currentWeekStart}-${team.team}`) as HTMLInputElement;
+                                    el?.focus();
+                                  } else if (!current.endsWith(", ")) {
+                                    updateCrewField(team.team, "siteSupervisor", `${current.trim()}, `);
+                                  }
+                                }}
+                              >
+                                <Plus size={11} />
+                              </button>
+                            </div>
+                            <input
+                              id={`crew-sup-${currentWeekStart}-${team.team}`}
+                              type="text"
+                              list={`supervisors-list-${team.team}`}
+                              className="rti-crew-input"
+                              value={scheduleDraft.teamCrews?.[team.team]?.siteSupervisor ?? ""}
+                              placeholder="e.g. Kaijie, Martin Hing..."
+                              onChange={(e) => updateCrewField(team.team, "siteSupervisor", e.target.value)}
+                              onBlur={(e) => handleCrewBlur(team.team, "siteSupervisor", e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                              }}
+                            />
+                            <datalist id={`supervisors-list-${team.team}`}>
+                              {availableSupervisors.map((name) => (
+                                <option key={name} value={name} />
+                              ))}
+                            </datalist>
+                          </div>
+
+                          <div className="rti-crew-col">
+                            <label className="rti-crew-label" htmlFor={`crew-mem-${currentWeekStart}-${team.team}`}>
+                              Team member
+                            </label>
+                            <input
+                              id={`crew-mem-${currentWeekStart}-${team.team}`}
+                              type="text"
+                              className="rti-crew-input"
+                              value={scheduleDraft.teamCrews?.[team.team]?.membersText ?? ""}
+                              placeholder="e.g. Ali, Ah Hock, Kumar..."
+                              onChange={(e) => updateCrewField(team.team, "membersText", e.target.value)}
+                              onBlur={(e) => handleCrewBlur(team.team, "membersText", e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                              }}
+                            />
+                          </div>
+
+                          <div className="rti-crew-col">
+                            <label className="rti-crew-label" htmlFor={`crew-car-${currentWeekStart}-${team.team}`}>
+                              Car
+                            </label>
+                            <input
+                              id={`crew-car-${currentWeekStart}-${team.team}`}
+                              type="text"
+                              list={`cars-list-${team.team}`}
+                              className="rti-crew-input"
+                              value={scheduleDraft.teamCrews?.[team.team]?.car ?? ""}
+                              placeholder="e.g. Van, Hilux..."
+                              onChange={(e) => updateCrewField(team.team, "car", e.target.value)}
+                              onBlur={(e) => handleCrewBlur(team.team, "car", e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                              }}
+                            />
+                            <datalist id={`cars-list-${team.team}`}>
+                              {availableCars.map((name) => (
+                                <option key={name} value={name} />
+                              ))}
+                            </datalist>
+                          </div>
+                        </div>
                       </div>
-                      <div className="rti-crew-grid">
-                        <div className="rti-crew-col">
-                          <label className="rti-crew-label" htmlFor={`crew-inst-${team.team}`}>
-                            Installation Team
-                          </label>
-                          <input
-                            id={`crew-inst-${team.team}`}
-                            type="text"
-                            list={`install-teams-list-${team.team}`}
-                            className="rti-crew-input"
-                            value={scheduleDraft.teamCrews?.[team.team]?.installationTeam ?? ""}
-                            placeholder="Assign installation team..."
-                            onChange={(e) => updateCrewField(team.team, "installationTeam", e.target.value)}
-                            onBlur={(e) => handleCrewBlur(team.team, "installationTeam", e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                            }}
-                          />
-                          <datalist id={`install-teams-list-${team.team}`}>
-                            {availableInstallTeams.map((name) => (
-                              <option key={name} value={name} />
-                            ))}
-                          </datalist>
-                        </div>
-
-                        <div className="rti-crew-col">
-                          <label className="rti-crew-label" htmlFor={`crew-wir-${team.team}`}>
-                            Wiring Team
-                          </label>
-                          <input
-                            id={`crew-wir-${team.team}`}
-                            type="text"
-                            list={`wiring-teams-list-${team.team}`}
-                            className="rti-crew-input"
-                            value={scheduleDraft.teamCrews?.[team.team]?.wiringTeam ?? ""}
-                            placeholder="Assign wiring team..."
-                            onChange={(e) => updateCrewField(team.team, "wiringTeam", e.target.value)}
-                            onBlur={(e) => handleCrewBlur(team.team, "wiringTeam", e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                            }}
-                          />
-                          <datalist id={`wiring-teams-list-${team.team}`}>
-                            {availableWiringTeams.map((name) => (
-                              <option key={name} value={name} />
-                            ))}
-                          </datalist>
-                        </div>
-
-                        <div className="rti-crew-col">
-                          <label className="rti-crew-label" htmlFor={`crew-sup-${team.team}`}>
-                            Site Supervisor
-                          </label>
-                          <input
-                            id={`crew-sup-${team.team}`}
-                            type="text"
-                            list={`supervisors-list-${team.team}`}
-                            className="rti-crew-input"
-                            value={scheduleDraft.teamCrews?.[team.team]?.siteSupervisor ?? ""}
-                            placeholder="Assign supervisor..."
-                            onChange={(e) => updateCrewField(team.team, "siteSupervisor", e.target.value)}
-                            onBlur={(e) => handleCrewBlur(team.team, "siteSupervisor", e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                            }}
-                          />
-                          <datalist id={`supervisors-list-${team.team}`}>
-                            {availableSupervisors.map((name) => (
-                              <option key={name} value={name} />
-                            ))}
-                          </datalist>
-                        </div>
-
-                        <div className="rti-crew-col">
-                          <label className="rti-crew-label" htmlFor={`crew-mem-${team.team}`}>
-                            Team member
-                          </label>
-                          <input
-                            id={`crew-mem-${team.team}`}
-                            type="text"
-                            className="rti-crew-input"
-                            value={scheduleDraft.teamCrews?.[team.team]?.membersText ?? ""}
-                            placeholder="e.g. Ali, Ah Hock, Kumar..."
-                            onChange={(e) => updateCrewField(team.team, "membersText", e.target.value)}
-                            onBlur={(e) => handleCrewBlur(team.team, "membersText", e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                            }}
-                          />
-                        </div>
-
-                        <div className="rti-crew-col">
-                          <label className="rti-crew-label" htmlFor={`crew-car-${team.team}`}>
-                            Car
-                          </label>
-                          <input
-                            id={`crew-car-${team.team}`}
-                            type="text"
-                            list={`cars-list-${team.team}`}
-                            className="rti-crew-input"
-                            value={scheduleDraft.teamCrews?.[team.team]?.car ?? ""}
-                            placeholder="e.g. Van, Hilux..."
-                            onChange={(e) => updateCrewField(team.team, "car", e.target.value)}
-                            onBlur={(e) => handleCrewBlur(team.team, "car", e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                            }}
-                          />
-                          <datalist id={`cars-list-${team.team}`}>
-                            {availableCars.map((name) => (
-                              <option key={name} value={name} />
-                            ))}
-                          </datalist>
-                        </div>
-                      </div>
-                    </div>
-                  </th>
-                </tr>
-                <tr>
-                  <th>Slot</th>
-                  <th>Customer</th>
-                  <th>Address</th>
-                  <th>Phone</th>
-                  <th>Email</th>
-                  <th>Agent</th>
-                  <th>Phase</th>
-                  <th>Panel</th>
-                  <th>Inverter</th>
-                  <th>SLD</th>
-                  <th>Remark</th>
-                </tr>
-              </thead>
-              <tbody>
-                {team.days.flatMap((day) =>
-                  day.entries.map((entry, index) => {
-                    const ref: SlotRef = { weekStart, team: team.team, date: day.date, slot: entry.slot };
+                    </th>
+                  </tr>
+                  <tr>
+                    <th>Slot</th>
+                    <th>Customer</th>
+                    <th>Address</th>
+                    <th>Phone</th>
+                    <th>Email</th>
+                    <th>Agent</th>
+                    <th>Phase</th>
+                    <th>Panel</th>
+                    <th>Inverter</th>
+                    <th>SLD</th>
+                    <th>Remark</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {team.days.flatMap((day) =>
+                    day.entries.map((entry, index) => {
+                      const ref: SlotRef = { weekStart: currentWeekStart, team: team.team, date: day.date, slot: entry.slot };
                     const key = `${day.date}-${entry.slot}-${index}`;
-                    const renderSlotCell = (job?: InstallationJob | null) => (
-                      <td className="rti-date">
-                        <strong>{dayLabel(day.date)}</strong>
-                        <select
-                          className="rti-slot-select"
-                          value={entry.slot}
-                          aria-label={`Slot for ${job ? displayName(job.customerName) : `Team ${team.team}`} on ${dayLabel(day.date)}`}
-                          onChange={(e) => {
-                            const nextSlot = e.target.value as Slot;
-                            if (job) {
-                              changeSlot(job.id, ref, nextSlot);
-                            } else {
-                              changeOpenSlot(ref, nextSlot);
-                            }
-                          }}
-                        >
-                          <option value="am">Morning (AM)</option>
-                          <option value="pm">Afternoon (PM)</option>
-                          <option value="full">Full day</option>
-                        </select>
-                        {renderSlotRain(team.team, day.date)}
-                      </td>
-                    );
+                    const renderSlotCell = (job?: InstallationJob | null) => {
+                      const defaultTime = entry.slot === "am" ? "09:00" : entry.slot === "pm" ? "14:00" : "Full day";
+                      const currentTime = job?.preferredInstallationTime || defaultTime;
+                      const fieldKey = job ? job.id : key;
+                      return (
+                        <td className="rti-date">
+                          <strong>{dayLabel(day.date)}</strong>
+                          <input
+                            type="text"
+                            list="rti-slot-time-presets"
+                            className="rti-slot-select"
+                            style={{ width: "100%", marginTop: "4px", padding: "2px 4px", fontSize: "0.8rem" }}
+                            value={timeDraft[fieldKey] ?? currentTime}
+                            placeholder="e.g. 09:00, 14:00, 16:00..."
+                            aria-label={`Time for ${job ? displayName(job.customerName) : `Team ${team.team}`} on ${dayLabel(day.date)}`}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setTimeDraft((prev) => ({ ...prev, [fieldKey]: val }));
+                              const valLower = val.toLowerCase().trim();
+                              let targetSlot: Slot = entry.slot;
+                              if (valLower.includes("full")) {
+                                targetSlot = "full";
+                              } else {
+                                const hourMatch = val.match(/(\d{1,2}):\d{2}/);
+                                if (hourMatch) {
+                                  const hour = parseInt(hourMatch[1], 10);
+                                  targetSlot = hour >= 12 ? "pm" : "am";
+                                }
+                              }
+                              if (targetSlot !== entry.slot) {
+                                if (job) {
+                                  changeSlot(job.id, ref, targetSlot);
+                                } else {
+                                  changeOpenSlot(ref, targetSlot);
+                                }
+                              }
+                            }}
+                            onBlur={() => {
+                              const val = timeDraft[fieldKey];
+                              if (job && val !== undefined && val !== job.preferredInstallationTime) {
+                                onSaveJob?.({ ...job, preferredInstallationTime: val.trim() || null });
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
+                          />
+                          <datalist id="rti-slot-time-presets">
+                            <option value="09:00">09:00 (Morning)</option>
+                            <option value="10:00">10:00</option>
+                            <option value="11:00">11:00</option>
+                            <option value="12:00">12:00 (Noon)</option>
+                            <option value="13:00">13:00</option>
+                            <option value="14:00">14:00 (Afternoon)</option>
+                            <option value="14:30">14:30</option>
+                            <option value="15:00">15:00</option>
+                            <option value="16:00">16:00</option>
+                            <option value="Full day">Full day</option>
+                          </datalist>
+                          {renderSlotRain(team.team, day.date)}
+                        </td>
+                      );
+                    };
                     if (!entry.jobId) {
+                      if (hasSearchQuery) return null;
                       return (
                         <tr key={key} className="rti-open-row">
                           {renderSlotCell(null)}
@@ -1532,29 +1977,21 @@ export default function ReadyToInstallSchedule({
                             <span className="rti-muted">
                               Open{entry.openReason ? ` · ${entry.openReason}` : ""}
                             </span>
-                            {entry.openReason !== "Rain day on hold" && standby.length > 0 && (
-                              <select
-                                className="rti-add-select"
-                                value=""
-                                aria-label={`Add a standby to Team ${team.team} on ${dayLabel(day.date)} ${SLOT_LABEL[entry.slot]}`}
-                                onChange={(event) => {
-                                  if (event.target.value) addToSlot(event.target.value, ref);
-                                }}
-                              >
-                                <option value="">Add a standby…</option>
-                                {standby.slice(0, 60).map((candidate) => (
-                                  <option key={candidate.job.id} value={candidate.job.id}>
-                                    {displayName(candidate.job.customerName)} · {townOf(candidate.job)}
-                                  </option>
-                                ))}
-                              </select>
+                            {entry.openReason !== "Rain day on hold" && queue.length > 0 && (
+                              <OpenSlotCustomerSearch
+                                queue={queue}
+                                bookedJobIds={bookedJobIds}
+                                positions={positions}
+                                onSelectCustomer={(jobId) => addToSlot(jobId, ref)}
+                              />
                             )}
                           </td>
                         </tr>
                       );
                     }
                     const job = jobById.get(entry.jobId);
-                    if (!job) return null;
+                    if (!job || job.customerAvailabilityStatus === "complete") return null;
+                    if (hasSearchQuery && !jobMatchesQuery(job)) return null;
                     const candidate = candidateById.get(job.id);
                     const isBooked = entry.source === "booked";
                     const dropHere = panel?.kind === "drop" && panel.jobId === job.id ? panel : null;
@@ -1698,7 +2135,7 @@ export default function ReadyToInstallSchedule({
             </table>
           </div>
         );
-      })}
+      })})}
       {queueNumber.size === 0 && (
         <p className="rti-muted">Nobody is in the queue right now.</p>
       )}

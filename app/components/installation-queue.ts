@@ -5,6 +5,7 @@ import { MALAYSIA_PUBLIC_HOLIDAYS } from "@/lib/calendar-weather";
 import { postcodeCoordinates } from "@/lib/postcode-coords";
 import {
   EMPTY_DRAFT,
+  addDays,
   buildSchedule,
   candidateFor,
   compareCandidates,
@@ -105,6 +106,7 @@ export function useInstallationQueue({
   const candidates = useMemo(
     () =>
       readyJobs
+        .filter((job) => job.customerAvailabilityStatus !== "complete")
         .map((job) =>
           candidateFor(job, assessments[job.id], todayIso, scheduleDraft.holds, HOLIDAYS),
         )
@@ -123,10 +125,16 @@ export function useInstallationQueue({
     const slots: BookedSlot[] = [];
     const ids = new Set<string>();
     const dates = new Map<string, string>();
+
+    // Completed jobs (green checkmark) are finished and excluded from Propose to Install
+    jobById.forEach((job, jobId) => {
+      if (job.customerAvailabilityStatus === "complete") {
+        ids.add(jobId);
+      }
+    });
+
     groups.forEach((group) => {
       group.jobIds.forEach((jobId) => {
-        // If no '✓' (not complete), customer is copied/available in Propose to Install.
-        // It does not depend on pending, reschedule, etc.
         const job = jobById.get(jobId);
         const hasCheck = Boolean(job) && job?.customerAvailabilityStatus === "complete";
         if (hasCheck) ids.add(jobId);
@@ -169,8 +177,9 @@ export function useInstallationQueue({
     [candidateById, jobById],
   );
 
-  // Next week: the front line. Only one week is laid out.
-  const schedule = useMemo(
+  const secondWeek = addDays(frontWeek, 7);
+
+  const schedule1 = useMemo(
     () =>
       buildSchedule({
         weekStart: frontWeek,
@@ -184,17 +193,37 @@ export function useInstallationQueue({
     [frontWeek, todayIso, candidates, booked, bookedJobIds, scheduleDraft, coordsFor],
   );
 
+  const schedule2 = useMemo(
+    () =>
+      buildSchedule({
+        weekStart: secondWeek,
+        todayIso,
+        candidates,
+        booked,
+        bookedJobIds,
+        draft: scheduleDraft,
+        coordsFor,
+      }),
+    [secondWeek, todayIso, candidates, booked, bookedJobIds, scheduleDraft, coordsFor],
+  );
+
+  const schedules = useMemo(() => [schedule1, schedule2], [schedule1, schedule2]);
+
   const positions = useMemo(() => {
     const byJob = new Map<string, QueuePosition>();
-    schedule.teams.forEach((team) =>
-      team.days.forEach((day) =>
-        day.entries.forEach((entry) => {
-          if (entry.jobId) byJob.set(entry.jobId, { team: team.team, date: day.date, entry });
-        }),
-      ),
-    );
+    schedules.forEach((sch) => {
+      sch.teams.forEach((team) =>
+        team.days.forEach((day) =>
+          day.entries.forEach((entry) => {
+            if (entry.jobId && !byJob.has(entry.jobId)) {
+              byJob.set(entry.jobId, { team: team.team, date: day.date, entry });
+            }
+          }),
+        ),
+      );
+    });
     return byJob;
-  }, [schedule]);
+  }, [schedules]);
 
   // The queue: everyone cleared to install (60% + SEDA approved) who is not
   // booked yet, in queue order. A customer on hold keeps their number.
@@ -238,12 +267,14 @@ export function useInstallationQueue({
   return {
     draft: scheduleDraft,
     frontWeek,
+    secondWeek,
     candidates,
     candidateById,
     booked,
     bookedJobIds,
     coordsFor,
-    schedule,
+    schedule: schedule1,
+    schedules,
     positions,
     queue,
     queueNumber,

@@ -379,7 +379,7 @@ export function candidateFor(
     daysLeft,
     pausedDays,
     hold: activeHold(holds, job.id),
-    sedaApproved: isSedaApproved(job.sedaStatus),
+    sedaApproved: isSedaApproved(job.sedaStatus, job),
     stockDate,
     stockHeld: job.deliveryStatus === "pending_stock" && !stockDate,
     distanceFromBaseKm: coords
@@ -492,7 +492,7 @@ export type WeekInput = {
 };
 
 export function buildWeek(input: WeekInput): WeekSchedule {
-  const { weekStart, candidates, candidateById, booked, draft, allowSuggestions } =
+  const { weekStart, candidates, candidateById, booked, draft, excluded, allowSuggestions } =
     input;
   const days = weekDays(weekStart);
   const cells = new Map<string, Cell>();
@@ -561,7 +561,7 @@ export function buildWeek(input: WeekInput): WeekSchedule {
         item.weekStart === weekStart &&
         inWeek.has(item.date) &&
         !used.has(item.jobId) &&
-        !removedThisWeek.has(item.jobId),
+        !excluded.has(item.jobId),
     )
     .forEach((item) =>
       put(item.team, item.date, {
@@ -755,7 +755,16 @@ export function buildWeek(input: WeekInput): WeekSchedule {
     days: days.map((date) => {
       const cell = cellFor(team, date);
       const entries = cell.full
-        ? [cell.full, ...cell.extra]
+        ? [
+            cell.full,
+            {
+              slot: "pm" as Slot,
+              jobId: null,
+              source: "open" as const,
+              openReason: "Full day job takes both slots",
+            },
+            ...cell.extra,
+          ]
         : [cell.am!, cell.pm!, ...cell.extra];
       return { team, date, entries };
     }),

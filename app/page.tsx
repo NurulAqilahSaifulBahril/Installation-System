@@ -1107,10 +1107,16 @@ function pipelineHaystack(job: InstallationJob) {
   return locationHaystack(job);
 }
 
-function jobMatchesSearch(job: InstallationJob, search: string) {
+function jobMatchesSearch(
+  job: InstallationJob,
+  search: string,
+  group?: InstallationGroup,
+) {
   const query = search.trim().toLowerCase();
   if (!query) return true;
-  return locationHaystack(job).includes(query);
+  if (locationHaystack(job).includes(query)) return true;
+  if (group?.supervisors?.some((name) => name.toLowerCase().includes(query))) return true;
+  return false;
 }
 
 type LocationSuggestion = {
@@ -2583,10 +2589,36 @@ function jobIsResidential(job: InstallationJob): boolean {
   );
 }
 
+function getJobYear(job: InstallationJob): string {
+  const d =
+    job.installationDate ||
+    job.secondPaymentDate ||
+    job.firstPaymentDate ||
+    job.preferredInstallationDate;
+  if (d && d.length >= 4) {
+    return d.slice(0, 4);
+  }
+  return "unknown";
+}
+
+function jobIsYear2026(job: InstallationJob): boolean {
+  return getJobYear(job) === "2026";
+}
+
 function matchesWorkCategory(job: InstallationJob, filter: string): boolean {
   if (filter === ALL_JOBS) return true;
-  if (filter === "solar") return jobIsSolar(job);
-  if (filter === "ev") return jobHasEv(job);
+  if (filter === "solar")
+    return (
+      jobIsSolar(job) &&
+      hasReachedPaymentPercent(job.paymentPercent, 60) &&
+      jobIsYear2026(job)
+    );
+  if (filter === "ev")
+    return (
+      jobHasEv(job) &&
+      hasReachedPaymentPercent(job.paymentPercent, 60) &&
+      jobIsYear2026(job)
+    );
   if (filter === "om") return jobHasOm(job);
   if (filter === "commercial") return jobIsCommercial(job);
   if (filter === "residential") return jobIsResidential(job);
@@ -3208,7 +3240,8 @@ export default function DashboardPage() {
   // only customers whose deposit landed this calendar year; "all" counts every
   // customer the source carries.
   const [showReportModal, setShowReportModal] = useState(false);
-  const [reportPeriod, setReportPeriod] = useState<"ytd" | "all">("ytd");
+  const [reportPeriod, setReportPeriod] = useState<"ytd" | "month" | "all">("ytd");
+  const [reportMonth, setReportMonth] = useState<string>("");
   // Set by clicking a date in the sidebar calendar; narrows the pipeline table
   // to jobs installing (or, for Available/Pending customers, preferring to
   // install) on that date.
@@ -3861,19 +3894,49 @@ export default function DashboardPage() {
   ]);
 
   const solarTotalCount = useMemo(
-    () => activeJobs.filter(jobIsSolar).length,
+    () =>
+      activeJobs.filter(
+        (job) =>
+          jobIsSolar(job) &&
+          hasReachedPaymentPercent(job.paymentPercent, 60) &&
+          jobIsYear2026(job),
+      ).length,
     [activeJobs],
   );
   const evTotalCount = useMemo(
-    () => activeJobs.filter(jobHasEv).length,
+    () =>
+      activeJobs.filter(
+        (job) =>
+          jobHasEv(job) &&
+          hasReachedPaymentPercent(job.paymentPercent, 60) &&
+          jobIsYear2026(job),
+      ).length,
     [activeJobs],
   );
+
+  const availableReportMonths = useMemo(() => {
+    const set = new Set<string>();
+    jobs.forEach((job) => {
+      if (job.firstPaymentDate) set.add(job.firstPaymentDate.slice(0, 7));
+      if (job.secondPaymentDate) set.add(job.secondPaymentDate.slice(0, 7));
+      if (job.installationDate) set.add(job.installationDate.slice(0, 7));
+    });
+    if (todayIso) set.add(todayIso.slice(0, 7));
+    const sorted = Array.from(set).sort().reverse();
+    return sorted.map((ym) => {
+      const [y, m] = ym.split("-");
+      const date = new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1);
+      const label = date.toLocaleDateString("en-MY", { month: "long", year: "numeric" });
+      return { value: ym, label };
+    });
+  }, [jobs, todayIso]);
 
   // The report reads the whole customer list, not the filtered pipeline: it
   // answers "where does the business stand", which a search box left open on
   // another tab must not silently change the answer to.
   const reportData = useMemo(() => {
     const yearStart = `${todayIso.slice(0, 4)}-01-01`;
+    const activeMonth = reportMonth || availableReportMonths[0]?.value || (todayIso ? todayIso.slice(0, 7) : "");
     // Year to date is measured on the deposit — the payment that puts a
     // customer into the pipeline in the first place. A customer with no
     // payment recorded has no date to place them by, so they can only ever be
@@ -3883,6 +3946,16 @@ export default function DashboardPage() {
         ? jobs.filter(
             (job) => job.firstPaymentDate && job.firstPaymentDate >= yearStart,
           )
+        : reportPeriod === "month"
+        ? jobs.filter((job) => {
+            const months = [
+              job.firstPaymentDate?.slice(0, 7),
+              job.installationDate?.slice(0, 7),
+              job.secondPaymentDate?.slice(0, 7),
+              job.preferredInstallationDate?.slice(0, 7),
+            ].filter(Boolean);
+            return months.includes(activeMonth);
+          })
         : jobs;
 
     const empty = () => ({ count: 0, value: 0, outstanding: 0 });
@@ -3915,7 +3988,7 @@ export default function DashboardPage() {
       .slice(0, 8);
 
     return { total, buckets, agents, yearStart };
-  }, [jobs, reportPeriod, planningLookup, todayIso]);
+  }, [jobs, reportPeriod, reportMonth, availableReportMonths, planningLookup, todayIso]);
 
   // How many of the three arrangement columns a job has filled in: assigned
   // teams, delivery run, installation date. Drives the row shade in the
@@ -4250,7 +4323,7 @@ export default function DashboardPage() {
             />
           </div>
           <div className="brand-text">
-            <strong>Installation Operations</strong>
+            <strong>Scheduling Operations</strong>
             <span>Solar scheduling and delivery</span>
             {currentUser && (
               <span className="brand-greeting">
@@ -4380,7 +4453,7 @@ export default function DashboardPage() {
               onClick={() => setShowReportModal(true)}
             >
               <FileSearch size={16} />
-              Pipeline report
+              Scheduling report
             </button>
           </div>
         )}
@@ -4822,7 +4895,7 @@ export default function DashboardPage() {
             className="report-modal"
             role="dialog"
             aria-modal="true"
-            aria-label="New customer pipeline report"
+            aria-label="Scheduling report"
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="detail-header">
@@ -4830,9 +4903,11 @@ export default function DashboardPage() {
                 <p className="eyebrow">
                   {reportPeriod === "ytd"
                     ? `Year to date · deposits from ${reportData.yearStart.slice(0, 4)}`
+                    : reportPeriod === "month"
+                    ? `Monthly report · ${availableReportMonths.find((m) => m.value === (reportMonth || availableReportMonths[0]?.value))?.label || (reportMonth || availableReportMonths[0]?.value)}`
                     : "All customers on record"}
                 </p>
-                <h2>New customer pipeline</h2>
+                <h2>Scheduling report</h2>
                 <p>
                   Where every customer stands on payment and installation.
                 </p>
@@ -4857,12 +4932,46 @@ export default function DashboardPage() {
                 </button>
                 <button
                   type="button"
+                  className={reportPeriod === "month" ? "active" : ""}
+                  onClick={() => setReportPeriod("month")}
+                >
+                  Monthly
+                </button>
+                <button
+                  type="button"
                   className={reportPeriod === "all" ? "active" : ""}
                   onClick={() => setReportPeriod("all")}
                 >
                   All time
                 </button>
               </div>
+
+              {reportPeriod === "month" && (
+                <div style={{ marginTop: 12, marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
+                  <label htmlFor="report-month-select" style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-color, inherit)" }}>
+                    Select Month:
+                  </label>
+                  <select
+                    id="report-month-select"
+                    value={reportMonth || availableReportMonths[0]?.value || (todayIso ? todayIso.slice(0, 7) : "")}
+                    onChange={(e) => setReportMonth(e.target.value)}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: "6px",
+                      fontSize: "0.85rem",
+                      border: "1px solid var(--border-color, #cbd5e1)",
+                      background: "var(--bg-card, #ffffff)",
+                      color: "var(--text-color, inherit)",
+                    }}
+                  >
+                    {availableReportMonths.map((m) => (
+                      <option key={m.value} value={m.value}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div className="report-total">
                 <div>
@@ -5326,6 +5435,10 @@ function InstallationGroupsView({
   // predicate, so "Ready to Install" means one thing across the dashboard and
   // the two pages can never disagree about which customers that is.
   const [planningFilter, setPlanningFilter] = useState<string>("propose");
+  const [periodFilter, setPeriodFilter] = useState("");
+  const [customerQuery, setCustomerQuery] = useState("");
+  const deferredCustomerQuery = useDeferredValue(customerQuery);
+  const deferredPeriodFilter = useDeferredValue(periodFilter);
   const planningLookup = useMemo<PlanningLookup>(
     () => ({
       groupByJobId,
@@ -5350,8 +5463,10 @@ function InstallationGroupsView({
             (job) =>
               belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
               !isHiddenAsCompleted(job, todayIso, groupByJobId.get(job.id)) &&
+              job.customerAvailabilityStatus !== "complete" &&
               matchesPipelineStage(job, "to_arrange", todayIso, planningLookup) &&
-              matchesWorkCategory(job, workCategoryFilter),
+              matchesWorkCategory(job, workCategoryFilter) &&
+              (!deferredCustomerQuery || jobMatchesSearch(job, deferredCustomerQuery, groupByJobId.get(job.id))),
           )
         : [],
     [
@@ -5361,6 +5476,7 @@ function InstallationGroupsView({
       planningLookup,
       todayIso,
       workCategoryFilter,
+      deferredCustomerQuery,
     ],
   );
   const showDepositTable =
@@ -5439,8 +5555,6 @@ function InstallationGroupsView({
   // silently hiding work behind a default. One box rather than the month and
   // year dropdowns it replaces: those could only ever name one month, so
   // "everything in 2026" and "every August" were both unaskable.
-  const [periodFilter, setPeriodFilter] = useState("");
-  const [customerQuery, setCustomerQuery] = useState("");
   const [pendingCheckNotice, setPendingCheckNotice] = useState<{
     jobId: string;
     customerName: string;
@@ -5456,10 +5570,7 @@ function InstallationGroupsView({
               !isHiddenAsCompleted(job, todayIso, groupByJobId.get(job.id)) &&
               matchesPipelineStage(job, "deposit", todayIso, planningLookup) &&
               matchesWorkCategory(job, workCategoryFilter) &&
-              (!customerQuery ||
-                job.customerName?.toLowerCase().includes(customerQuery.toLowerCase()) ||
-                job.invoiceNumber?.toLowerCase().includes(customerQuery.toLowerCase()) ||
-                job.address?.toLowerCase().includes(customerQuery.toLowerCase())),
+              (!deferredCustomerQuery || jobMatchesSearch(job, deferredCustomerQuery, groupByJobId.get(job.id))),
           )
         : [],
     [
@@ -5469,7 +5580,7 @@ function InstallationGroupsView({
       planningLookup,
       todayIso,
       workCategoryFilter,
-      customerQuery,
+      deferredCustomerQuery,
     ],
   );
 
@@ -5499,10 +5610,7 @@ function InstallationGroupsView({
         !isHiddenAsCompleted(job, todayIso, groupByJobId.get(job.id)) &&
         matchesPipelineStage(job, "to_arrange", todayIso, planningLookup) &&
         matchesWorkCategory(job, workCategoryFilter) &&
-        (!customerQuery ||
-          job.customerName?.toLowerCase().includes(customerQuery.toLowerCase()) ||
-          job.invoiceNumber?.toLowerCase().includes(customerQuery.toLowerCase()) ||
-          job.address?.toLowerCase().includes(customerQuery.toLowerCase())),
+        (!deferredCustomerQuery || jobMatchesSearch(job, deferredCustomerQuery, groupByJobId.get(job.id))),
     );
     let sCount = 0;
     let rCount = 0;
@@ -5544,7 +5652,7 @@ function InstallationGroupsView({
     planningLookup,
     todayIso,
     workCategoryFilter,
-    customerQuery,
+    deferredCustomerQuery,
   ]);
 
   const toArrangeScheduleJobs = useMemo(
@@ -5580,10 +5688,7 @@ function InstallationGroupsView({
                   !isJobReschedule(job) &&
                   !isJobPending(job) &&
                   (needsAttention(job, todayIso, groupByJobId.get(job.id)) || isJobNeedAttention(job, todayIso)))) &&
-              (!customerQuery ||
-                job.customerName?.toLowerCase().includes(customerQuery.toLowerCase()) ||
-                job.invoiceNumber?.toLowerCase().includes(customerQuery.toLowerCase()) ||
-                job.address?.toLowerCase().includes(customerQuery.toLowerCase())),
+              (!deferredCustomerQuery || jobMatchesSearch(job, deferredCustomerQuery, groupByJobId.get(job.id))),
           )
         : [],
     [
@@ -5594,7 +5699,7 @@ function InstallationGroupsView({
       todayIso,
       workCategoryFilter,
       awaitingReviewFilter,
-      customerQuery,
+      deferredCustomerQuery,
     ],
   );
 
@@ -5757,7 +5862,7 @@ function InstallationGroupsView({
   const scheduleRows = useMemo(() => {
     return groups
       .filter((group) => group.installationDate)
-      .filter((group) => matchesDateSearch(group.installationDate, periodFilter))
+      .filter((group) => matchesDateSearch(group.installationDate, deferredPeriodFilter))
       .flatMap((group) =>
         // A crew booked for a week before anyone is assigned to it still gets
         // a row — otherwise a team added here would vanish the moment it was
@@ -5782,7 +5887,7 @@ function InstallationGroupsView({
       // field, so it's checked straight off the row's group and can match
       // even a crew row with nobody on it yet.
       .filter((row) => {
-        const needle = customerQuery.trim();
+        const needle = deferredCustomerQuery.trim();
         if (!needle) return true;
         if (row.job && jobMatchesSearch(row.job, needle)) return true;
         return row.group.supervisors.some((name) =>
@@ -5907,9 +6012,25 @@ function InstallationGroupsView({
   // has the field, but nothing in the app writes it — so unlike the two
   // dropdowns above, this one has only ever the names already on a group to
   // draw from.
+  const DEFAULT_KNOWN_SUPERVISORS = [
+    "Chan Chee Man",
+    "Chat Cheh Man",
+    "Kaijie",
+    "Martin Hing",
+    "Ahzu",
+    "Jack",
+    "John",
+  ];
   const supervisorNames = useMemo(
     () =>
-      Array.from(new Set(groups.flatMap((group) => group.supervisors))).sort(),
+      Array.from(
+        new Set([
+          ...DEFAULT_KNOWN_SUPERVISORS,
+          ...groups.flatMap((group) => group.supervisors ?? []),
+        ]),
+      )
+        .filter((s) => s && !isPlaceholder(s))
+        .sort(),
     [groups],
   );
   const memberSuggestions = useMemo(
@@ -6880,6 +7001,7 @@ function InstallationGroupsView({
             todayIso={todayIso}
             onSaveJob={onSaveJob}
             teams={teams}
+            searchQuery={customerQuery}
           />
         </div>
       )}
@@ -7257,13 +7379,52 @@ function InstallationGroupsView({
                                   </datalist>
                                 </div>
 
-                                <div className="rti-crew-col">
-                                  <label
-                                    className="rti-crew-label"
-                                    htmlFor={`arr-crew-sup-${group.id}`}
-                                  >
-                                    Site Supervisor
-                                  </label>
+                                 <div className="rti-crew-col">
+                                  <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "space-between" }}>
+                                    <label
+                                      className="rti-crew-label"
+                                      htmlFor={`arr-crew-sup-${group.id}`}
+                                    >
+                                      Site Supervisor
+                                    </label>
+                                    <button
+                                      type="button"
+                                      title="Add supervisor"
+                                      style={{
+                                        padding: "0 4px",
+                                        height: 16,
+                                        fontSize: 10,
+                                        borderRadius: 3,
+                                        cursor: "pointer",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: 2,
+                                        background: "rgba(255, 255, 255, 0.15)",
+                                        color: "inherit",
+                                        border: "none",
+                                      }}
+                                      onClick={() => {
+                                        const current =
+                                          groupCrewDraft[group.id]?.siteSupervisor !== undefined
+                                            ? groupCrewDraft[group.id]!.siteSupervisor
+                                            : defaultSupervisor;
+                                        if (!current) {
+                                          const el = document.getElementById(`arr-crew-sup-${group.id}`) as HTMLInputElement;
+                                          el?.focus();
+                                        } else if (!current.endsWith(", ")) {
+                                          setGroupCrewDraft((prev) => ({
+                                            ...prev,
+                                            [group.id]: {
+                                              ...prev[group.id],
+                                              siteSupervisor: `${current.trim()}, `,
+                                            },
+                                          }));
+                                        }
+                                      }}
+                                    >
+                                      <Plus size={11} />
+                                    </button>
+                                  </div>
                                   <input
                                     id={`arr-crew-sup-${group.id}`}
                                     type="text"
@@ -9738,6 +9899,151 @@ const DELIVERY_RUN_STATUS_LABELS: Record<DeliveryRun["status"], string> = {
   delivered: "Delivered",
 };
 
+function DeliveryRunCustomerSearch({
+  jobs,
+  currentJobIds,
+  onSelectCustomer,
+  onCancel,
+}: {
+  jobs: InstallationJob[];
+  currentJobIds: string[];
+  onSelectCustomer: (jobId: string) => void;
+  onCancel: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [isOpen, setIsOpen] = useState(true);
+  const deferredQuery = useDeferredValue(query);
+
+  const filtered = useMemo(() => {
+    const q = deferredQuery.toLowerCase().trim();
+    const currentSet = new Set(currentJobIds);
+    return jobs.filter((job) => {
+      if (currentSet.has(job.id)) return false;
+      if (!q) return true;
+      return (
+        job.customerName?.toLowerCase().includes(q) ||
+        job.invoiceNumber?.toLowerCase().includes(q) ||
+        job.city?.toLowerCase().includes(q) ||
+        job.address?.toLowerCase().includes(q)
+      );
+    });
+  }, [jobs, currentJobIds, deferredQuery]);
+
+  return (
+    <div style={{ position: "relative", display: "inline-flex", alignItems: "center", gap: "8px" }}>
+      <span style={{ fontSize: "11px", fontWeight: 600, color: "var(--ink, #0f172a)" }}>
+        Search customer:
+      </span>
+      <input
+        type="text"
+        autoFocus
+        style={{
+          width: "290px",
+          padding: "4px 8px",
+          fontSize: "0.83rem",
+          borderRadius: "4px",
+          border: "1px solid #cbd5e1",
+          background: "#ffffff",
+          color: "#0f172a",
+        }}
+        placeholder="Type customer name, invoice or city (e.g. Tan Kim Whui)…"
+        value={query}
+        onFocus={() => setIsOpen(true)}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setIsOpen(true);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && filtered.length > 0) {
+            onSelectCustomer(filtered[0].id);
+            setQuery("");
+            setIsOpen(false);
+          } else if (e.key === "Escape") {
+            setIsOpen(false);
+            onCancel();
+          }
+        }}
+      />
+      <button
+        type="button"
+        className="icon-button"
+        title="Cancel"
+        onClick={() => {
+          setIsOpen(false);
+          onCancel();
+        }}
+      >
+        <X size={14} />
+      </button>
+
+      {isOpen && (
+        <>
+          <div
+            style={{ position: "fixed", inset: 0, zIndex: 999 }}
+            onClick={() => setIsOpen(false)}
+          />
+          <ul
+            style={{
+              position: "absolute",
+              top: "calc(100% + 4px)",
+              left: "100px",
+              zIndex: 1000,
+              width: "360px",
+              maxHeight: "240px",
+              overflowY: "auto",
+              padding: "4px 0",
+              margin: 0,
+              background: "#1e293b",
+              color: "#f8fafc",
+              border: "1px solid rgba(255,255,255,0.2)",
+              borderRadius: "6px",
+              boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.6)",
+              listStyle: "none",
+            }}
+          >
+            {filtered.length === 0 ? (
+              <li style={{ padding: "8px 12px", fontSize: "0.8rem", opacity: 0.7 }}>
+                {query ? `No customer found matching "${query}"` : "No customers available"}
+              </li>
+            ) : (
+              filtered.slice(0, 30).map((candidate) => (
+                <li
+                  key={candidate.id}
+                  style={{
+                    padding: "7px 12px",
+                    fontSize: "0.82rem",
+                    cursor: "pointer",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    borderBottom: "1px solid rgba(255,255,255,0.06)",
+                  }}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    onSelectCustomer(candidate.id);
+                    setQuery("");
+                    setIsOpen(false);
+                  }}
+                >
+                  <div>
+                    <strong>{displayName(candidate.customerName)}</strong>
+                    <span style={{ opacity: 0.75, marginLeft: "6px" }}>
+                      · {candidate.city || candidate.address || "No area"}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: "0.75rem", opacity: 0.6, fontStyle: "italic" }}>
+                    {candidate.invoiceNumber || ""}
+                  </span>
+                </li>
+              ))
+            )}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
 function DeliveryPlanningView({
   runs,
   jobs,
@@ -9774,7 +10080,6 @@ function DeliveryPlanningView({
   const [etaFeedback, setEtaFeedback] = useState<Record<string, EtaFeedback>>({});
   const [pinnedWeekKeys, setPinnedWeekKeys] = useState<Set<string>>(new Set());
   const [activeAddRunId, setActiveAddRunId] = useState<string | null>(null);
-  const [addSearch, setAddSearch] = useState("");
 
   const [periodFilter, setPeriodFilter] = useState("");
   const [customerQuery, setCustomerQuery] = useState("");
@@ -10990,120 +11295,23 @@ function DeliveryPlanningView({
                             }}
                             onClick={() => {
                               setActiveAddRunId(run.id);
-                              setAddSearch("");
                             }}
                           >
                             <Plus size={13} />
                             Add customer to this run
                           </button>
                         ) : (
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "8px",
+                          <DeliveryRunCustomerSearch
+                            jobs={jobs}
+                            currentJobIds={run.jobIds}
+                            onSelectCustomer={(selectedJobId) => {
+                              updateRun(run.id, {
+                                jobIds: [...run.jobIds, selectedJobId],
+                              });
+                              setActiveAddRunId(null);
                             }}
-                          >
-                            <span
-                              style={{
-                                fontSize: "11px",
-                                fontWeight: 600,
-                                color: "var(--ink, #0f172a)",
-                              }}
-                            >
-                              Search customer:
-                            </span>
-                            <input
-                              type="search"
-                              autoFocus
-                              placeholder="Type customer name, invoice or city…"
-                              value={addSearch}
-                              onChange={(e) => setAddSearch(e.target.value)}
-                              style={{
-                                fontSize: "12px",
-                                padding: "3px 8px",
-                                borderRadius: "4px",
-                                border: "1px solid var(--line, #cbd5e1)",
-                                background: "var(--surface, #ffffff)",
-                                color: "var(--ink, #0f172a)",
-                                width: "240px",
-                              }}
-                            />
-                            <select
-                              style={{
-                                fontSize: "12px",
-                                padding: "3px 8px",
-                                borderRadius: "4px",
-                                border: "1px solid var(--line, #cbd5e1)",
-                                background: "var(--surface, #ffffff)",
-                                color: "var(--ink, #0f172a)",
-                                maxWidth: "300px",
-                              }}
-                              value=""
-                              onChange={(e) => {
-                                const selectedJobId = e.target.value;
-                                if (
-                                  selectedJobId &&
-                                  !run.jobIds.includes(selectedJobId)
-                                ) {
-                                  updateRun(run.id, {
-                                    jobIds: [...run.jobIds, selectedJobId],
-                                  });
-                                  setActiveAddRunId(null);
-                                  setAddSearch("");
-                                }
-                              }}
-                            >
-                              <option value="">
-                                {(() => {
-                                  const searchTrimmed = addSearch.trim().toLowerCase();
-                                  if (!searchTrimmed) return "Type to search customers…";
-                                  const matches = jobs.filter(
-                                    (candidate) =>
-                                      !run.jobIds.includes(candidate.id) &&
-                                      jobMatchesSearch(candidate, searchTrimmed),
-                                  );
-                                  return matches.length
-                                    ? `Select customer (${matches.length} found)…`
-                                    : "No matching customers found";
-                                })()}
-                              </option>
-                              {addSearch.trim() &&
-                                jobs
-                                  .filter(
-                                    (candidate) =>
-                                      !run.jobIds.includes(candidate.id) &&
-                                      jobMatchesSearch(
-                                        candidate,
-                                        addSearch.trim().toLowerCase(),
-                                      ),
-                                  )
-                                  .slice(0, 30)
-                                  .map((candidate) => (
-                                    <option
-                                      key={candidate.id}
-                                      value={candidate.id}
-                                    >
-                                      {formatPersonName(candidate.customerName)} (
-                                      {candidate.invoiceNumber ||
-                                        candidate.city ||
-                                        "No invoice"}
-                                      )
-                                    </option>
-                                  ))}
-                            </select>
-                            <button
-                              type="button"
-                              className="icon-button"
-                              title="Cancel"
-                              onClick={() => {
-                                setActiveAddRunId(null);
-                                setAddSearch("");
-                              }}
-                            >
-                              <X size={14} />
-                            </button>
-                          </div>
+                            onCancel={() => setActiveAddRunId(null)}
+                          />
                         )}
                       </td>
                     </tr>

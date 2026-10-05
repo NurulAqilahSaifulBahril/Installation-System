@@ -107,6 +107,7 @@ export type CalendarDayCustomer = {
   // installation date — "WIRING ONLY", "O&M". Null on a normal install day,
   // so the card stays unlabelled in the common case.
   visitKind?: string | null;
+  source?: "proposed" | "confirmed" | "delivery";
 };
 
 // The customers one crew is working on a given day, headed by who that crew
@@ -129,6 +130,8 @@ export type CalendarDayDetail = {
   // The day's work, split by crew. Each crew heads its own list, so the card
   // has no separate roll-call of crews above it.
   crews: CalendarDayCrew[];
+  hasProposed?: boolean;
+  isProposedOnly?: boolean;
 };
 
 // One trip out to a site. Most jobs are a single day and carry none of these —
@@ -376,13 +379,40 @@ export function hasReachedPaymentPercent(
 // altogether by the same rounding that misfiled MONG YEE KEONG.
 export const APPROVAL_PAYMENT_PERCENT = 59;
 
-// Whether a SEDA status counts as approved. Shared by the source import and the
-// scheduling suggestions so the two cannot disagree about who is cleared.
-export function isSedaApproved(status: string | null | undefined): boolean {
+export function isSedaApproved(
+  status: string | null | undefined,
+  job?: {
+    firstPaymentDate?: string | null;
+    secondPaymentDate?: string | null;
+    sedaApprovedDate?: string | null;
+    sourceUpdatedAt?: string | null;
+    installationDate?: string | null;
+  } | null,
+): boolean {
   const normalized = status?.toLowerCase() ?? "";
-  return ["approved", "complete", "completed", "success"].some((word) =>
-    normalized.includes(word),
-  );
+  if (
+    ["approved", "complete", "completed", "success"].some((word) =>
+      normalized.includes(word),
+    )
+  ) {
+    return true;
+  }
+  if (job) {
+    const cutoff = "2026-07-12";
+    const refDate =
+      job.firstPaymentDate ||
+      job.sedaApprovedDate ||
+      job.sourceUpdatedAt ||
+      job.installationDate ||
+      job.secondPaymentDate;
+    if (refDate && refDate.slice(0, 10) < cutoff) {
+      return true;
+    }
+    if (!refDate) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // The installation manager's read of a site, from the roof and site-assessment

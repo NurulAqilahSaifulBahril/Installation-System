@@ -1,4 +1,5 @@
 import type {
+  CalendarDayCustomer,
   CalendarDayDetail,
   InstallationJob,
   JobVisit,
@@ -172,11 +173,24 @@ export function buildCalendarDayDetails(
       (group) => group.installationDate,
     );
 
-    const placementDays = jobPlacements.map((placement) => ({
-      date: placement.date,
-      group: null as CalendarGroup | null,
-      placement,
-    }));
+    const placementDays = jobPlacements
+      .filter((placement) => {
+        // If the job has already been completed/installed on an earlier date, ignore stale draft placements on future dates
+        if (
+          job.installationDate &&
+          job.installationDate < placement.date &&
+          (job.customerAvailabilityStatus === "complete" ||
+            job.scheduleStatus === "installed")
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .map((placement) => ({
+        date: placement.date,
+        group: null as CalendarGroup | null,
+        placement,
+      }));
 
     // One entry per placement or group the job is in, each on that slot/group's own date
     const installDays: {
@@ -231,12 +245,24 @@ export function buildCalendarDayDetails(
 
       const teamCrew = placement ? scheduleDraft?.teamCrews?.[placement.team] : undefined;
 
-      const entry = {
+      const isConfirmedGroup = group ? group.id.startsWith("map-") : false;
+      const isConfirmedInstall =
+        job.customerAvailabilityStatus === "complete" ||
+        job.scheduleStatus === "installed";
+
+      const entry: CalendarDayCustomer = {
         id: job.id,
         name: formatPersonName(job.customerName),
         stockDelivery: slotTime ?? null,
-        installTime: visit?.time ?? slotTime ?? startTimes[0] ?? null,
+        installTime: visit?.time ?? slotTime ?? startTimes[0] ?? job.preferredInstallationTime ?? null,
         visitKind: visit?.kind ?? null,
+        source: placement
+          ? "proposed"
+          : isConfirmedGroup
+          ? "confirmed"
+          : isConfirmedInstall
+          ? "confirmed"
+          : "proposed",
       };
       const day = dayFor(date);
       day.customers.push(entry);
@@ -322,12 +348,13 @@ export function buildCalendarDayDetails(
 
     const jobRuns = [...stopByDay.values()];
     jobRuns.forEach((run) => {
-      const entry = {
+      const entry: CalendarDayCustomer = {
         id: job.id,
         name: formatPersonName(job.customerName),
         stockDelivery: run.departureTime || job.arrivalTime || null,
         installTime: null,
         visitKind: null,
+        source: "delivery",
       };
       const day = dayFor(stopDayFor(run));
       day.customers.push(entry);
@@ -342,6 +369,11 @@ export function buildCalendarDayDetails(
 
   Object.values(details).forEach((day) => {
     day.customers.sort((a, b) => a.name.localeCompare(b.name));
+    const hasConfirmed = day.customers.some((c) => c.source === "confirmed" || c.source === "delivery");
+    const hasProposed = day.customers.some((c) => c.source === "proposed");
+    day.hasProposed = hasProposed;
+    day.isProposedOnly = hasProposed && !hasConfirmed;
+
     day.crews.forEach((crew) =>
       // Time first inside a crew: the card is read to find out what that crew
       // is doing next, and a crew works its day in clock order.

@@ -134,9 +134,14 @@ export default function SidebarCalendar({
 
         {days.map((day) => {
           const key = keyFor(day);
+          const detail = dayDetails[key];
+          const isProposedOnly = detail?.isProposedOnly || (detail?.customers?.length > 0 && detail.customers.every((c) => c.source === "proposed"));
+          const hasProposed = detail?.hasProposed || detail?.customers?.some((c) => c.source === "proposed");
+
           const className = [
             "sidebar-calendar-day",
-            dayDetails[key] ? "has-jobs" : "",
+            detail ? "has-jobs" : "",
+            isProposedOnly ? "is-proposed" : hasProposed ? "has-proposed" : "",
             // Marked on the grid itself, not just in the card — a holiday is
             // worth seeing before you decide which day to hover.
             holidays[key] ? "is-holiday" : "",
@@ -263,6 +268,23 @@ export default function SidebarCalendar({
                           {customer.visitKind && (
                             <em className="calendar-hover-visit">
                               {customer.visitKind}
+                            </em>
+                          )}
+                          {customer.source === "proposed" && (
+                            <em
+                              className="calendar-hover-visit is-proposed"
+                              style={{
+                                background: "#52525b",
+                                color: "#f8fafc",
+                                fontStyle: "normal",
+                                padding: "1px 5px",
+                                borderRadius: "3px",
+                                marginLeft: "5px",
+                                fontSize: "0.68rem",
+                                fontWeight: 600,
+                              }}
+                            >
+                              Propose to install
                             </em>
                           )}
                         </span>
