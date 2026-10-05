@@ -64,19 +64,21 @@ jobs:
           $tag = "v$v"
           "tag=$tag" >> $env:GITHUB_OUTPUT
 
-          gh release view $tag --repo "${{ github.repository }}" 2>&1 | Out-Null
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "$tag is already published (likely built locally via RELEASE.cmd) - skipping."
-            "skip=true" >> $env:GITHUB_OUTPUT
+          $relJson = gh release view $tag --repo "${{ github.repository }}" --json assets 2>$null
+          if ($LASTEXITCODE -eq 0 -and $relJson) {
+            $rel = $relJson | ConvertFrom-Json
+            if ($rel.assets -and $rel.assets.Count -gt 0) {
+              Write-Host "$tag is already published with $($rel.assets.Count) assets - skipping."
+              "skip=true" >> $env:GITHUB_OUTPUT
+            } else {
+              Write-Host "Release $tag exists but has 0 assets - building."
+              "skip=false" >> $env:GITHUB_OUTPUT
+            }
           } else {
             Write-Host "Building $tag"
             "skip=false" >> $env:GITHUB_OUTPUT
           }
 
-          # "gh release view" on a tag that doesn't exist yet - the expected,
-          # handled case above - exits non-zero. Without this, that leftover
-          # $LASTEXITCODE fails the step (and skips the release job, which
-          # `needs` this one to succeed) even though the logic above is fine.
           exit 0
 
   release:
