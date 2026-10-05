@@ -85,7 +85,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Resolve version
         id: ver
@@ -96,7 +96,7 @@ jobs:
           "tag=$tag" >> $env:GITHUB_OUTPUT
           Write-Host "Building version $tag"
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v4
         with:
           node-version: "22"
 
