@@ -380,6 +380,94 @@ button:disabled {
   color: #ea580c;
 }
 
+/* Sidebar Roof Rating Guide card */
+.sidebar-roof-guide {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-top: 10px;
+  overflow: hidden;
+  font-size: 11px;
+}
+
+.roof-guide-header-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.roof-guide-header-btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.roof-guide-header-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.roof-guide-body {
+  padding: 0 10px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.roof-guide-section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.roof-guide-sec-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.roof-guide-sec-title .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.roof-guide-section.is-easy .roof-guide-sec-title { color: #22c55e; }
+.roof-guide-section.is-easy .roof-guide-sec-title .dot { background: #22c55e; }
+
+.roof-guide-section.is-medium .roof-guide-sec-title { color: #eab308; }
+.roof-guide-section.is-medium .roof-guide-sec-title .dot { background: #eab308; }
+
+.roof-guide-section.is-hard .roof-guide-sec-title { color: #ef4444; }
+.roof-guide-section.is-hard .roof-guide-sec-title .dot { background: #ef4444; }
+
+.roof-guide-section ul {
+  margin: 0;
+  padding-left: 14px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.roof-guide-section li {
+  margin-bottom: 2px;
+}
+
 .sidebar-category-card.is-active.card-ev {
   border-color: #0284c7;
   background: rgba(2, 132, 199, 0.08);

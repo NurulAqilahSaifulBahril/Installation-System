@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Clock3,
   CloudLightning,
   CloudRain,
@@ -16,6 +17,7 @@ import {
   Columns,
   Download,
   FileSearch,
+  Info,
   LoaderCircle,
   LogOut,
   MapPin,
@@ -3291,6 +3293,7 @@ export default function DashboardPage() {
   const [sldOpen, setSldOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [roofGuideOpen, setRoofGuideOpen] = useState(true);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [groups, setGroups] = useState<InstallationGroup[]>([]);
   const [deliveryRuns, setDeliveryRuns] = useState<DeliveryRun[]>([]);
@@ -4455,6 +4458,62 @@ export default function DashboardPage() {
               <FileSearch size={16} />
               Scheduling report
             </button>
+
+            <div className="sidebar-roof-guide" title="Roof difficulty rules for installation scheduling">
+              <button
+                type="button"
+                className="roof-guide-header-btn"
+                onClick={() => setRoofGuideOpen((prev) => !prev)}
+                aria-expanded={roofGuideOpen}
+              >
+                <div className="roof-guide-header-title">
+                  <Info size={13} />
+                  <span>Roof Rating Guide</span>
+                </div>
+                {roofGuideOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+              </button>
+
+              {roofGuideOpen && (
+                <div className="roof-guide-body">
+                  <div className="roof-guide-section is-easy">
+                    <div className="roof-guide-sec-title">
+                      <span className="dot" />
+                      <strong>EASY</strong>
+                    </div>
+                    <ul>
+                      <li>Metal deck roof (Klip-Lok / Trapezoidal)</li>
+                      <li>1–2 storey house</li>
+                      <li>1 panel group on 1 roof face</li>
+                    </ul>
+                  </div>
+
+                  <div className="roof-guide-section is-medium">
+                    <div className="roof-guide-sec-title">
+                      <span className="dot" />
+                      <strong>MEDIUM</strong>
+                    </div>
+                    <ul>
+                      <li>Concrete tiles (CPAC / Monier)</li>
+                      <li>1–2 storey house</li>
+                      <li>1 panel group on 1 roof face</li>
+                    </ul>
+                  </div>
+
+                  <div className="roof-guide-section is-hard">
+                    <div className="roof-guide-sec-title">
+                      <span className="dot" />
+                      <strong>HARD</strong> <small style={{ fontWeight: "normal", opacity: 0.85 }}>(Full-day allocation)</small>
+                    </div>
+                    <ul>
+                      <li>2+ panel groups on SLD</li>
+                      <li>Concrete / RC flat roof</li>
+                      <li>3-storey building or higher</li>
+                      <li>Clay / fragile / old tiles</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </aside>

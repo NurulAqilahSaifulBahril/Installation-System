@@ -1370,12 +1370,14 @@ export default function ReadyToInstallSchedule({
           ))}
           <input
             value={noteDraft[job.id] ?? assessment?.note ?? ""}
-            placeholder="e.g. atap, 2 storey, old tiles"
+            placeholder="e.g. >1 panel group, concrete roof, atap"
             aria-label={`Difficulty note for ${displayName(job.customerName)}`}
             onChange={(event) => setNoteDraft((current) => ({ ...current, [job.id]: event.target.value }))}
             onBlur={() => saveNote(job.id)}
           />
-          <span className="rti-muted">Hard jobs take the whole day.</span>
+          <span className="rti-muted">
+            Hard jobs take the whole day (e.g. &gt;1 panel group on SLD, concrete roof).
+          </span>
         </div>
       </div>
     );
@@ -1656,6 +1658,12 @@ export default function ReadyToInstallSchedule({
           </div>
           <div style={{ fontSize: "0.78rem", opacity: 0.8, fontStyle: "italic" }}>
             Suggested Ratio: <strong>65% New · 15% Reschedule · 10% Pending · 5% Need Attention · 5% O&M</strong>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", fontSize: "0.78rem", width: "100%", paddingTop: "6px", borderTop: "1px solid rgba(255, 255, 255, 0.08)", marginTop: "4px" }}>
+            <span style={{ fontWeight: 600, opacity: 0.9 }}>Roof Rating Rules:</span>
+            <span><strong style={{ color: "#4ade80" }}>Easy</strong> (1–2 face, low height)</span>
+            <span><strong style={{ color: "#facc15" }}>Medium</strong> (2-storey, multi-hip)</span>
+            <span><strong style={{ color: "#f87171" }}>Hard</strong> (&gt;1 panel group on SLD, concrete roof, 3-storey)</span>
           </div>
         </div>
       )}
