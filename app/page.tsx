@@ -3293,7 +3293,7 @@ export default function DashboardPage() {
   const [sldOpen, setSldOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [roofGuideOpen, setRoofGuideOpen] = useState(true);
+  const [roofGuideOpen, setRoofGuideOpen] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [groups, setGroups] = useState<InstallationGroup[]>([]);
   const [deliveryRuns, setDeliveryRuns] = useState<DeliveryRun[]>([]);
