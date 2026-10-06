@@ -3535,12 +3535,9 @@ export default function DashboardPage() {
   );
 
   useEffect(() => {
-    const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
-    const useDark =
-      savedTheme === "dark" ||
-      (!savedTheme && window.matchMedia("(prefers-color-scheme: dark)").matches);
-    setDarkMode(useDark);
-    document.documentElement.dataset.theme = useDark ? "dark" : "light";
+    setDarkMode(false);
+    document.documentElement.dataset.theme = "light";
+    window.localStorage.setItem(THEME_STORAGE_KEY, "light");
 
     setSidebarCollapsed(
       window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "collapsed",
@@ -4527,13 +4524,6 @@ export default function DashboardPage() {
       >
       <header className="topbar">
         <div className="topbar-actions">
-          <button
-            className="icon-button theme-toggle"
-            aria-label={darkMode ? "Use light mode" : "Use dark mode"}
-            onClick={toggleTheme}
-          >
-            {darkMode ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
           <button
             className="connection connection-button"
             onClick={() => void openSettings()}
