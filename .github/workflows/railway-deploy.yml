@@ -29,5 +29,5 @@ jobs:
           if [ -z "$RAILWAY_TOKEN" ]; then
             echo "RAILWAY_TOKEN is not set in GitHub secrets. Skipping CLI push (Railway GitHub Integration will handle automatic deploy)."
           else
-            railway up --service="installation-system" --detach
+            railway up --service="Scheduling-system" --detach
           fi
