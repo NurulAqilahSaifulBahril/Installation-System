@@ -2934,115 +2934,107 @@ tr.needs-reschedule-date.selected td {
   border-bottom: 2px solid #000000 !important;
 }
 
-.delivery-schedule-table tbody tr.delivery-band th,
-.delivery-schedule-table tbody tr.schedule-band.rti-team-band-main th,
-.delivery-schedule-table tbody tr.schedule-band.delivery-run-band th,
-.delivery-schedule-table tbody tr.schedule-band.rti-team-1 th,
-.delivery-schedule-table tbody tr.schedule-band.rti-team-2 th,
-.delivery-schedule-table tbody tr.schedule-band.rti-team-3 th,
-.delivery-schedule-table tbody tr.schedule-band.rti-team-4 th,
-.delivery-schedule-table tbody tr.schedule-band.rti-team-default th,
-.delivery-schedule-table tbody tr.schedule-band.rti-team-other th {
-  background: var(--surface-soft, #f4f4f5) !important;
+/* Delivery Schedule: All data cell text in black (customer, address, agent, phase, panel, inverter, eta, installation date, stock, remark) */
+.delivery-schedule-table tbody td,
+.delivery-schedule-table tbody td button,
+.delivery-schedule-table tbody td a,
+.delivery-schedule-table tbody td span,
+.delivery-schedule-table tbody td input,
+.delivery-schedule-table tbody td textarea,
+.delivery-schedule-table tbody td div,
+.delivery-schedule-table .rti-name,
+.delivery-schedule-table .rti-link,
+.delivery-schedule-table .rti-address,
+.delivery-schedule-table .rti-agent,
+.delivery-schedule-table .rti-cell-textarea,
+.delivery-schedule-table .rti-eta-input,
+.delivery-schedule-table .rti-eta-date-input,
+.delivery-schedule-table .rti-inst-date-text,
+.delivery-schedule-table .rti-inst-date-tag,
+.delivery-schedule-table .rti-invoice,
+.delivery-schedule-table .rti-muted {
   color: #000000 !important;
-  border-top: 1px solid var(--line, #e2e8f0) !important;
-  border-bottom: 1px solid var(--line, #e2e8f0) !important;
 }
 
-.delivery-schedule-table tbody tr.schedule-band.rti-team-band-main:hover th,
+.delivery-schedule-table tbody td svg,
+.delivery-schedule-table .rti-eta-icon,
+.delivery-schedule-table .rti-inst-date-tag svg,
+.delivery-schedule-table button.rti-address svg {
+  color: #000000 !important;
+  stroke: #000000 !important;
+}
+
+.delivery-schedule-table .rti-eta-input.is-inherited,
+.delivery-schedule-table .rti-eta-date-input.is-inherited {
+  opacity: 1 !important;
+  color: #000000 !important;
+}
+
+/* Delivery Schedule: Delivery PIC header row background in brick red orange (#c2410c) */
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band th {
+  background: #c2410c !important;
+  color: #ffffff !important;
+  border-top: 1px solid #9a3412 !important;
+  border-bottom: 1px solid #9a3412 !important;
+}
+
 .delivery-schedule-table tbody tr.schedule-band.delivery-run-band:hover th {
-  background: #ebebeb !important;
+  background: #9a3412 !important;
 }
 
-.delivery-schedule-table .rti-team-title-wrap .rti-team-name {
-  color: #000000 !important;
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-crew-label {
+  color: rgba(255, 255, 255, 0.85) !important;
 }
 
-.delivery-schedule-table .rti-team-title-wrap .rti-team-base {
-  color: #64748b !important;
-}
-
-.delivery-schedule-table .rti-crew-label {
-  color: #475569 !important;
-}
-
-.delivery-schedule-table .rti-crew-input,
-.delivery-schedule-table .rti-crew-input.rti-crew-input-borderless {
-  color: #0f172a !important;
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-crew-input,
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-crew-input.rti-crew-input-borderless {
+  color: #ffffff !important;
   background: transparent !important;
   border: 1px solid transparent !important;
 }
 
-.delivery-schedule-table .rti-crew-input::placeholder,
-.delivery-schedule-table .rti-crew-input.rti-crew-input-borderless::placeholder {
-  color: #94a3b8 !important;
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-crew-input option {
+  color: #0f172a !important;
+  background: #ffffff !important;
 }
 
-.delivery-schedule-table .rti-crew-input:hover,
-.delivery-schedule-table .rti-crew-input.rti-crew-input-borderless:hover {
-  background: rgba(0, 0, 0, 0.05) !important;
-  border: 1px dashed #cbd5e1 !important;
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-crew-input::placeholder,
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-crew-input.rti-crew-input-borderless::placeholder {
+  color: rgba(255, 255, 255, 0.65) !important;
 }
 
-.delivery-schedule-table .rti-crew-input:focus,
-.delivery-schedule-table .rti-crew-input.rti-crew-input-borderless:focus {
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-crew-input:hover,
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-crew-input.rti-crew-input-borderless:hover {
+  background: rgba(255, 255, 255, 0.15) !important;
+  border: 1px dashed rgba(255, 255, 255, 0.5) !important;
+}
+
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-crew-input:focus,
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-crew-input.rti-crew-input-borderless:focus {
   background: #ffffff !important;
   border: 1px solid #94a3b8 !important;
   color: #0f172a !important;
-  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.15) !important;
 }
 
-.delivery-schedule-table .rti-run-calc-btn {
-  background: #ffffff;
-  border: 1px solid var(--line, #cbd5e1);
-  color: var(--ink, #1e293b);
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-run-calc-btn {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border: 1px solid rgba(255, 255, 255, 0.5) !important;
+  color: #0f172a !important;
 }
 
-.delivery-schedule-table .rti-run-calc-btn:hover {
-  background: var(--surface-soft, #f8fafc);
-  border-color: #94a3b8;
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-run-calc-btn:hover {
+  background: #ffffff !important;
 }
 
-.delivery-schedule-table .rti-run-delete-btn {
-  color: #64748b;
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-run-delete-btn {
+  color: rgba(255, 255, 255, 0.85) !important;
 }
 
-.delivery-schedule-table .rti-run-delete-btn:hover {
-  color: #ef4444;
-  background: #fee2e2;
+.delivery-schedule-table tbody tr.schedule-band.delivery-run-band .rti-run-delete-btn:hover {
+  color: #ffffff !important;
+  background: rgba(0, 0, 0, 0.25) !important;
 }
-
-:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-band-main th,
-:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.delivery-run-band th,
-:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-1 th,
-:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-2 th,
-:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-3 th,
-:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-4 th,
-:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-default th,
-:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-band.rti-team-other th {
-  background: #182234 !important;
-  color: #f1f5f9 !important;
-  border-color: #334155 !important;
-}
-
-:root[data-theme="dark"] .delivery-schedule-table .rti-team-title-wrap .rti-team-name {
-  color: #f1f5f9 !important;
-}
-
-:root[data-theme="dark"] .delivery-schedule-table .rti-team-title-wrap .rti-team-base {
-  color: #94a3b8 !important;
-}
-
-:root[data-theme="dark"] .delivery-schedule-table .rti-crew-label {
-  color: #94a3b8 !important;
-}
-
-:root[data-theme="dark"] .delivery-schedule-table .rti-crew-input,
-:root[data-theme="dark"] .delivery-schedule-table .rti-crew-input.rti-crew-input-borderless {
-  color: #f1f5f9 !important;
-}
-
-:root[data-theme="dark"] .delivery-schedule-table .rti-crew-input:hover,
 :root[data-theme="dark"] .delivery-schedule-table .rti-crew-input.rti-crew-input-borderless:hover {
   background: rgba(255, 255, 255, 0.08) !important;
   border-color: #475569 !important;
@@ -5858,6 +5850,37 @@ a.phone-number:hover {
   background: var(--surface);
 }
 
+.delivery-schedule-table,
+.delivery-schedule-table table,
+.delivery-schedule-table th,
+.delivery-schedule-table td,
+.delivery-schedule-table input,
+.delivery-schedule-table select,
+.delivery-schedule-table button,
+.delivery-schedule-table span,
+.delivery-schedule-table div,
+.delivery-schedule-table label {
+  font-family: Calibri, 'Segoe UI', Candara, Optima, Arial, sans-serif !important;
+}
+
+.delivery-schedule-table th.rti-th-darker,
+.rti-team th.rti-th-darker {
+  background: rgba(0, 0, 0, 0.18) !important;
+  color: var(--ink, #0f172a) !important;
+}
+
+.delivery-schedule-table .rti-eta-cell,
+.delivery-schedule-table .rti-eta-cell input,
+.delivery-schedule-table .rti-eta-input,
+.delivery-schedule-table .rti-eta-box,
+.delivery-schedule-table .rti-eta-icon,
+.delivery-schedule-table .rti-installation-date-cell,
+.delivery-schedule-table .rti-inst-date-text,
+.delivery-schedule-table .rti-inst-date-tag,
+.delivery-schedule-table .rti-inst-date-tag svg {
+  color: #2563eb !important;
+}
+
 .rti-team table,
 .rti-ready table {
   width: 100%;
@@ -6207,6 +6230,29 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
   box-shadow: 0 0 0 2px rgba(4, 47, 46, 0.2) !important;
 }
 
+.rti-total-pcs-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.28);
+  padding: 3px 10px;
+  border-radius: 6px;
+  letter-spacing: 0.03em;
+  height: 28px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  user-select: none;
+}
+
+tr.schedule-band.rti-team-default .rti-total-pcs-tag,
+tr.schedule-band.rti-team-other .rti-total-pcs-tag {
+  color: #042f2e;
+  background: rgba(4, 47, 46, 0.18);
+}
+
 .rti-col-date { width: 112px; }
 .rti-col-customer { width: 190px; }
 .rti-col-difficulty { width: 155px; }
@@ -6227,7 +6273,47 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
 .rti-col-sld { width: 120px; }
 .rti-col-eta { width: 130px; }
 .rti-col-inst-date { width: 140px; }
+.rti-col-scheduling-team { min-width: 190px; width: 230px; }
 .rti-col-remark { min-width: 260px; width: 280px; }
+
+.rti-scheduling-team-cell {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: normal;
+  word-break: break-word;
+  padding: 6px 8px !important;
+}
+
+.rti-scheduling-team-cell.team-1 {
+  background: #2563eb !important;
+  color: #ffffff !important;
+}
+
+.rti-scheduling-team-cell.team-2 {
+  background: #ea580c !important;
+  color: #ffffff !important;
+}
+
+.rti-scheduling-team-cell.team-3 {
+  background: #16a34a !important;
+  color: #ffffff !important;
+}
+
+.rti-scheduling-team-cell.team-4 {
+  background: #db2777 !important;
+  color: #ffffff !important;
+}
+
+.rti-scheduling-team-cell.team-default {
+  background: #2dd4bf !important;
+  color: #042f2e !important;
+}
+
+.rti-scheduling-team-cell.team-unassigned {
+  background: transparent;
+  color: var(--muted, #64748b);
+}
 
 .rti-edit-cell {
   padding: 3px 4px !important;
@@ -6617,6 +6703,34 @@ tbody tr:nth-child(2) .rti-customer-popover::after,
 
 :root[data-theme="dark"] .rti-open-row .rti-date span {
   color: #93c5fd;
+}
+
+/* Rain badge box on Propose to Install slots */
+.rti-slot-rain {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 4px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background-color: #e5e7eb;
+  color: #000000;
+  border: 1px solid #d1d5db;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.rti-slot-rain-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #000000 !important;
+}
+
+.rti-slot-rain svg,
+.rti-slot-rain-label svg {
+  color: #000000 !important;
+  flex-shrink: 0;
 }
 
 .rti-row.is-suggested td {
@@ -7117,16 +7231,12 @@ tbody tr:nth-child(2) .rti-customer-popover::after,
   line-height: 1.25;
 }
 
-.rti-slot-rain.is-warning {
-  background: var(--amber-soft);
-  border: 1px solid var(--amber);
-  color: var(--amber);
-}
-
+.rti-slot-rain.is-warning,
 .rti-slot-rain.is-held {
-  background: var(--surface-soft);
-  border: 1px solid var(--line);
-  color: var(--muted);
+  background-color: #e5e7eb !important;
+  background: #e5e7eb !important;
+  border: 1px solid #d1d5db !important;
+  color: #000000 !important;
 }
 
 .rti-slot-rain-label {
@@ -7768,10 +7878,10 @@ tbody tr:nth-child(2) .rti-customer-popover::after,
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: var(--surface-soft, #f8fafc);
-  border: 1px solid var(--line, #cbd5e1);
-  border-radius: 4px;
-  padding: 2px 6px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 1px 0;
   height: 24px;
   box-sizing: border-box;
   width: 112px;
@@ -7780,15 +7890,15 @@ tbody tr:nth-child(2) .rti-customer-popover::after,
 
 .rti-eta-box:hover,
 .rti-eta-date-row:hover {
-  background: var(--surface, #ffffff);
-  border-color: #94a3b8;
+  background: transparent;
+  border-color: transparent;
 }
 
 .rti-eta-box:focus-within,
 .rti-eta-date-row:focus-within {
-  background: var(--surface, #ffffff);
-  border-color: #2563eb;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .rti-eta-icon {
@@ -7824,21 +7934,21 @@ tbody tr:nth-child(2) .rti-customer-popover::after,
 
 :root[data-theme="dark"] .rti-eta-box,
 :root[data-theme="dark"] .rti-eta-date-row {
-  background: #0f172a;
-  border-color: #334155;
+  background: transparent;
+  border-color: transparent;
 }
 
 :root[data-theme="dark"] .rti-eta-box:hover,
 :root[data-theme="dark"] .rti-eta-date-row:hover {
-  background: #1e293b;
-  border-color: #475569;
+  background: transparent;
+  border-color: transparent;
 }
 
 :root[data-theme="dark"] .rti-eta-box:focus-within,
 :root[data-theme="dark"] .rti-eta-date-row:focus-within {
-  background: #1e293b;
-  border-color: #60a5fa;
-  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.25);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
 }
 
 :root[data-theme="dark"] .rti-eta-icon {
@@ -7855,10 +7965,10 @@ tbody tr:nth-child(2) .rti-customer-popover::after,
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 7px;
-  background: var(--surface-soft, #f8fafc);
-  border: 1px solid var(--line, #cbd5e1);
-  border-radius: 5px;
+  padding: 2px 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   color: var(--ink, #1e293b);
   font-size: 12px;
   font-weight: 500;
@@ -7874,15 +7984,15 @@ tbody tr:nth-child(2) .rti-customer-popover::after,
 
 .rti-inst-date-tag:hover,
 .rti-inst-date-hyperlink:hover {
-  background: var(--surface, #ffffff);
+  background: transparent;
   color: var(--ink, #0f172a);
-  border-color: #94a3b8;
+  border-color: transparent;
 }
 
 .rti-inst-date-tag.is-unassigned,
 .rti-inst-date-hyperlink.is-unassigned {
-  background: var(--surface-soft, #f8fafc);
-  border-color: var(--line, #e2e8f0);
+  background: transparent;
+  border-color: transparent;
   color: var(--muted, #64748b);
   font-weight: 400;
 }

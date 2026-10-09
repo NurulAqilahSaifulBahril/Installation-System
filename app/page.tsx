@@ -5358,6 +5358,54 @@ function derivedPowerOutput(job: InstallationJob): string {
   return existing;
 }
 
+function getJobPanelQuantity(job: InstallationJob): number {
+  if (job.panelQuantity && typeof job.panelQuantity === "number" && job.panelQuantity > 0) {
+    return job.panelQuantity;
+  }
+  const texts = [
+    job.powerOutput,
+    job.packageName,
+    job.remarks,
+    job.installationRemarks,
+    job.availabilityRemarks,
+  ].filter(Boolean) as string[];
+
+  for (const text of texts) {
+    const leadNumMatch = text.match(/^(\d{1,3})\s+(?:pcs|panels?\b|[A-Za-z])/i);
+    if (leadNumMatch) {
+      const num = parseInt(leadNumMatch[1], 10);
+      if (!isNaN(num) && num > 0 && num < 300) return num;
+    }
+    const explicitQtyMatch = text.match(/(\d{1,3})\s*(?:pcs|panels?\b|[xX×]\b)/i);
+    if (explicitQtyMatch) {
+      const num = parseInt(explicitQtyMatch[1], 10);
+      if (!isNaN(num) && num > 0 && num < 300) return num;
+    }
+    const mulMatch = text.match(/(\d{1,3})\s*(?:[*xX×])\s*\d{3,4}\s*W?/i);
+    if (mulMatch) {
+      const num = parseInt(mulMatch[1], 10);
+      if (!isNaN(num) && num > 0 && num < 300) return num;
+    }
+    const brandMatch = text.match(/(\d{1,3})\s*(?:Jinko|LONGi|Trina|Canadian|Astronergy|JA\s*Solar|Risen|AE|Qcells|Mono|Poly|Bifacial)/i);
+    if (brandMatch) {
+      const num = parseInt(brandMatch[1], 10);
+      if (!isNaN(num) && num > 0 && num < 300) return num;
+    }
+  }
+
+  for (const text of texts) {
+    const firstNum = text.match(/\b(\d{1,3})\b/);
+    if (firstNum) {
+      const num = parseInt(firstNum[1], 10);
+      if (!isNaN(num) && num > 0 && num <= 150) {
+        return num;
+      }
+    }
+  }
+
+  return 0;
+}
+
 function titleCase(value: string) {
   return value
     .trim()
@@ -10397,7 +10445,7 @@ function DeliveryPlanningView({
                       onChange={(event) =>
                         renameWarehouse(warehouse.id, event.target.value)
                       }
-                      placeholder="e.g. Ulu Tiram depot"
+                      placeholder="e.g. Johor Bahru Warehouse"
                       aria-label="Warehouse name"
                     />
                   </td>
@@ -10584,12 +10632,13 @@ function DeliveryPlanningView({
               <col className="rti-col-inverter" />
               <col className="rti-col-eta" />
               <col className="rti-col-inst-date" />
+              <col className="rti-col-scheduling-team" />
               <col className="rti-col-remark" />
             </colgroup>
             <tbody>
               {visibleRuns.length === 0 && (
                 <tr className="delivery-run-placeholder-row">
-                  <td colSpan={10}>
+                  <td colSpan={11}>
                     {runs.length
                       ? "No delivery run matches these filters."
                       : "No delivery runs yet."}
@@ -10620,15 +10669,6 @@ function DeliveryPlanningView({
                 const teamClass = isStandardTeam
                   ? `rti-team-${teamNum}`
                   : "rti-team-other rti-team-default";
-                const runTitle = (() => {
-                  if (run.name) return run.name;
-                  if (rawTeamNum) return `Delivery Team ${rawTeamNum}`;
-                  if (run.deliveryTeam) return run.deliveryTeam;
-                  return "Delivery Run";
-                })();
-                const baseLabel = run.warehouse
-                  ? `${run.warehouse} Depot`
-                  : null;
 
                 return (
                   <Fragment key={run.id}>
@@ -10638,7 +10678,7 @@ function DeliveryPlanningView({
                           pinnedWeekKeys.has(weekKey) ? " is-pinned" : ""
                         }`}
                       >
-                        <th colSpan={10} scope="colgroup">
+                        <th colSpan={11} scope="colgroup">
                           <div className="schedule-band-sub-content">
                             <button
                               type="button"
@@ -10675,47 +10715,13 @@ function DeliveryPlanningView({
                       </tr>
                     )}
                     <tr
-                      className={`schedule-band rti-team-band rti-team-band-main delivery-run-band${
+                      className={`schedule-band rti-team-band rti-team-band-main delivery-run-band ${teamClass}${
                         pinnedWeekKeys.has(weekKey) ? " is-pinned" : ""
                       }`}
                     >
-                      <th colSpan={10} scope="colgroup">
+                      <th colSpan={11} scope="colgroup">
                         <div className="rti-team-header-main">
-                          <div className="rti-team-title-wrap">
-                            <span className="rti-team-name">{runTitle}</span>
-                            {baseLabel && (
-                              <span className="rti-team-base">{baseLabel}</span>
-                            )}
-                          </div>
                           <div className="rti-crew-grid">
-                            <div className="rti-crew-col">
-                              <label
-                                className="rti-crew-label"
-                                htmlFor={`del-team-${run.id}`}
-                              >
-                                Delivery Team
-                              </label>
-                              <input
-                                id={`del-team-${run.id}`}
-                                type="text"
-                                list={`del-teams-list-${run.id}`}
-                                className="rti-crew-input rti-crew-input-borderless"
-                                value={run.deliveryTeam || ""}
-                                placeholder="Select team…"
-                                onChange={(e) =>
-                                  updateRun(run.id, {
-                                    deliveryTeam: e.target.value,
-                                  })
-                                }
-                                onClick={(e) => e.stopPropagation()}
-                              />
-                              <datalist id={`del-teams-list-${run.id}`}>
-                                {deliveryTeams.map((name) => (
-                                  <option key={name} value={name} />
-                                ))}
-                              </datalist>
-                            </div>
-
                             <div className="rti-crew-col">
                               <label
                                 className="rti-crew-label"
@@ -10791,23 +10797,16 @@ function DeliveryPlanningView({
                           </div>
 
                           <div className="rti-run-actions">
-                            <button
-                              type="button"
-                              className="button secondary rti-run-calc-btn"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void calculateEtas(run);
-                              }}
-                              disabled={feedback?.busy}
-                              title="Calculate driving times and estimated arrival for stops"
+                            <div
+                              className="rti-total-pcs-tag"
+                              title={`Total panels for this run: ${runJobs.reduce((sum, j) => sum + getJobPanelQuantity(j), 0)} PCS`}
                             >
-                              {feedback?.busy ? (
-                                <LoaderCircle size={13} className="spin" />
-                              ) : (
-                                <MapPin size={13} />
-                              )}
-                              {feedback?.busy ? "Calculating…" : "Calculate ETAs"}
-                            </button>
+                              {runJobs.reduce(
+                                (sum, j) => sum + getJobPanelQuantity(j),
+                                0,
+                              )}{" "}
+                              PCS
+                            </div>
                             <button
                               type="button"
                               className="icon-button rti-run-delete-btn"
@@ -10856,15 +10855,16 @@ function DeliveryPlanningView({
                       <th>Phase</th>
                       <th>Panel</th>
                       <th>Inverter</th>
-                      <th>ETA</th>
-                      <th>Installation Date</th>
+                      <th className="rti-th-darker">ETA</th>
+                      <th className="rti-th-darker">Installation Date</th>
+                      <th>Scheduling Team</th>
                       <th>Stock / Remark</th>
                     </tr>
 
                     {runJobs.length === 0 && (
                       <tr>
                         <td
-                          colSpan={10}
+                          colSpan={11}
                           style={{
                             padding: "12px",
                             textAlign: "center",
@@ -10919,6 +10919,21 @@ function DeliveryPlanningView({
                         : assignedGroup
                         ? "team-default"
                         : "team-unassigned";
+
+                      const mainTeamLabel =
+                        assignedGroup?.teamLabel ||
+                        (teamNum
+                          ? `Team ${teamNum}`
+                          : assignedGroup?.name || "");
+
+                      const schedulingTeamParts: string[] = [];
+                      if (mainTeamLabel) schedulingTeamParts.push(mainTeamLabel);
+                      if (installTeam)
+                        schedulingTeamParts.push(`Installation Team: ${installTeam}`);
+                      if (wiringTeam)
+                        schedulingTeamParts.push(`Wiring Team: ${wiringTeam}`);
+
+                      const schedulingTeamText = schedulingTeamParts.join(", ");
 
                       return (
                         <tr
@@ -11269,7 +11284,12 @@ function DeliveryPlanningView({
                             </div>
                           </td>
 
-                          {/* 10. Stock / Remark & Remove Stop */}
+                          {/* 10. Scheduling Team */}
+                          <td className={`rti-scheduling-team-cell ${teamColorClass}`}>
+                            {schedulingTeamText || "–"}
+                          </td>
+
+                          {/* 11. Stock / Remark & Remove Stop */}
                           <td
                             className="rti-edit-cell rti-remark-cell"
                             onClick={(e) => e.stopPropagation()}

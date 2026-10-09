@@ -1,6 +1,6 @@
 "use client";
 
-import { CloudRain, FileText, MapPin, Minus, Plus, X } from "lucide-react";
+import { Clock3, CloudRain, FileText, MapPin, Minus, Plus, X } from "lucide-react";
 import { Fragment, useEffect, useMemo, useState, useDeferredValue } from "react";
 import { fetchDailyWeather, type DailyWeather } from "@/lib/calendar-weather";
 import { distanceKm } from "@/lib/postcode-coords";
@@ -1917,49 +1917,58 @@ export default function ReadyToInstallSchedule({
                       const defaultTime = entry.slot === "am" ? "09:00" : entry.slot === "pm" ? "14:00" : "Full day";
                       const currentTime = job?.preferredInstallationTime || defaultTime;
                       const fieldKey = job ? job.id : key;
+
+                      const commitTime = (rawVal: string) => {
+                        const valTrimmed = rawVal.trim();
+                        if (job && valTrimmed !== (job.preferredInstallationTime || "")) {
+                          onSaveJob?.({ ...job, preferredInstallationTime: valTrimmed || null });
+                        }
+                        const valLower = valTrimmed.toLowerCase();
+                        let targetSlot: Slot = entry.slot;
+                        if (valLower.includes("full")) {
+                          targetSlot = "full";
+                        } else {
+                          const hourMatch = valTrimmed.match(/(\d{1,2}):\d{2}/);
+                          if (hourMatch) {
+                            const hour = parseInt(hourMatch[1], 10);
+                            targetSlot = hour >= 12 ? "pm" : "am";
+                          }
+                        }
+                        if (targetSlot !== entry.slot) {
+                          if (job) {
+                            changeSlot(job.id, ref, targetSlot);
+                          } else {
+                            changeOpenSlot(ref, targetSlot);
+                          }
+                        }
+                      };
+
                       return (
                         <td className="rti-date">
                           <strong>{dayLabel(day.date)}</strong>
-                          <input
-                            type="text"
-                            list="rti-slot-time-presets"
-                            className="rti-slot-select"
-                            style={{ width: "100%", marginTop: "4px", padding: "2px 4px", fontSize: "0.8rem" }}
-                            value={timeDraft[fieldKey] ?? currentTime}
-                            placeholder="e.g. 09:00, 14:00, 16:00..."
-                            aria-label={`Time for ${job ? displayName(job.customerName) : `Team ${team.team}`} on ${dayLabel(day.date)}`}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setTimeDraft((prev) => ({ ...prev, [fieldKey]: val }));
-                              const valLower = val.toLowerCase().trim();
-                              let targetSlot: Slot = entry.slot;
-                              if (valLower.includes("full")) {
-                                targetSlot = "full";
-                              } else {
-                                const hourMatch = val.match(/(\d{1,2}):\d{2}/);
-                                if (hourMatch) {
-                                  const hour = parseInt(hourMatch[1], 10);
-                                  targetSlot = hour >= 12 ? "pm" : "am";
+                          <div className="rti-slot-time-wrap">
+                            <Clock3 size={11} className="rti-slot-time-icon" />
+                            <input
+                              type="text"
+                              list="rti-slot-time-presets"
+                              className="rti-slot-time-input"
+                              value={timeDraft[fieldKey] ?? currentTime}
+                              placeholder="e.g. 09:00, 14:00, Full day"
+                              aria-label={`Time for ${job ? displayName(job.customerName) : `Team ${team.team}`} on ${dayLabel(day.date)}`}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setTimeDraft((prev) => ({ ...prev, [fieldKey]: val }));
+                              }}
+                              onBlur={(e) => {
+                                commitTime(e.target.value);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  (e.target as HTMLInputElement).blur();
                                 }
-                              }
-                              if (targetSlot !== entry.slot) {
-                                if (job) {
-                                  changeSlot(job.id, ref, targetSlot);
-                                } else {
-                                  changeOpenSlot(ref, targetSlot);
-                                }
-                              }
-                            }}
-                            onBlur={() => {
-                              const val = timeDraft[fieldKey];
-                              if (job && val !== undefined && val !== job.preferredInstallationTime) {
-                                onSaveJob?.({ ...job, preferredInstallationTime: val.trim() || null });
-                              }
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                            }}
-                          />
+                              }}
+                            />
+                          </div>
                           <datalist id="rti-slot-time-presets">
                             <option value="09:00">09:00 (Morning)</option>
                             <option value="10:00">10:00</option>
