@@ -1276,6 +1276,14 @@ textarea:focus {
 
 .table-wrap {
   overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.table-wrap::-webkit-scrollbar:vertical {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 
 table {
@@ -2494,14 +2502,25 @@ tr.needs-reschedule-date.selected td {
    No tint behind them: the underline alone separates the header from the rows,
    which keeps the eye on the values rather than on a grey stripe. */
 .unified-team-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   white-space: normal;
-  vertical-align: bottom;
-  background: transparent;
-  color: var(--ink);
+  vertical-align: middle;
+  background: var(--surface-soft, #f8fafc) !important;
+  color: var(--muted, #64748b) !important;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  border-bottom: 2px solid var(--ink);
+  border-bottom: 2px solid var(--line, #e2e8f0);
+  padding: 8px 10px;
+}
+
+:root[data-theme="dark"] .unified-team-table thead th {
+  background: #1e293b !important;
+  color: #94a3b8 !important;
+  border-bottom: 2px solid #334155;
 }
 
 /* The week band: one crew, one week, one supervisor — the schedule sheet's
@@ -5848,6 +5867,37 @@ a.phone-number:hover {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+/* Remove vertical scroll up-down tab (thumb) on all tables while allowing full up/down scrolling */
+.table-wrap,
+.unified-team-table,
+.rti-team,
+.rti-ready,
+.delivery-schedule-table {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.table-wrap::-webkit-scrollbar:vertical,
+.unified-team-table::-webkit-scrollbar:vertical,
+.rti-team::-webkit-scrollbar:vertical,
+.rti-ready::-webkit-scrollbar:vertical,
+.delivery-schedule-table::-webkit-scrollbar:vertical {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.table-wrap::-webkit-scrollbar,
+.unified-team-table::-webkit-scrollbar,
+.rti-team::-webkit-scrollbar,
+.rti-ready::-webkit-scrollbar,
+.delivery-schedule-table::-webkit-scrollbar {
+  width: 0 !important;
+  height: 6px;
 }
 
 .delivery-schedule-table,
@@ -5953,6 +6003,13 @@ a.phone-number:hover {
   background: #b91c1c !important;
 }
 
+.rti-team-0 .rti-team-band-main th,
+.rti-team-band-main.rti-team-0 th,
+tr.schedule-band.rti-team-0 th {
+  background: #7c3aed !important;
+  color: #ffffff !important;
+}
+
 .rti-team-1 .rti-team-band-main th,
 .rti-team-band-main.rti-team-1 th,
 tr.schedule-band.rti-team-1 th {
@@ -5981,6 +6038,9 @@ tr.schedule-band.rti-team-4 th {
   color: #ffffff !important;
 }
 
+.rti-team-6 .rti-team-band-main th,
+.rti-team-band-main.rti-team-6 th,
+tr.schedule-band.rti-team-6 th,
 .rti-team-default .rti-team-band-main th,
 .rti-team-band-main.rti-team-default th,
 tr.schedule-band.rti-team-default th,
@@ -5991,76 +6051,206 @@ tr.schedule-band.rti-team-other th {
   color: #042f2e !important;
 }
 
+/* Team 7: Light Grey (#b7b7b7) from Arranged Installation Schedule */
+.rti-team-7 .rti-team-band-main th,
+.rti-team-band-main.rti-team-7 th,
+tr.schedule-band.rti-team-7 th {
+  background: #b7b7b7 !important;
+  color: #111827 !important;
+}
+
+/* Team 7: Week header sub-band in light grey */
+.unified-team-table tbody tr.schedule-band.rti-team-band-sub.rti-team-7 th,
+.rti-team-band.rti-team-band-sub.rti-team-7 th,
+tr.schedule-band.rti-team-band-sub.rti-team-7 th {
+  background: #d1d5db !important;
+  color: #111827 !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.15) !important;
+}
+
+.unified-team-table tbody tr.schedule-band.rti-team-band-sub.rti-team-7:hover th,
+.rti-team-band.rti-team-band-sub.rti-team-7:hover th,
+tr.schedule-band.rti-team-band-sub.rti-team-7:hover th {
+  background: #c5cbd3 !important;
+}
+
+.unified-team-table tbody tr.schedule-band.rti-team-band-sub.rti-team-7 .schedule-band-week,
+.rti-team-band.rti-team-band-sub.rti-team-7 .schedule-band-week,
+tr.schedule-band.rti-team-band-sub.rti-team-7 .schedule-band-week,
+.unified-team-table tbody tr.schedule-band.rti-team-band-sub.rti-team-7 .schedule-band-pin,
+.rti-team-band.rti-team-band-sub.rti-team-7 .schedule-band-pin,
+tr.schedule-band.rti-team-band-sub.rti-team-7 .schedule-band-pin {
+  color: #111827 !important;
+}
+
 tr.schedule-band.rti-team-default .rti-team-title-wrap .rti-team-name,
-tr.schedule-band.rti-team-other .rti-team-title-wrap .rti-team-name {
+tr.schedule-band.rti-team-other .rti-team-title-wrap .rti-team-name,
+tr.schedule-band.rti-team-6 .rti-team-title-wrap .rti-team-name {
   color: #042f2e !important;
 }
 
 tr.schedule-band.rti-team-default .rti-team-title-wrap .rti-team-base,
-tr.schedule-band.rti-team-other .rti-team-title-wrap .rti-team-base {
+tr.schedule-band.rti-team-other .rti-team-title-wrap .rti-team-base,
+tr.schedule-band.rti-team-6 .rti-team-title-wrap .rti-team-base {
   background: rgba(4, 47, 46, 0.15) !important;
   color: #042f2e !important;
 }
 
 tr.schedule-band.rti-team-default .schedule-band-crew-meta,
 tr.schedule-band.rti-team-other .schedule-band-crew-meta,
+tr.schedule-band.rti-team-6 .schedule-band-crew-meta,
 tr.schedule-band.rti-team-default .schedule-band-crew-text,
-tr.schedule-band.rti-team-other .schedule-band-crew-text {
+tr.schedule-band.rti-team-other .schedule-band-crew-text,
+tr.schedule-band.rti-team-6 .schedule-band-crew-text {
   color: #042f2e !important;
 }
 
 tr.schedule-band.rti-team-default .schedule-band-car,
-tr.schedule-band.rti-team-other .schedule-band-car {
+tr.schedule-band.rti-team-other .schedule-band-car,
+tr.schedule-band.rti-team-6 .schedule-band-car {
   background: rgba(4, 47, 46, 0.15) !important;
   color: #042f2e !important;
 }
 
 tr.schedule-band.rti-team-default .schedule-band-columns-toggle,
-tr.schedule-band.rti-team-other .schedule-band-columns-toggle {
+tr.schedule-band.rti-team-other .schedule-band-columns-toggle,
+tr.schedule-band.rti-team-6 .schedule-band-columns-toggle {
   color: #042f2e !important;
   border-color: rgba(4, 47, 46, 0.35) !important;
 }
 
 tr.schedule-band.rti-team-default .schedule-band-columns-toggle:hover,
-tr.schedule-band.rti-team-other .schedule-band-columns-toggle:hover {
+tr.schedule-band.rti-team-other .schedule-band-columns-toggle:hover,
+tr.schedule-band.rti-team-6 .schedule-band-columns-toggle:hover {
   background: rgba(4, 47, 46, 0.15) !important;
   border-color: #042f2e !important;
 }
 
 tr.schedule-band.rti-team-default .schedule-band-columns-count,
-tr.schedule-band.rti-team-other .schedule-band-columns-count {
+tr.schedule-band.rti-team-other .schedule-band-columns-count,
+tr.schedule-band.rti-team-6 .schedule-band-columns-count {
   background: rgba(4, 47, 46, 0.2) !important;
   color: #042f2e !important;
 }
 
 tr.schedule-band.rti-team-default .rti-crew-label,
-tr.schedule-band.rti-team-other .rti-crew-label {
+tr.schedule-band.rti-team-other .rti-crew-label,
+tr.schedule-band.rti-team-6 .rti-crew-label {
   color: rgba(4, 47, 46, 0.85) !important;
 }
 
 tr.schedule-band.rti-team-default .rti-crew-input,
-tr.schedule-band.rti-team-other .rti-crew-input {
+tr.schedule-band.rti-team-other .rti-crew-input,
+tr.schedule-band.rti-team-6 .rti-crew-input {
   background: rgba(4, 47, 46, 0.1) !important;
   border-color: rgba(4, 47, 46, 0.3) !important;
   color: #042f2e !important;
 }
 
 tr.schedule-band.rti-team-default .rti-crew-input::placeholder,
-tr.schedule-band.rti-team-other .rti-crew-input::placeholder {
+tr.schedule-band.rti-team-other .rti-crew-input::placeholder,
+tr.schedule-band.rti-team-6 .rti-crew-input::placeholder {
   color: rgba(4, 47, 46, 0.5) !important;
 }
 
 tr.schedule-band.rti-team-default .rti-crew-input:hover,
-tr.schedule-band.rti-team-other .rti-crew-input:hover {
+tr.schedule-band.rti-team-other .rti-crew-input:hover,
+tr.schedule-band.rti-team-6 .rti-crew-input:hover {
   background: rgba(4, 47, 46, 0.15) !important;
   border-color: rgba(4, 47, 46, 0.5) !important;
 }
 
 tr.schedule-band.rti-team-default .rti-crew-input:focus,
-tr.schedule-band.rti-team-other .rti-crew-input:focus {
+tr.schedule-band.rti-team-other .rti-crew-input:focus,
+tr.schedule-band.rti-team-6 .rti-crew-input:focus {
   background: rgba(4, 47, 46, 0.18) !important;
   border-color: #042f2e !important;
   box-shadow: 0 0 0 2px rgba(4, 47, 46, 0.25) !important;
+}
+
+tr.schedule-band.rti-team-7 .rti-team-title-wrap .rti-team-name {
+  color: #111827 !important;
+}
+
+tr.schedule-band.rti-team-7 .rti-team-title-wrap .rti-team-base {
+  background: rgba(0, 0, 0, 0.12) !important;
+  color: #111827 !important;
+}
+
+tr.schedule-band.rti-team-7 .schedule-band-crew-meta,
+tr.schedule-band.rti-team-7 .schedule-band-crew-text {
+  color: #1f2937 !important;
+}
+
+tr.schedule-band.rti-team-7 .schedule-band-car {
+  background: rgba(0, 0, 0, 0.1) !important;
+  color: #111827 !important;
+}
+
+tr.schedule-band.rti-team-7 .schedule-band-columns-toggle {
+  color: #111827 !important;
+  border-color: rgba(0, 0, 0, 0.3) !important;
+}
+
+tr.schedule-band.rti-team-7 .schedule-band-columns-toggle:hover {
+  background: rgba(0, 0, 0, 0.1) !important;
+  border-color: #111827 !important;
+}
+
+tr.schedule-band.rti-team-7 .schedule-band-columns-count {
+  background: rgba(0, 0, 0, 0.15) !important;
+  color: #111827 !important;
+}
+
+tr.schedule-band.rti-team-7 .rti-crew-label {
+  color: rgba(0, 0, 0, 0.8) !important;
+}
+
+tr.schedule-band.rti-team-7 .rti-crew-input {
+  background: rgba(0, 0, 0, 0.08) !important;
+  border-color: rgba(0, 0, 0, 0.25) !important;
+  color: #111827 !important;
+}
+
+tr.schedule-band.rti-team-7 .rti-crew-input::placeholder {
+  color: rgba(0, 0, 0, 0.5) !important;
+}
+
+tr.schedule-band.rti-team-7 .rti-crew-input:hover {
+  background: rgba(0, 0, 0, 0.12) !important;
+  border-color: rgba(0, 0, 0, 0.4) !important;
+}
+
+tr.schedule-band.rti-team-7 .rti-crew-input:focus {
+  background: rgba(0, 0, 0, 0.15) !important;
+  border-color: #111827 !important;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2) !important;
+}
+
+tr.schedule-band.rti-team-7 .rti-crew-input.rti-crew-input-borderless {
+  background: rgba(0, 0, 0, 0.06) !important;
+  border-color: rgba(0, 0, 0, 0.2) !important;
+  color: #111827 !important;
+}
+
+tr.schedule-band.rti-team-7 .rti-crew-input.rti-crew-input-borderless::placeholder {
+  color: rgba(0, 0, 0, 0.45) !important;
+}
+
+tr.schedule-band.rti-team-7 .rti-crew-input.rti-crew-input-borderless:hover {
+  background: rgba(0, 0, 0, 0.1) !important;
+  border-color: rgba(0, 0, 0, 0.35) !important;
+}
+
+tr.schedule-band.rti-team-7 .rti-crew-input.rti-crew-input-borderless:focus {
+  background: rgba(0, 0, 0, 0.14) !important;
+  border-color: #111827 !important;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2) !important;
+}
+
+tr.schedule-band.rti-team-7 .rti-total-pcs-tag {
+  color: #111827;
+  background: rgba(0, 0, 0, 0.12);
 }
 
 .schedule-band-actions {
@@ -6204,7 +6394,8 @@ tr.schedule-band.rti-team-other .rti-crew-input:focus {
 
 /* Light turquoise / other teams borderless rules */
 tr.schedule-band.rti-team-default .rti-crew-input.rti-crew-input-borderless,
-tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless {
+tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless,
+tr.schedule-band.rti-team-6 .rti-crew-input.rti-crew-input-borderless {
   background: transparent !important;
   border: 1px solid transparent !important;
   color: #042f2e !important;
@@ -6212,18 +6403,21 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless {
 }
 
 tr.schedule-band.rti-team-default .rti-crew-input.rti-crew-input-borderless::placeholder,
-tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless::placeholder {
+tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless::placeholder,
+tr.schedule-band.rti-team-6 .rti-crew-input.rti-crew-input-borderless::placeholder {
   color: rgba(4, 47, 46, 0.45) !important;
 }
 
 tr.schedule-band.rti-team-default .rti-crew-input.rti-crew-input-borderless:hover,
-tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:hover {
+tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:hover,
+tr.schedule-band.rti-team-6 .rti-crew-input.rti-crew-input-borderless:hover {
   background: rgba(4, 47, 46, 0.08) !important;
   border: 1px dashed rgba(4, 47, 46, 0.35) !important;
 }
 
 tr.schedule-band.rti-team-default .rti-crew-input.rti-crew-input-borderless:focus,
-tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus {
+tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus,
+tr.schedule-band.rti-team-6 .rti-crew-input.rti-crew-input-borderless:focus {
   background: rgba(4, 47, 46, 0.15) !important;
   border: 1px solid #042f2e !important;
   color: #042f2e !important;
@@ -6248,7 +6442,8 @@ tr.schedule-band.rti-team-other .rti-crew-input.rti-crew-input-borderless:focus 
 }
 
 tr.schedule-band.rti-team-default .rti-total-pcs-tag,
-tr.schedule-band.rti-team-other .rti-total-pcs-tag {
+tr.schedule-band.rti-team-other .rti-total-pcs-tag,
+tr.schedule-band.rti-team-6 .rti-total-pcs-tag {
   color: #042f2e;
   background: rgba(4, 47, 46, 0.18);
 }
@@ -6285,6 +6480,11 @@ tr.schedule-band.rti-team-other .rti-total-pcs-tag {
   padding: 6px 8px !important;
 }
 
+.rti-scheduling-team-cell.team-0 {
+  background: #7c3aed !important;
+  color: #ffffff !important;
+}
+
 .rti-scheduling-team-cell.team-1 {
   background: #2563eb !important;
   color: #ffffff !important;
@@ -6305,9 +6505,15 @@ tr.schedule-band.rti-team-other .rti-total-pcs-tag {
   color: #ffffff !important;
 }
 
+.rti-scheduling-team-cell.team-6,
 .rti-scheduling-team-cell.team-default {
   background: #2dd4bf !important;
   color: #042f2e !important;
+}
+
+.rti-scheduling-team-cell.team-7 {
+  background: #b7b7b7 !important;
+  color: #111827 !important;
 }
 
 .rti-scheduling-team-cell.team-unassigned {
@@ -8126,34 +8332,83 @@ tbody tr:nth-child(2) .rti-customer-popover::after,
   border-top-color: rgba(255, 255, 255, 0.2);
 }
 
-/* Other / Default: Teal (#2dd4bf) from Arranged Installation */
+/* Team 0: Purple (#7c3aed) from Arranged Installation */
+.rti-inst-team-popover.team-0 {
+  background: #7c3aed !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+.rti-inst-team-popover.team-0::after {
+  border-color: #7c3aed transparent transparent transparent;
+}
+.rti-inst-team-popover.team-0 .rti-inst-popover-label {
+  color: rgba(255, 255, 255, 0.85);
+}
+.rti-inst-team-popover.team-0 .rti-inst-popover-val {
+  color: #ffffff;
+}
+.rti-inst-team-popover.team-0 .rti-inst-popover-row + .rti-inst-popover-row {
+  border-top-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Other / Default / Team 6: Turquoise (#2dd4bf) from Arranged Installation */
+.rti-inst-team-popover.team-6,
 .rti-inst-team-popover.team-other,
 .rti-inst-team-popover.team-default {
   background: #2dd4bf !important;
   color: #042f2e !important;
   border: 1px solid rgba(4, 47, 46, 0.25);
 }
+.rti-inst-team-popover.team-6::after,
 .rti-inst-team-popover.team-other::after,
 .rti-inst-team-popover.team-default::after {
   border-color: #2dd4bf transparent transparent transparent;
 }
+.rti-inst-team-popover.team-6 .rti-inst-popover-label,
 .rti-inst-team-popover.team-other .rti-inst-popover-label,
 .rti-inst-team-popover.team-default .rti-inst-popover-label {
   color: rgba(4, 47, 46, 0.85);
 }
+.rti-inst-team-popover.team-6 .rti-inst-popover-val,
 .rti-inst-team-popover.team-other .rti-inst-popover-val,
 .rti-inst-team-popover.team-default .rti-inst-popover-val {
   color: #042f2e;
   font-weight: 600;
 }
+.rti-inst-team-popover.team-6 .rti-inst-popover-title,
 .rti-inst-team-popover.team-other .rti-inst-popover-title,
 .rti-inst-team-popover.team-default .rti-inst-popover-title {
   color: #042f2e;
   border-bottom-color: rgba(4, 47, 46, 0.2);
 }
+.rti-inst-team-popover.team-6 .rti-inst-popover-row + .rti-inst-popover-row,
 .rti-inst-team-popover.team-other .rti-inst-popover-row + .rti-inst-popover-row,
 .rti-inst-team-popover.team-default .rti-inst-popover-row + .rti-inst-popover-row {
   border-top-color: rgba(4, 47, 46, 0.2);
+}
+
+/* Team 7: Light Grey (#b7b7b7) */
+.rti-inst-team-popover.team-7 {
+  background: #b7b7b7 !important;
+  color: #111827 !important;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+}
+.rti-inst-team-popover.team-7::after {
+  border-color: #b7b7b7 transparent transparent transparent;
+}
+.rti-inst-team-popover.team-7 .rti-inst-popover-label {
+  color: rgba(0, 0, 0, 0.7);
+}
+.rti-inst-team-popover.team-7 .rti-inst-popover-val {
+  color: #111827;
+  font-weight: 600;
+}
+.rti-inst-team-popover.team-7 .rti-inst-popover-title {
+  color: #111827;
+  border-bottom-color: rgba(0, 0, 0, 0.15);
+}
+.rti-inst-team-popover.team-7 .rti-inst-popover-row + .rti-inst-popover-row {
+  border-top-color: rgba(0, 0, 0, 0.15);
 }
 
 /* Unassigned */

@@ -6085,6 +6085,13 @@ function InstallationGroupsView({
     () =>
       Array.from(
         new Set([
+          "Team 0",
+          "Team 1",
+          "Team 2",
+          "Team 3",
+          "Team 4",
+          "Team 6",
+          "Team 7",
           ...teams
             .filter((team) => !isWiringRole(team.role))
             .map((team) => team.name),
@@ -6097,6 +6104,13 @@ function InstallationGroupsView({
     () =>
       Array.from(
         new Set([
+          "Wiring Team 0",
+          "Wiring Team 1",
+          "Wiring Team 2",
+          "Wiring Team 3",
+          "Wiring Team 4",
+          "Wiring Team 6",
+          "Wiring Team 7",
           ...teams
             .filter((team) => isWiringRole(team.role))
             .map((team) => team.name),
@@ -7198,6 +7212,20 @@ function InstallationGroupsView({
                 <col className="rti-col-inverter" />
                 <col className="rti-col-remark" />
               </colgroup>
+              <thead>
+                <tr className="schedule-column-headers">
+                  <th>Slot</th>
+                  <th>Customer</th>
+                  <th>Address</th>
+                  <th>Phone</th>
+                  <th>Email</th>
+                  <th>Agent</th>
+                  <th>Phase</th>
+                  <th>Panel</th>
+                  <th>Inverter</th>
+                  <th>Remark</th>
+                </tr>
+              </thead>
               <tbody>
                 {scheduleRows.map(({ rowKey, group, job, jobId, blockKey }, index) => {
                   // A band whenever the crew, the week or the supervisor
@@ -7243,17 +7271,17 @@ function InstallationGroupsView({
                     newTeamDraft?.rowKey === rowKey &&
                     newTeamDraft.field === "wiringTeam";
                   const rawTeamNum = (() => {
-                    const raw = `${group.teamLabel || ""} ${group.name || ""}`;
+                    const raw = `${group.teamLabel || ""} ${group.name || ""} ${group.installationTeam || ""} ${group.wiringTeam || ""}`;
                     const m = raw.match(/\bteam\s*(\d+)\b/i) || (group.teamLabel || "").match(/\b(\d+)\b/);
                     return m ? Number(m[1]) : null;
                   })();
-                  const isStandardTeam = rawTeamNum !== null && rawTeamNum >= 1 && rawTeamNum <= 4;
+                  const isStandardTeam = rawTeamNum !== null && [0, 1, 2, 3, 4, 6, 7].includes(rawTeamNum);
                   const teamNum = isStandardTeam ? rawTeamNum : null;
                   const teamClass = isStandardTeam
                     ? `rti-team-${teamNum}`
                     : "rti-team-other rti-team-default";
                   const teamTitle = (() => {
-                    if (rawTeamNum) return `Team ${rawTeamNum}`;
+                    if (rawTeamNum !== null) return `Team ${rawTeamNum}`;
                     if (!isPlaceholder(group.teamLabel)) return group.teamLabel!;
                     return group.name || "Team";
                   })();
@@ -7329,10 +7357,10 @@ function InstallationGroupsView({
                     .join("  ·  ");
                   return (
                     <Fragment key={rowKey}>
-                    {startsBlock && bandCrew && (
+                    {startsBlock && (
                       <>
                         <tr
-                          className={`schedule-band rti-team-band rti-team-band-sub${
+                          className={`schedule-band rti-team-band rti-team-band-sub ${teamClass}${
                             pinnedWeekKeys.has(blockKey) ? " is-pinned" : ""
                           }`}
                         >
@@ -10664,7 +10692,7 @@ function DeliveryPlanningView({
                   return m ? Number(m[1]) : null;
                 })();
                 const isStandardTeam =
-                  rawTeamNum !== null && rawTeamNum >= 1 && rawTeamNum <= 4;
+                  rawTeamNum !== null && [0, 1, 2, 3, 4, 6, 7].includes(rawTeamNum);
                 const teamNum = isStandardTeam ? rawTeamNum : null;
                 const teamClass = isStandardTeam
                   ? `rti-team-${teamNum}`
@@ -10674,7 +10702,7 @@ function DeliveryPlanningView({
                   <Fragment key={run.id}>
                     {startsWeek && (
                       <tr
-                        className={`schedule-band rti-team-band rti-team-band-sub${
+                        className={`schedule-band rti-team-band rti-team-band-sub ${teamClass}${
                           pinnedWeekKeys.has(weekKey) ? " is-pinned" : ""
                         }`}
                       >
@@ -10912,7 +10940,7 @@ function DeliveryPlanningView({
                         return m ? Number(m[1]) : null;
                       })();
                       const isStandardTeam =
-                        rawTeamNum !== null && rawTeamNum >= 1 && rawTeamNum <= 4;
+                        rawTeamNum !== null && [0, 1, 2, 3, 4, 6, 7].includes(rawTeamNum);
                       const teamNum = isStandardTeam ? rawTeamNum : null;
                       const teamColorClass = isStandardTeam
                         ? `team-${teamNum}`
@@ -10922,7 +10950,7 @@ function DeliveryPlanningView({
 
                       const mainTeamLabel =
                         assignedGroup?.teamLabel ||
-                        (teamNum
+                        (teamNum !== null
                           ? `Team ${teamNum}`
                           : assignedGroup?.name || "");
 
@@ -11251,7 +11279,7 @@ function DeliveryPlanningView({
                               >
                                 <div className="rti-inst-popover-title">
                                   {assignedGroup?.teamLabel ||
-                                    (teamNum
+                                    (teamNum !== null
                                       ? `Team ${teamNum}`
                                       : assignedGroup?.name ||
                                         "Installation Assignment")}
