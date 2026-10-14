@@ -233,6 +233,8 @@ type DeliveryRun = {
   installationGroupId: string;
   status: "pending_stock" | "ready" | "in_transit" | "delivered";
   jobIds: string[];
+  weekLabel?: string;
+  order?: number;
 };
 
 // The warehouses a delivery run can depart from, kept as their own list below
@@ -10553,20 +10555,16 @@ function DeliveryPlanningView({
       return true;
     })
     .sort((a, b) => {
-      const weekA = a.run.deliveryDate
-        ? (weekBounds(a.run.deliveryDate)?.start ?? "")
-        : "";
-      const weekB = b.run.deliveryDate
-        ? (weekBounds(b.run.deliveryDate)?.start ?? "")
-        : "";
-      const weekKeyA = weekA || "undated";
-      const weekKeyB = weekB || "undated";
+      const weekKeyA = a.run.weekLabel || (a.run.deliveryDate ? (weekBounds(a.run.deliveryDate)?.start ?? "") : "undated");
+      const weekKeyB = b.run.weekLabel || (b.run.deliveryDate ? (weekBounds(b.run.deliveryDate)?.start ?? "") : "undated");
       const pinA = pinnedWeekKeys.has(weekKeyA) ? 0 : 1;
       const pinB = pinnedWeekKeys.has(weekKeyB) ? 0 : 1;
+      if (pinA !== pinB) return pinA - pinB;
+      if (a.run.order !== undefined && b.run.order !== undefined) {
+        return a.run.order - b.run.order;
+      }
       return (
-        pinA - pinB ||
-        weekB.localeCompare(weekA) ||
-        (a.run.deliveryDate ?? "").localeCompare(b.run.deliveryDate ?? "") ||
+        (b.run.deliveryDate ?? "").localeCompare(a.run.deliveryDate ?? "") ||
         (a.run.departureTime ?? "").localeCompare(b.run.departureTime ?? "") ||
         (a.run.deliveryTeam ?? "").localeCompare(b.run.deliveryTeam ?? "") ||
         (a.run.name ?? "").localeCompare(b.run.name ?? "") ||
@@ -10675,14 +10673,13 @@ function DeliveryPlanningView({
               )}
               {visibleRuns.map(({ run, runJobs }, index) => {
                 const feedback = etaFeedback[run.id];
-                const weekKey = run.deliveryDate
+                const weekKey = run.weekLabel || (run.deliveryDate
                   ? (weekBounds(run.deliveryDate)?.start ?? "undated")
-                  : "undated";
-                const startsWeek =
-                  index === 0 ||
-                  (visibleRuns[index - 1].run.deliveryDate
-                    ? (weekBounds(visibleRuns[index - 1].run.deliveryDate)?.start ?? "undated")
-                    : "undated") !== weekKey;
+                  : "undated");
+                const prevWeekKey = visibleRuns[index - 1]?.run.weekLabel || (visibleRuns[index - 1]?.run.deliveryDate
+                  ? (weekBounds(visibleRuns[index - 1].run.deliveryDate)?.start ?? "undated")
+                  : "undated");
+                const startsWeek = index === 0 || prevWeekKey !== weekKey;
 
                 const rawTeamNum = (() => {
                   const raw = `${run.deliveryTeam || ""} ${run.name || ""}`;
@@ -10715,9 +10712,9 @@ function DeliveryPlanningView({
                               aria-label={`${
                                 pinnedWeekKeys.has(weekKey) ? "Unpin" : "Pin"
                               } week ${
-                                run.deliveryDate
+                                run.weekLabel || (run.deliveryDate
                                   ? weekRangeLabel(run.deliveryDate)
-                                  : "Unscheduled"
+                                  : "Unscheduled")
                               }`}
                               title={
                                 pinnedWeekKeys.has(weekKey)
@@ -10733,10 +10730,9 @@ function DeliveryPlanningView({
                               )}
                             </button>
                             <span className="schedule-band-week">
-                              Week{" "}
-                              {run.deliveryDate
-                                ? weekRangeLabel(run.deliveryDate)
-                                : "Unscheduled"}
+                              {run.weekLabel
+                                ? (run.weekLabel.match(/^week/i) ? run.weekLabel : `Week ${run.weekLabel}`)
+                                : `Week ${run.deliveryDate ? weekRangeLabel(run.deliveryDate) : "Unscheduled"}`}
                             </span>
                           </div>
                         </th>
