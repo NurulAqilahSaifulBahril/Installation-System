@@ -576,15 +576,25 @@ export function buildWeek(input: WeekInput): WeekSchedule {
     .filter((item) => item.weekStart === weekStart && inWeek.has(item.date))
     .forEach((item) => {
       const cell = cellFor(item.team, item.date);
-      (["am", "pm", "full"] as Slot[]).forEach((slot) => {
-        if (conflicts(slot, item.slot) && !cell[slot]?.jobId) {
-          cell[slot] = {
-            slot,
+      if (item.slot === "full") {
+        (["am", "pm", "full"] as Slot[]).forEach((slot) => {
+          if (!cell[slot]?.jobId) {
+            cell[slot] = {
+              slot,
+              jobId: null,
+              source: "open",
+            };
+          }
+        });
+      } else {
+        if (!cell[item.slot]?.jobId) {
+          cell[item.slot] = {
+            slot: item.slot,
             jobId: null,
             source: "open",
           };
         }
-      });
+      }
     });
   const pool = allowSuggestions
     ? candidates.filter(
