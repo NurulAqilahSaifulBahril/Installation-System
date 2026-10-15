@@ -2033,6 +2033,63 @@ function applyJobUpdates(
     });
   });
 
+  // Synthesize any custom jobs or warehouse transfers saved in jobUpdates
+  Object.entries(updates).forEach(([jobId, updateObj]) => {
+    if (!jobId || existingJobIds.has(jobId)) return;
+    const update = (updateObj ?? {}) as Record<string, unknown>;
+    if (!update.customerName && !update.address) return;
+    existingJobIds.add(jobId);
+    syntheticJobs.push({
+      id: jobId,
+      invoiceNumber: (typeof update.invoiceNumber === "string" && update.invoiceNumber) || "",
+      customerName: (typeof update.customerName === "string" && update.customerName) || "Warehouse Transfer",
+      customerPhone: (typeof update.customerPhone === "string" && update.customerPhone) || "",
+      address: (typeof update.address === "string" && update.address) || "",
+      city: (typeof update.city === "string" && update.city) || "",
+      state: "",
+      agentName: (typeof update.agentName === "string" && update.agentName) || "",
+      totalAmount: 0,
+      paymentPercent: 100,
+      paymentBalance: 0,
+      panelQuantity: typeof update.panelQuantity === "number" ? update.panelQuantity : 0,
+      panelRating: 0,
+      inverter: (typeof update.inverter === "string" && update.inverter) || "",
+      battery: "",
+      phase: "Three phase",
+      inverterType: "",
+      derivedInverterModel: "",
+      sedaStatus: "Approved",
+      sldUrl: null,
+      packageName: "",
+      packageType: "Residential",
+      installationDate: (typeof update.installationDate === "string" && update.installationDate) || null,
+      customerAvailabilityStatus: "complete",
+      preferredInstallationDate: (typeof update.preferredInstallationDate === "string" && update.preferredInstallationDate) || null,
+      secondPreferredInstallationDate: null,
+      preferredInstallationTime: (typeof update.preferredInstallationTime === "string" && update.preferredInstallationTime) || "09:00",
+      availabilityRemarks: "",
+      installationApprovalStatus: "date_approved",
+      scheduleStatus: "ready_to_schedule",
+      deliveryStatus: (typeof update.deliveryStatus === "string" && (update.deliveryStatus as InstallationJob["deliveryStatus"])) || "delivered",
+      deliveryDate: (typeof update.deliveryDate === "string" && update.deliveryDate) || null,
+      arrivalDate: (typeof update.arrivalDate === "string" && update.arrivalDate) || null,
+      arrivalTime: (typeof update.arrivalTime === "string" && update.arrivalTime) || null,
+      stockDetails: (typeof update.stockDetails === "string" && update.stockDetails) || "",
+      deliveryContactNumber: (typeof update.deliveryContactNumber === "string" && update.deliveryContactNumber) || "",
+      warehouseLocation: (typeof update.warehouseLocation === "string" && update.warehouseLocation) || "",
+      panelDetails: "",
+      wiringDetails: "",
+      batteryDetails: "",
+      inverterBattery: "",
+      powerOutput: (typeof update.powerOutput === "string" && update.powerOutput) || "",
+      paymentOverrideStatus: "none",
+      paymentOverrideReason: "",
+      teams: [],
+      remarks: (typeof update.remarks === "string" && update.remarks) || "",
+      installationRemarks: (typeof update.installationRemarks === "string" && update.installationRemarks) || "",
+    });
+  });
+
   const allJobs = [...jobs, ...syntheticJobs];
   return allJobs.map((job) => {
     const merged = { ...job, ...(updates[job.id] ?? {}) };
@@ -10017,6 +10074,139 @@ function jobFullAddress(job: InstallationJob) {
     .join(", ");
 }
 
+function isDeliveryAddressOrTimestamp(line: string): boolean {
+  const l = line.trim();
+  if (
+    /^(?:no\.?\s*\d+|lot\s*\d+|ptd\s*\d+|\d+,\s*jln|\d+\s+jln)/i.test(l) &&
+    /(?:tmn|taman|jalan|bdr|bandar|johor|selangor|klang|skudai)/i.test(l)
+  ) {
+    return true;
+  }
+  if (/^(?:mon|tue|wed|thu|thur|fri|sat|sun)\s*\d+\s*-\s*\d+(?:am|pm)/i.test(l)) {
+    return true;
+  }
+  return false;
+}
+
+function isPureInverterSpec(line: string): boolean {
+  const l = line.trim();
+  if (!l || l === "+" || l === "&") return true;
+
+  // Operational instructions / locations / actions are NOT pure inverter specs
+  if (
+    /(?:office|car|bring|reach|stage|pass|leaking|done|visit|pending job|check|arrange|stone|cancel|hold|request|delivery on|inform|cable|roof)/i.test(
+      l,
+    )
+  ) {
+    return false;
+  }
+
+  // Stock items like Battery, ATS, Wallbox, Ballast, EV are warehouse stock, NOT inverter
+  if (
+    /(?:battery|base|ats|wallbox|charger|ballast|rccb|bracket|clamp|cable|rail)/i.test(
+      l,
+    )
+  ) {
+    return false;
+  }
+
+  // Pure inverter spec / swap pattern
+  const invSpec =
+    /^(?:[▶️✅❌➡️*#–\-=\s>》])*(?:\d+\s*[xX]\s*)?(?:R[56]|H[123]|M2|SUN2000|SAJ\s+R[56])(?:-[0-9]+[A-Za-z0-9.-]*)?(?:\s+Inverter|\s*\((?:HYBRID|STRING|MICRO)\s+INVERTER\))?(?:\s+(?:Single|Three)\s+phase)?(?:[▶️✅❌➡️*#–\-=\s>》✅❌])*$/i;
+
+  if (invSpec.test(l)) return true;
+
+  // Standalone phrases like "Hybrid Inverter", "String Inverter", "Micro Inverter"
+  if (
+    /^(?:[▶️✅❌➡️*#–\-=\s>》])*(?:Hybrid|String|Micro)\s+Inverter(?:[▶️✅❌➡️*#–\-=\s>》])*$/i.test(
+      l,
+    )
+  ) {
+    return true;
+  }
+
+  // Multi-inverter swap on single line: e.g. "❌1 X R6-8K-T2 =》✅1 X R6-10K-T2"
+  if (
+    l.includes("=>") ||
+    l.includes("=》") ||
+    l.includes("➡️") ||
+    l.includes("->")
+  ) {
+    const parts = l.split(/(?:=>|=》|➡️|->)/);
+    if (
+      parts.length === 2 &&
+      parts.every((p) => invSpec.test(p.trim()) || p.trim() === "")
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function cleanDeliveryStockRemark(stock: string): string {
+  if (!stock) return "";
+  const lines = stock
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const remainingLines: string[] = [];
+
+  for (const l of lines) {
+    if (isDeliveryAddressOrTimestamp(l)) continue;
+    if (isPureInverterSpec(l)) continue;
+    remainingLines.push(l);
+  }
+
+  const cleaned = remainingLines.filter(
+    (l) => l !== "+" && l !== "&" && l.trim() !== "",
+  );
+  return cleaned.join("\n");
+}
+
+function formatDeliveryWeekLabel(
+  weekLabel?: string | null,
+  deliveryDate?: string | null,
+): string {
+  const raw = (weekLabel || "").trim();
+  if (raw) {
+    if (/^delivery\s*~/i.test(raw)) return raw;
+    if (/^week\b/i.test(raw)) return `DELIVERY~ ${raw}`;
+    return `DELIVERY~ Week : ${raw}`;
+  }
+  if (deliveryDate) {
+    return `DELIVERY~ Week : ${weekRangeLabel(deliveryDate)}`;
+  }
+  return "DELIVERY~ Unscheduled";
+}
+
+function isWarehouseScheduleJob(job?: InstallationJob | null): boolean {
+  if (!job) return false;
+  if ((job as unknown as { isWarehouseTransfer?: boolean }).isWarehouseTransfer) return true;
+  const name = (job.customerName || "").toLowerCase();
+  const addr = (job.address || "").toLowerCase();
+  const rem = ((job.remarks || "") + " " + (job.stockDetails || "")).toLowerCase();
+
+  if (name.includes("pick up from") || name.includes("pickup from")) return true;
+  if (addr.includes("drop off") || addr.includes("drop off :")) return true;
+  if (name.includes("warehouse") && (addr.includes("warehouse") || addr.includes("office") || addr.includes("drop off"))) return true;
+  if (name.includes("klang warehouse") || name.includes("jb warehouse")) return true;
+  if (rem.includes("warehouse transfer") || rem.includes("lorry transfer")) return true;
+  return false;
+}
+
+function isWarehouseScheduleRun(run: DeliveryRun, runJobs: InstallationJob[]): boolean {
+  if (Boolean((run as unknown as { isWarehouseTransfer?: boolean }).isWarehouseTransfer)) return true;
+  const runName = (run.name || "").toLowerCase();
+  const team = (run.deliveryTeam || "").toLowerCase();
+  const wh = (run.warehouse || "").toLowerCase();
+  if (runName.includes("warehouse transfer") || runName.includes("lorry transfer")) return true;
+  if (team.includes("warehouse transfer")) return true;
+  if (wh === "warehouse transfer") return true;
+  if (runJobs.length > 0 && runJobs.some(isWarehouseScheduleJob)) return true;
+  return false;
+}
+
 type EtaFeedback = { busy: boolean; message?: string; failed?: boolean };
 
 const DELIVERY_RUN_STATUS_LABELS: Record<DeliveryRun["status"], string> = {
@@ -10676,11 +10866,8 @@ function DeliveryPlanningView({
                 const weekKey = run.weekLabel || (run.deliveryDate
                   ? (weekBounds(run.deliveryDate)?.start ?? "undated")
                   : "undated");
-                const prevWeekKey = visibleRuns[index - 1]?.run.weekLabel || (visibleRuns[index - 1]?.run.deliveryDate
-                  ? (weekBounds(visibleRuns[index - 1].run.deliveryDate)?.start ?? "undated")
-                  : "undated");
-                const startsWeek = index === 0 || prevWeekKey !== weekKey;
 
+                const isWarehouse = isWarehouseScheduleRun(run, runJobs);
                 const rawTeamNum = (() => {
                   const raw = `${run.deliveryTeam || ""} ${run.name || ""}`;
                   const m =
@@ -10691,57 +10878,51 @@ function DeliveryPlanningView({
                 const isStandardTeam =
                   rawTeamNum !== null && [0, 1, 2, 3, 4, 6, 7].includes(rawTeamNum);
                 const teamNum = isStandardTeam ? rawTeamNum : null;
-                const teamClass = isStandardTeam
+                const teamClass = isWarehouse
+                  ? "rti-team-warehouse"
+                  : isStandardTeam
                   ? `rti-team-${teamNum}`
                   : "rti-team-other rti-team-default";
 
                 return (
                   <Fragment key={run.id}>
-                    {startsWeek && (
-                      <tr
-                        className={`schedule-band rti-team-band rti-team-band-sub ${teamClass}${
-                          pinnedWeekKeys.has(weekKey) ? " is-pinned" : ""
-                        }`}
-                      >
-                        <th colSpan={11} scope="colgroup">
-                          <div className="schedule-band-sub-content">
-                            <button
-                              type="button"
-                              className="schedule-band-pin"
-                              aria-pressed={pinnedWeekKeys.has(weekKey)}
-                              aria-label={`${
-                                pinnedWeekKeys.has(weekKey) ? "Unpin" : "Pin"
-                              } week ${
-                                run.weekLabel || (run.deliveryDate
-                                  ? weekRangeLabel(run.deliveryDate)
-                                  : "Unscheduled")
-                              }`}
-                              title={
-                                pinnedWeekKeys.has(weekKey)
-                                  ? "Unpin this week"
-                                  : "Pin this week to the top"
-                              }
-                              onClick={() => togglePinnedWeek(weekKey)}
-                            >
-                              {pinnedWeekKeys.has(weekKey) ? (
-                                <PinOff size={14} />
-                              ) : (
-                                <Pin size={14} />
-                              )}
-                            </button>
-                            <span className="schedule-band-week">
-                              {run.weekLabel
-                                ? (run.weekLabel.match(/^week/i) ? run.weekLabel : `Week ${run.weekLabel}`)
-                                : `Week ${run.deliveryDate ? weekRangeLabel(run.deliveryDate) : "Unscheduled"}`}
-                            </span>
-                          </div>
-                        </th>
-                      </tr>
-                    )}
+                    <tr
+                      className={`schedule-band rti-team-band rti-team-band-sub ${teamClass}${
+                        isWarehouse ? " is-warehouse-sub" : ""
+                      }${pinnedWeekKeys.has(weekKey) ? " is-pinned" : ""}`}
+                    >
+                      <th colSpan={11} scope="colgroup">
+                        <div className="schedule-band-sub-content">
+                          <button
+                            type="button"
+                            className="schedule-band-pin"
+                            aria-pressed={pinnedWeekKeys.has(weekKey)}
+                            aria-label={`${
+                              pinnedWeekKeys.has(weekKey) ? "Unpin" : "Pin"
+                            } ${formatDeliveryWeekLabel(run.weekLabel, run.deliveryDate)}`}
+                            title={
+                              pinnedWeekKeys.has(weekKey)
+                                ? "Unpin this week"
+                                : "Pin this week to the top"
+                            }
+                            onClick={() => togglePinnedWeek(weekKey)}
+                          >
+                            {pinnedWeekKeys.has(weekKey) ? (
+                              <PinOff size={14} />
+                            ) : (
+                              <Pin size={14} />
+                            )}
+                          </button>
+                          <span className="schedule-band-week">
+                            {formatDeliveryWeekLabel(run.weekLabel, run.deliveryDate)}
+                          </span>
+                        </div>
+                      </th>
+                    </tr>
                     <tr
                       className={`schedule-band rti-team-band rti-team-band-main delivery-run-band ${teamClass}${
-                        pinnedWeekKeys.has(weekKey) ? " is-pinned" : ""
-                      }`}
+                        isWarehouse ? " is-warehouse-main" : ""
+                      }${pinnedWeekKeys.has(weekKey) ? " is-pinned" : ""}`}
                     >
                       <th colSpan={11} scope="colgroup">
                         <div className="rti-team-header-main">
@@ -10804,11 +10985,13 @@ function DeliveryPlanningView({
                                 onChange={(e) =>
                                   updateRun(run.id, {
                                     warehouse: e.target.value,
+                                    isWarehouseTransfer: e.target.value === "Warehouse Transfer" ? true : run.isWarehouseTransfer,
                                   })
                                 }
                                 onClick={(e) => e.stopPropagation()}
                               >
                                 <option value="">Select warehouse</option>
+                                <option value="Warehouse Transfer">Warehouse Transfer</option>
                                 {warehouseOptions(run.warehouse).map(
                                   (name) => (
                                     <option key={name} value={name}>
@@ -10871,7 +11054,7 @@ function DeliveryPlanningView({
                       </th>
                     </tr>
 
-                    <tr className="schedule-column-headers">
+                    <tr className={`schedule-column-headers${isWarehouse ? " is-warehouse-headers" : ""}`}>
                       <th>Slot</th>
                       <th>Customer</th>
                       <th>Address</th>
@@ -10882,7 +11065,7 @@ function DeliveryPlanningView({
                       <th className="rti-th-darker">ETA</th>
                       <th className="rti-th-darker">Installation Date</th>
                       <th>Scheduling Team</th>
-                      <th>Stock / Remark</th>
+                      <th>Remark</th>
                     </tr>
 
                     {runJobs.length === 0 && (
@@ -10909,8 +11092,9 @@ function DeliveryPlanningView({
                         job.preferredInstallationDate ||
                         job.visits?.[0]?.date ||
                         null;
-                      const rowRemark =
-                        job.stockDetails || job.installationRemarks || "";
+                      const rowRemark = cleanDeliveryStockRemark(
+                        job.stockDetails || "",
+                      );
 
                       const installTeam =
                         assignedGroup?.installationTeam ||
@@ -10958,16 +11142,20 @@ function DeliveryPlanningView({
                         schedulingTeamParts.push(`Wiring Team: ${wiringTeam}`);
 
                       const schedulingTeamText = schedulingTeamParts.join(", ");
-
+                      const isJobWarehouse = isWarehouse || isWarehouseScheduleJob(job);
                       return (
                         <tr
                           key={`${run.id}-${job.id}-${stopIndex}`}
                           className={[
                             "rti-row",
+                            isJobWarehouse ? "is-warehouse-row" : "",
                             Boolean(/koh\s*keng\s*kiat/i.test(job.customerName))
                               ? "is-koh-keng-kiat"
                               : "",
-                            remarkHasOm(rowRemark) ? "is-om" : "",
+                            remarkHasOm(rowRemark) ||
+                            remarkHasOm(job.installationRemarks || "")
+                              ? "is-om"
+                              : "",
                           ]
                             .filter(Boolean)
                             .join(" ")}
@@ -11002,24 +11190,33 @@ function DeliveryPlanningView({
                           {/* 2. Customer (Phone and Email on Hover) */}
                           <td>
                             <div className="rti-customer-wrap">
-                              <span
-                                className="rti-name"
-                                title={`Phone: ${
-                                  job.customerPhone || "–"
-                                } · Email: ${
-                                  job.customerEmail || "–"
-                                } · SEDA approved: ${
-                                  job.sedaApprovedDate
-                                    ? shortDate(job.sedaApprovedDate)
-                                    : isSedaApproved(job.sedaStatus)
-                                    ? "Approved"
-                                    : job.sedaStatus || "Pending"
-                                } · 2nd payment: ${
-                                  shortDate(job.secondPaymentDate) || "–"
-                                }`}
-                              >
-                                {displayName(job.customerName)}
-                              </span>
+                              {isJobWarehouse ? (
+                                <span
+                                  className="rti-name rti-warehouse-name"
+                                  title={`Phone: ${job.customerPhone || "–"}`}
+                                >
+                                  {job.customerName}
+                                </span>
+                              ) : (
+                                <span
+                                  className="rti-name"
+                                  title={`Phone: ${
+                                    job.customerPhone || "–"
+                                  } · Email: ${
+                                    job.customerEmail || "–"
+                                  } · SEDA approved: ${
+                                    job.sedaApprovedDate
+                                      ? shortDate(job.sedaApprovedDate)
+                                      : isSedaApproved(job.sedaStatus)
+                                      ? "Approved"
+                                      : job.sedaStatus || "Pending"
+                                  } · 2nd payment: ${
+                                    shortDate(job.secondPaymentDate) || "–"
+                                  }`}
+                                >
+                                  {displayName(job.customerName)}
+                                </span>
+                              )}
                               <div
                                 className="rti-customer-popover"
                                 role="tooltip"
@@ -11109,7 +11306,7 @@ function DeliveryPlanningView({
                             {job.address ? (
                               <button
                                 type="button"
-                                className="rti-link rti-address"
+                                className={`rti-link rti-address${isJobWarehouse ? " rti-warehouse-address" : ""}`}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   const q = encodeURIComponent(
@@ -11124,9 +11321,8 @@ function DeliveryPlanningView({
                                 }}
                                 title="Open address in Google Maps"
                               >
-                                <MapPin size={13} />
-                                {titleCase(job.address) ||
-                                  "Address not available"}
+                                <MapPin size={13} style={{ flexShrink: 0, marginTop: "2px" }} />
+                                {isJobWarehouse ? job.address : (titleCase(job.address) || "Address not available")}
                               </button>
                             ) : (
                               <span className="run-field-readout is-empty">
@@ -11265,6 +11461,8 @@ function DeliveryPlanningView({
                                 <span className="rti-inst-date-text">
                                   {instDate
                                     ? formatDateOnly(instDate)
+                                    : isJobWarehouse
+                                    ? "N/A"
                                     : "Unassigned"}
                                 </span>
                               </div>
@@ -11331,7 +11529,9 @@ function DeliveryPlanningView({
                                 defaultValue={rowRemark}
                                 key={`stock-remark-${run.id}-${job.id}-${stopIndex}-${rowRemark}`}
                                 onBlur={(event) => {
-                                  const text = event.target.value;
+                                  const text = cleanDeliveryStockRemark(
+                                    event.target.value,
+                                  );
                                   if (text === (job.stockDetails || ""))
                                     return;
                                   onUpdateJob({
@@ -11339,8 +11539,8 @@ function DeliveryPlanningView({
                                     stockDetails: text,
                                   });
                                 }}
-                                placeholder="Stock items & notes"
-                                aria-label={`Stock details / Remark for ${displayName(
+                                placeholder="Remarks"
+                                aria-label={`Remarks for ${displayName(
                                   job.customerName,
                                 )}`}
                               />
@@ -11365,9 +11565,9 @@ function DeliveryPlanningView({
                     })}
 
                     {/* Add Customer row for this run */}
-                    <tr className="rti-add-stop-row">
+                    <tr className={`rti-add-stop-row${isWarehouse ? " is-warehouse-add" : ""}`}>
                       <td
-                        colSpan={10}
+                        colSpan={11}
                         style={{
                           padding: "6px 12px",
                           background: "var(--surface-soft, #f8fafc)",
