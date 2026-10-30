@@ -11,9 +11,13 @@ sys.stdout.reconfigure(encoding='utf-8')
 
 SHEET_URL = 'https://docs.google.com/spreadsheets/d/12Xb8SVyjXOzchhyzLWP07UCdh3JDfEsOEqfeC9t2Z30/export?format=xlsx'
 LOCAL_XLSX = 'scratch/user_installation_schedule.xlsx'
+# .railwayignore leaves scratch/ out of deploys, so create it on demand
+os.makedirs('scratch', exist_ok=True)
 
 def load_env():
-    env_vars = {}
+    # Process env first (Railway sets the PG_* variables there and does not
+    # ship .env.local); a local .env.local then takes precedence
+    env_vars = dict(os.environ)
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     candidates = ['.env.local', os.path.join(base_dir, '.env.local')]
     for path in candidates:
@@ -253,16 +257,17 @@ def parse_customer_cell(cell_text):
         'isAtap': bool(re.search(r'\(ATAP\)', s, re.I)),
     }
 
-def sheet_availability_status(item, has_green_tick, today):
-    # A green tick in the sheet means the customer confirmed the date, which is
-    # Propose in the app; Complete means installed, and only the office sets it.
-    # A job already Complete stays so unless its date is still ahead of us,
-    # since a job can't have been installed on a day that hasn't come yet.
+def sheet_availability_status(item, today):
+    # The sheet's green tick is mirrored as the green tick on the job's row in
+    # Arranged Installation, which the app stores as Complete. Never Propose:
+    # that would move the job out of Arranged Installation into Propose to
+    # Install. Without a tick, a job the office already ticked in the app stays
+    # Complete unless its date is still ahead of us.
+    if item['customer']['hasGreenTick']:
+        return 'complete'
     current = (item.get('matchedOps') or {}).get('customer_availability_status')
     if current == 'complete' and item['slot']['isoDate'] <= today:
         return 'complete'
-    if has_green_tick:
-        return 'propose'
     remarks = item['customer']['remarks'].lower()
     if 'pending' in remarks or 'reschedule' in remarks:
         return 'pending_complete'
@@ -671,18 +676,16 @@ def sync_schedule():
     arranged_items = list(parsed_items)
     propose_items = []
 
-    # One status per job: a job ticked on any of its rows counts as ticked, and
-    # its newest row decides the date, the same way the jobs upsert below does
+    # One status per job: its newest row decides, tick included (an earlier
+    # visit ticked doesn't finish a job whose latest visit is still to come),
+    # the same way the jobs upsert below picks the date
     latest_by_job = {}
-    ticked_jobs = set()
     for p in parsed_items:
-        if p['customer']['hasGreenTick']:
-            ticked_jobs.add(p['jobId'])
         prev = latest_by_job.get(p['jobId'])
         if prev is None or p['slot']['isoDate'] >= prev['slot']['isoDate']:
             latest_by_job[p['jobId']] = p
     status_by_job = {
-        jid: sheet_availability_status(p, jid in ticked_jobs, TODAY)
+        jid: sheet_availability_status(p, TODAY)
         for jid, p in latest_by_job.items()
     }
 

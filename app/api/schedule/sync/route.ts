@@ -30,7 +30,10 @@ export async function POST() {
     const scriptPath = path.join(process.cwd(), 'scripts', 'sync_google_schedule.py');
     console.log('[Schedule Sync API] Executing sync script:', scriptPath);
 
-    const { stdout, stderr } = await execFileAsync('python', ['-u', scriptPath], {
+    // Railway's Linux image only ships python3 (see railpack.json); Windows
+    // installs name it python
+    const pythonBin = process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3');
+    const { stdout, stderr } = await execFileAsync(pythonBin, ['-u', scriptPath], {
       cwd: process.cwd(),
       timeout: 180_000,
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
