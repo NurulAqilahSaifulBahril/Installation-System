@@ -253,6 +253,21 @@ def parse_customer_cell(cell_text):
         'isAtap': bool(re.search(r'\(ATAP\)', s, re.I)),
     }
 
+def sheet_availability_status(item, has_green_tick, today):
+    # A green tick in the sheet means the customer confirmed the date, which is
+    # Propose in the app; Complete means installed, and only the office sets it.
+    # A job already Complete stays so unless its date is still ahead of us,
+    # since a job can't have been installed on a day that hasn't come yet.
+    current = (item.get('matchedOps') or {}).get('customer_availability_status')
+    if current == 'complete' and item['slot']['isoDate'] <= today:
+        return 'complete'
+    if has_green_tick:
+        return 'propose'
+    remarks = item['customer']['remarks'].lower()
+    if 'pending' in remarks or 'reschedule' in remarks:
+        return 'pending_complete'
+    return 'ready_to_schedule'
+
 def normalize(str_val):
     if not str_val:
         return ''
@@ -568,6 +583,14 @@ def sync_schedule():
                     matched_ops = jb
                     break
 
+        # An invoice that already has an ops job must point at that job's id
+        # (some ids carry a "job-" prefix), or the group links to no job
+        if matched_source and not matched_ops:
+            matched_ops = next(
+                (jb for jb in ops_jobs if jb.get('source_invoice_id') == matched_source['bubble_id']),
+                None,
+            )
+
         job_id = None
         if matched_ops:
             job_id = matched_ops['id']
@@ -640,11 +663,28 @@ def sync_schedule():
     matched_count = sum(1 for p in parsed_items if p['matchedSource'] or p['matchedOps'])
     print(f"Matched with DB: {matched_count} / {len(parsed_items)} ({matched_count / len(parsed_items) * 100:.1f}%)")
 
-    # 6. Separate Arranged (<= 2026-10-30) vs Propose (> 2026-10-30)
-    TODAY_CUTOFF = '2026-10-30'
+    # 6. Every week in the sheet has been arranged by ops, future weeks included,
+    # so all sheet rows become Arranged Installation groups. Propose to Install
+    # is left to placements made in the app for jobs the sheet doesn't list.
+    TODAY = datetime.now().strftime('%Y-%m-%d')
 
-    arranged_items = [p for p in parsed_items if p['slot']['isoDate'] <= TODAY_CUTOFF]
-    propose_items = [p for p in parsed_items if p['slot']['isoDate'] > TODAY_CUTOFF]
+    arranged_items = list(parsed_items)
+    propose_items = []
+
+    # One status per job: a job ticked on any of its rows counts as ticked, and
+    # its newest row decides the date, the same way the jobs upsert below does
+    latest_by_job = {}
+    ticked_jobs = set()
+    for p in parsed_items:
+        if p['customer']['hasGreenTick']:
+            ticked_jobs.add(p['jobId'])
+        prev = latest_by_job.get(p['jobId'])
+        if prev is None or p['slot']['isoDate'] >= prev['slot']['isoDate']:
+            latest_by_job[p['jobId']] = p
+    status_by_job = {
+        jid: sheet_availability_status(p, jid in ticked_jobs, TODAY)
+        for jid, p in latest_by_job.items()
+    }
 
     print(f"Arranged Installation items: {len(arranged_items)}")
     print(f"Propose to Install items: {len(propose_items)}")
@@ -671,10 +711,7 @@ def sync_schedule():
         time_str = slot['timeStr']
         team = item['team']
 
-        # Green tick marks case complete
-        status = 'complete' if cust['hasGreenTick'] else 'ready_to_schedule'
-        if not cust['hasGreenTick'] and ('pending' in cust['remarks'].lower() or 'reschedule' in cust['remarks'].lower()):
-            status = 'pending_complete'
+        status = status_by_job[job_id]
 
         group_id = f"arr-{team.lower().replace(' ', '')}-{normalize(cust['cleanName'])[:8]}-{iso_date}"
 
@@ -718,11 +755,12 @@ def sync_schedule():
     kept_assignments = [a for a in week_assignments if not a.get('id', '').startswith('assign-')]
     final_assignments = kept_assignments + new_assignments
 
-    # Placements for Propose to Install (strictly future weeks > TODAY_CUTOFF)
-    future_job_ids = set(p['jobId'] for p in propose_items)
+    # Placements for Propose to Install: drop any job the sheet now arranges,
+    # and any placement whose date has already passed
+    sheet_job_ids = set(p['jobId'] for p in parsed_items)
     filtered_placements = [
         p for p in existing_placements
-        if p.get('jobId') not in future_job_ids and p.get('date', '') > TODAY_CUTOFF
+        if p.get('jobId') not in sheet_job_ids and p.get('date', '') >= TODAY
     ]
 
     for item in propose_items:
@@ -878,8 +916,7 @@ def sync_schedule():
             cust = item['customer']
             slot = item['slot']
             fields = item['fields']
-            is_future = slot['isoDate'] > TODAY_CUTOFF
-            status = 'propose' if is_future else ('complete' if cust['hasGreenTick'] else 'ready_to_schedule')
+            status = status_by_job[job_id]
 
             inv_num = (
                 item['matchedSource']['invoice_number'] if item['matchedSource'] and item['matchedSource'].get('invoice_number')
@@ -914,7 +951,7 @@ def sync_schedule():
                 cust['remarks'],
                 fields['inverter'],
                 fields['panels'],
-                None if is_future else slot['isoDate'],
+                slot['isoDate'],
                 slot['isoDate'],
                 slot['timeStr']
             ])
