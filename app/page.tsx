@@ -6062,33 +6062,41 @@ function InstallationGroupsView({
   // Arranged Installation week pagination: defaults to latest scheduled week
   const [selectedArrangedWeek, setSelectedArrangedWeek] = useState<string | null>(null);
 
+  // The last week Arranged Installation shows: the week being worked. Weeks
+  // after it are still planning and stay off the page. From Saturday the
+  // coming Monday's week counts as current, since that is the week the office
+  // is finalising by then.
+  const currentArrangedWeek = useMemo(
+    () => weekBounds(addDays(todayIso, 2) ?? todayIso)?.start ?? "",
+    [todayIso],
+  );
+
   const arrangedWeeks = useMemo(() => {
     const weeks = new Set<string>();
     for (const group of groups) {
       if (group.installationDate) {
         const start = weekBounds(group.installationDate)?.start;
-        if (start) weeks.add(start);
+        if (start && start <= currentArrangedWeek) weeks.add(start);
       }
     }
-    const currentWeekStart = weekBounds(todayIso)?.start;
-    if (currentWeekStart) {
-      weeks.add(currentWeekStart);
+    if (currentArrangedWeek) {
+      weeks.add(currentArrangedWeek);
     }
     return Array.from(weeks).sort();
-  }, [groups, todayIso]);
+  }, [groups, currentArrangedWeek]);
 
   const latestArrangedWeek = useMemo(() => {
     let latest = "";
     for (const group of groups) {
       if (group.installationDate) {
         const start = weekBounds(group.installationDate)?.start;
-        if (start && start > latest) {
+        if (start && start > latest && start <= currentArrangedWeek) {
           latest = start;
         }
       }
     }
     return latest || (arrangedWeeks.length > 0 ? arrangedWeeks[arrangedWeeks.length - 1] : "");
-  }, [groups, arrangedWeeks]);
+  }, [groups, arrangedWeeks, currentArrangedWeek]);
 
   const activeArrangedWeek = selectedArrangedWeek ?? latestArrangedWeek;
 
@@ -6577,6 +6585,14 @@ function InstallationGroupsView({
     return groups
       .filter((group) => {
         if (!group.installationDate) return false;
+        // Future weeks stay off Arranged Installation, All Weeks and searches
+        // included
+        if (
+          planningFilter === "arranged" &&
+          (weekBounds(group.installationDate)?.start ?? "") > currentArrangedWeek
+        ) {
+          return false;
+        }
         if (filterByWeek) {
           const wStart = weekBounds(group.installationDate)?.start;
           if (wStart !== activeArrangedWeek) return false;
@@ -6695,6 +6711,7 @@ function InstallationGroupsView({
     todayIso,
     pinnedWeekKeys,
     activeArrangedWeek,
+    currentArrangedWeek,
   ]);
 
   // Maps each (week, team) blockKey to all groups that belong to it, so crew

@@ -703,6 +703,7 @@ def sync_schedule():
     kept_groups = [g for g in existing_groups if not g.get('id', '').startswith('arr-')]
 
     new_groups = []
+    used_group_ids = set(kept.get('id') for kept in kept_groups)
     new_assignments = []
 
     for item in arranged_items:
@@ -717,6 +718,15 @@ def sync_schedule():
         status = status_by_job[job_id]
 
         group_id = f"arr-{team.lower().replace(' ', '')}-{normalize(cust['cleanName'])[:8]}-{iso_date}"
+        # Two customers whose names start alike, booked for one team on one day
+        # (Mohd Hosaini No.6 and No.6a), would share an id and the page would
+        # mix their rows up; the second one gets a numbered suffix
+        if group_id in used_group_ids:
+            n = 2
+            while f"{group_id}-{n}" in used_group_ids:
+                n += 1
+            group_id = f"{group_id}-{n}"
+        used_group_ids.add(group_id)
 
         grp = {
             'id': group_id,
