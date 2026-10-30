@@ -12,8 +12,10 @@ import {
   firstPlanningWeek,
   holdReason,
   postcodeOf,
+  weekStartOf,
   type BookedSlot,
   type Candidate,
+  type Placement,
   type ScheduleDraft,
   type Slot,
   type SlotEntry,
@@ -179,35 +181,70 @@ export function useInstallationQueue({
 
   const secondWeek = addDays(frontWeek, 7);
 
+  const effectiveDraft = useMemo<ScheduleDraft>(() => {
+    const futurePlacements = scheduleDraft.placements.filter(
+      (p) => p.weekStart >= frontWeek && p.date >= frontWeek,
+    );
+    const existingPlacedIds = new Set(futurePlacements.map((p) => p.jobId));
+    const removedKeySet = new Set(
+      scheduleDraft.removals.map((r) => `${r.jobId}|${r.weekStart}`),
+    );
+    const extraPlacements: Placement[] = [];
+    readyJobs.forEach((job) => {
+      if (job.customerAvailabilityStatus !== "propose") return;
+      if (existingPlacedIds.has(job.id) || bookedJobIds.has(job.id)) return;
+      const rawDate = job.secondPreferredInstallationDate || job.preferredInstallationDate;
+      if (!rawDate) return;
+      const date = rawDate.slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+      const ws = weekStartOf(date);
+      if (ws < frontWeek || date < frontWeek) return;
+      if (removedKeySet.has(`${job.id}|${ws}`)) return;
+      existingPlacedIds.add(job.id);
+      extraPlacements.push({
+        jobId: job.id,
+        weekStart: ws,
+        team: 1,
+        date,
+        slot: "am",
+      });
+    });
+    return {
+      ...scheduleDraft,
+      placements: [...futurePlacements, ...extraPlacements],
+    };
+  }, [scheduleDraft, readyJobs, bookedJobIds, frontWeek]);
+
+  const scheduleWeeks = useMemo(() => {
+    const weekSet = new Set<string>([frontWeek, secondWeek]);
+    effectiveDraft.placements.forEach((p) => {
+      const job = jobById.get(p.jobId);
+      if (job && job.customerAvailabilityStatus === "complete") return;
+      if (p.weekStart && p.weekStart >= frontWeek) weekSet.add(p.weekStart);
+    });
+    return Array.from(weekSet).sort();
+  }, [frontWeek, secondWeek, effectiveDraft.placements, jobById]);
+
+  const schedules = useMemo(
+    () =>
+      scheduleWeeks.map((ws) =>
+        buildSchedule({
+          weekStart: ws,
+          todayIso,
+          candidates,
+          booked,
+          bookedJobIds,
+          draft: effectiveDraft,
+          coordsFor,
+        }),
+      ),
+    [scheduleWeeks, todayIso, candidates, booked, bookedJobIds, effectiveDraft, coordsFor],
+  );
+
   const schedule1 = useMemo(
-    () =>
-      buildSchedule({
-        weekStart: frontWeek,
-        todayIso,
-        candidates,
-        booked,
-        bookedJobIds,
-        draft: scheduleDraft,
-        coordsFor,
-      }),
-    [frontWeek, todayIso, candidates, booked, bookedJobIds, scheduleDraft, coordsFor],
+    () => schedules.find((s) => s.weekStart === frontWeek) ?? schedules[0],
+    [schedules, frontWeek],
   );
-
-  const schedule2 = useMemo(
-    () =>
-      buildSchedule({
-        weekStart: secondWeek,
-        todayIso,
-        candidates,
-        booked,
-        bookedJobIds,
-        draft: scheduleDraft,
-        coordsFor,
-      }),
-    [secondWeek, todayIso, candidates, booked, bookedJobIds, scheduleDraft, coordsFor],
-  );
-
-  const schedules = useMemo(() => [schedule1, schedule2], [schedule1, schedule2]);
 
   const positions = useMemo(() => {
     const byJob = new Map<string, QueuePosition>();

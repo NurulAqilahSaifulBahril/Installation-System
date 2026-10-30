@@ -2,7 +2,8 @@
 
 import { Clock3, CloudRain, FileText, MapPin, Minus, Plus, X } from "lucide-react";
 import { Fragment, useEffect, useMemo, useState, useDeferredValue } from "react";
-import { fetchDailyWeather, type DailyWeather } from "@/lib/calendar-weather";
+import { ImagePreviewModal, type ImagePreviewTarget } from "@/app/components/ImagePreviewModal";
+import { fetchDailyWeather, MALAYSIA_PUBLIC_HOLIDAYS, type DailyWeather } from "@/lib/calendar-weather";
 import { distanceKm } from "@/lib/postcode-coords";
 import {
   HOLD_LABEL,
@@ -35,6 +36,7 @@ import {
   isJobPending,
   isJobReschedule,
 } from "@/app/components/DepositScheduleTable";
+import { formatPanelDisplay } from "@/lib/panel-utils";
 import {
   useInstallationQueue,
   type QueuePosition,
@@ -185,45 +187,7 @@ function extractPanelBrand(text: string): string {
 }
 
 function panelText(job: InstallationJob): string {
-  const existing = job.powerOutput?.trim() || "";
-  const existingBrand = extractPanelBrand(existing);
-  if (existing) {
-    if (existingBrand) return existing;
-    const isGenericOldFormat =
-      /^\d+\s*(?:×|x|panels?\b)\s*(?:\d{3,4}\s*W)?$/i.test(existing) ||
-      /^\d{3,4}\s*W$/i.test(existing);
-    if (!isGenericOldFormat) return existing;
-  }
-
-  const brand =
-    extractPanelBrand(existing) ||
-    extractPanelBrand(job.packageName || "") ||
-    extractPanelBrand(job.remarks || "") ||
-    extractPanelBrand(job.installationRemarks || "") ||
-    extractPanelBrand(job.availabilityRemarks || "");
-
-  const qty =
-    job.panelQuantity ??
-    (() => {
-      const m = (job.packageName || existing).match(/(\d+)\s*(?:pcs|panels\b|[xX×]\b)/i);
-      return m ? Number(m[1]) : null;
-    })();
-
-  const rating =
-    job.panelRating ??
-    (() => {
-      const m = (job.packageName || existing).match(/(\d{3,4})\s*W(?:p|att)?\b/i);
-      return m ? Number(m[1]) : null;
-    })();
-
-  if (qty && brand && rating) return `${qty} ${brand} ${rating}W`;
-  if (qty && brand) return `${qty} ${brand}`;
-  if (brand && rating) return `${brand} ${rating}W`;
-  if (brand) return brand;
-  if (qty && rating) return `${qty} × ${rating}W`;
-  if (qty) return `${qty} panels`;
-  if (rating) return `${rating}W`;
-  return existing;
+  return formatPanelDisplay(job);
 }
 
 function inverterText(job: InstallationJob) {
@@ -311,20 +275,11 @@ function OpenSlotCustomerSearch({
   }, [queue, bookedJobIds, deferredQuery]);
 
   return (
-    <div style={{ position: "relative", display: "inline-block", marginLeft: "10px" }}>
+    <div className="rti-customer-search-wrap">
       <input
         type="text"
-        className="rti-crew-input"
-        style={{
-          width: "270px",
-          padding: "4px 8px",
-          fontSize: "0.83rem",
-          borderRadius: "4px",
-          border: "1px solid #cbd5e1",
-          background: "#ffffff",
-          color: "#0f172a",
-        }}
-        placeholder="Type customer name to add (e.g. Tan Kim Whui)…"
+        className="rti-customer-search-input"
+        placeholder="Search customer to add…"
         value={query}
         onFocus={() => setIsOpen(true)}
         onChange={(e) => {
@@ -490,7 +445,7 @@ export default function ReadyToInstallSchedule({
       if (g.installationTeam) set.add(g.installationTeam);
     });
     if (set.size === 0) {
-      ["Installation Team A", "Installation Team B", "Installation Team C", "Installation Team D"].forEach((t) => set.add(t));
+      ["Team 1", "Team 2", "Team 3", "Team 4"].forEach((t) => set.add(t));
     }
     return Array.from(set);
   }, [teams, groups]);
@@ -674,6 +629,7 @@ export default function ReadyToInstallSchedule({
 
   const [panel, setPanel] = useState<Panel | null>(null);
   const [filesByJob, setFilesByJob] = useState<Record<string, FilesState>>({});
+  const [previewTarget, setPreviewTarget] = useState<ImagePreviewTarget | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState<Record<string, string>>({});
   const [panelDraft, setPanelDraft] = useState<Record<string, string>>({});
@@ -1050,6 +1006,17 @@ export default function ReadyToInstallSchedule({
       confirm(jobId, target.team, target.date, target.slot);
     } else {
       onChangeDraft(placementDraft(scheduleDraft, jobId, target));
+      const job = jobById.get(jobId);
+      if (job) {
+        onSaveJob?.({
+          ...job,
+          preferredInstallationDate: target.date,
+          secondPreferredInstallationDate: isJobReschedule(job)
+            ? target.date
+            : job.secondPreferredInstallationDate || target.date,
+          customerAvailabilityStatus: "propose",
+        });
+      }
       setNotice(null);
     }
   }
@@ -1137,6 +1104,17 @@ export default function ReadyToInstallSchedule({
         return;
       }
       next = placementDraft(next, jobId, target);
+      const movedJob = jobById.get(jobId);
+      if (movedJob) {
+        onSaveJob?.({
+          ...movedJob,
+          preferredInstallationDate: target.date,
+          secondPreferredInstallationDate: isJobReschedule(movedJob)
+            ? target.date
+            : movedJob.secondPreferredInstallationDate || target.date,
+          customerAvailabilityStatus: "propose",
+        });
+      }
     } else {
       next = {
         ...next,
@@ -1207,7 +1185,7 @@ export default function ReadyToInstallSchedule({
       return (
         <div className="rti-slot-rain is-held" role="status" title={`${dayLabel(date)} is on hold for rain`}>
           <span className="rti-slot-rain-label">
-            <CloudRain size={12} /> Rain hold
+            <CloudRain size={10} /> Rain hold
           </span>
         </div>
       );
@@ -1221,7 +1199,7 @@ export default function ReadyToInstallSchedule({
           title={`Rain expected on ${dayLabel(date)}: ${chance}% chance`}
         >
           <span className="rti-slot-rain-label">
-            <CloudRain size={12} /> Rain expected ({chance}%)
+            <CloudRain size={10} /> Rain expected ({chance}%)
           </span>
         </div>
       );
@@ -1315,11 +1293,36 @@ export default function ReadyToInstallSchedule({
         <div className="rti-thumbs">
           {urls.map((url, index) =>
             isImageUrl(url) ? (
-              <a key={url} href={url} target="_blank" rel="noopener noreferrer">
+              <a
+                key={url}
+                href={url}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setPreviewTarget({
+                    url,
+                    title: `${displayName(job.customerName)} · ${label} ${index + 1}`,
+                    images: urls.filter(isImageUrl),
+                    currentIndex: urls.filter(isImageUrl).indexOf(url),
+                  });
+                }}
+                title={`Click to view ${label} ${index + 1}`}
+              >
                 <img src={url} alt={`${label} ${index + 1}`} loading="lazy" />
               </a>
             ) : (
-              <a key={url} className="rti-file-link" href={url} target="_blank" rel="noopener noreferrer">
+              <a
+                key={url}
+                className="rti-file-link"
+                href={url}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setPreviewTarget({
+                    url,
+                    title: `${displayName(job.customerName)} · ${isVideoUrl(url) ? "Video" : label} ${index + 1}`,
+                  });
+                }}
+                title={`Click to view ${isVideoUrl(url) ? "Video" : label} ${index + 1}`}
+              >
                 <FileText size={14} />
                 {isVideoUrl(url) ? "Video" : label} {index + 1}
               </a>
@@ -1913,12 +1916,13 @@ export default function ReadyToInstallSchedule({
                     day.entries.map((entry, index) => {
                       const ref: SlotRef = { weekStart: currentWeekStart, team: team.team, date: day.date, slot: entry.slot };
                     const key = `${day.date}-${entry.slot}-${index}`;
-                    const renderSlotCell = (job?: InstallationJob | null) => {
+                    const renderSlotCell = (job?: InstallationJob | null, isBlocked?: boolean) => {
                       const defaultTime = entry.slot === "am" ? "09:00" : entry.slot === "pm" ? "14:00" : "Full day";
-                      const currentTime = job?.preferredInstallationTime || defaultTime;
+                      const currentTime = isBlocked ? "Full day" : (job?.preferredInstallationTime || defaultTime);
                       const fieldKey = job ? job.id : key;
 
                       const commitTime = (rawVal: string) => {
+                        if (isBlocked) return;
                         const valTrimmed = rawVal.trim();
                         if (job && valTrimmed !== (job.preferredInstallationTime || "")) {
                           onSaveJob?.({ ...job, preferredInstallationTime: valTrimmed || null });
@@ -1952,14 +1956,17 @@ export default function ReadyToInstallSchedule({
                               type="text"
                               list="rti-slot-time-presets"
                               className="rti-slot-time-input"
-                              value={timeDraft[fieldKey] ?? currentTime}
+                              value={isBlocked ? "Full day" : (timeDraft[fieldKey] ?? currentTime)}
                               placeholder="e.g. 09:00, 14:00, Full day"
+                              disabled={isBlocked}
                               aria-label={`Time for ${job ? displayName(job.customerName) : `Team ${team.team}`} on ${dayLabel(day.date)}`}
                               onChange={(e) => {
+                                if (isBlocked) return;
                                 const val = e.target.value;
                                 setTimeDraft((prev) => ({ ...prev, [fieldKey]: val }));
                               }}
                               onBlur={(e) => {
+                                if (isBlocked) return;
                                 commitTime(e.target.value);
                               }}
                               onKeyDown={(e) => {
@@ -1969,38 +1976,85 @@ export default function ReadyToInstallSchedule({
                               }}
                             />
                           </div>
-                          <datalist id="rti-slot-time-presets">
-                            <option value="09:00">09:00 (Morning)</option>
-                            <option value="10:00">10:00</option>
-                            <option value="11:00">11:00</option>
-                            <option value="12:00">12:00 (Noon)</option>
-                            <option value="13:00">13:00</option>
-                            <option value="14:00">14:00 (Afternoon)</option>
-                            <option value="14:30">14:30</option>
-                            <option value="15:00">15:00</option>
-                            <option value="16:00">16:00</option>
-                            <option value="Full day">Full day</option>
-                          </datalist>
-                          {renderSlotRain(team.team, day.date)}
+                          {!isBlocked && (
+                            <datalist id="rti-slot-time-presets">
+                              <option value="09:00">09:00 (Morning)</option>
+                              <option value="10:00">10:00</option>
+                              <option value="11:00">11:00</option>
+                              <option value="12:00">12:00 (Noon)</option>
+                              <option value="13:00">13:00</option>
+                              <option value="14:00">14:00 (Afternoon)</option>
+                              <option value="14:30">14:30</option>
+                              <option value="15:00">15:00</option>
+                              <option value="16:00">16:00</option>
+                              <option value="Full day">Full day</option>
+                            </datalist>
+                          )}
+                          {!isBlocked && renderSlotRain(team.team, day.date)}
                         </td>
                       );
                     };
                     if (!entry.jobId) {
                       if (hasSearchQuery) return null;
+                      const isHoliday = Boolean(
+                        (entry.openReason && /holiday/i.test(entry.openReason)) ||
+                        MALAYSIA_PUBLIC_HOLIDAYS[day.date]
+                      );
+                      const holidayName =
+                        (entry.openReason && /holiday/i.test(entry.openReason) ? entry.openReason : null) ||
+                        MALAYSIA_PUBLIC_HOLIDAYS[day.date] ||
+                        "Public holiday";
+
+                      if (isHoliday) {
+                        return (
+                          <tr key={key} className="rti-row is-holiday">
+                            {renderSlotCell(null, true)}
+                            <td><span className="rti-muted">—</span></td>
+                            <td><span className="rti-muted">—</span></td>
+                            <td><span className="rti-muted">—</span></td>
+                            <td><span className="rti-muted">—</span></td>
+                            <td><span className="rti-muted">—</span></td>
+                            <td><span className="rti-muted">—</span></td>
+                            <td><span className="rti-muted">—</span></td>
+                            <td><span className="rti-muted">—</span></td>
+                            <td><span className="rti-muted">—</span></td>
+                            <td>
+                              <span className="rti-holiday-tag">{holidayName}</span>
+                            </td>
+                          </tr>
+                        );
+                      }
+
                       return (
                         <tr key={key} className="rti-open-row">
                           {renderSlotCell(null)}
-                          <td colSpan={COLUMN_COUNT - 1}>
-                            <span className="rti-muted">
-                              Open{entry.openReason ? ` · ${entry.openReason}` : ""}
-                            </span>
-                            {entry.openReason !== "Rain day on hold" && queue.length > 0 && (
+                          <td>
+                            {entry.openReason !== "Rain day on hold" && queue.length > 0 ? (
                               <OpenSlotCustomerSearch
                                 queue={queue}
                                 bookedJobIds={bookedJobIds}
                                 positions={positions}
                                 onSelectCustomer={(jobId) => addToSlot(jobId, ref)}
                               />
+                            ) : (
+                              <span className="rti-muted">—</span>
+                            )}
+                          </td>
+                          <td><span className="rti-muted">—</span></td>
+                          <td><span className="rti-muted">—</span></td>
+                          <td><span className="rti-muted">—</span></td>
+                          <td><span className="rti-muted">—</span></td>
+                          <td><span className="rti-muted">—</span></td>
+                          <td><span className="rti-muted">—</span></td>
+                          <td><span className="rti-muted">—</span></td>
+                          <td><span className="rti-muted">—</span></td>
+                          <td>
+                            {entry.openReason && entry.openReason !== "No ready customer left" ? (
+                              <span className={entry.openReason === "Rain day on hold" ? "rti-rain-tag" : "rti-badge"}>
+                                {entry.openReason}
+                              </span>
+                            ) : (
+                              <span className="rti-muted">—</span>
                             )}
                           </td>
                         </tr>
@@ -2089,7 +2143,7 @@ export default function ReadyToInstallSchedule({
                               className="rti-cell-textarea"
                               rows={2}
                               value={panelDraft[job.id] ?? panelText(job)}
-                              placeholder="e.g. 16 Jinko 650W"
+                              placeholder="e.g. 11X 650W JinkoSolar TIGER NEO 3.0 Panel N-Type TOPCon"
                               aria-label={`Panel for ${displayName(job.customerName)}`}
                               onChange={(e) => handlePanelChange(job.id, e.target.value)}
                               onBlur={() => handlePanelBlur(job)}
@@ -2156,6 +2210,10 @@ export default function ReadyToInstallSchedule({
       {queueNumber.size === 0 && (
         <p className="rti-muted">Nobody is in the queue right now.</p>
       )}
+      <ImagePreviewModal
+        target={previewTarget}
+        onClose={() => setPreviewTarget(null)}
+      />
     </div>
   );
 }

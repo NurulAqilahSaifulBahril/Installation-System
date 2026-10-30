@@ -38,6 +38,7 @@ import {
   postcodeCoordinates,
   type Coordinates,
 } from "@/lib/postcode-coords";
+import { MALAYSIA_PUBLIC_HOLIDAYS } from "@/lib/calendar-weather";
 
 export type TeamNumber = 1 | 2 | 3 | 4;
 export const TEAM_NUMBERS: TeamNumber[] = [1, 2, 3, 4];
@@ -546,7 +547,7 @@ export function buildWeek(input: WeekInput): WeekSchedule {
   );
 
   booked
-    .filter((item) => inWeek.has(item.date) && !removedThisWeek.has(item.jobId))
+    .filter((item) => inWeek.has(item.date) && !MALAYSIA_PUBLIC_HOLIDAYS[item.date] && !removedThisWeek.has(item.jobId))
     .forEach((item) =>
       put(item.team, item.date, {
         slot: item.slot,
@@ -560,6 +561,7 @@ export function buildWeek(input: WeekInput): WeekSchedule {
       (item) =>
         item.weekStart === weekStart &&
         inWeek.has(item.date) &&
+        !MALAYSIA_PUBLIC_HOLIDAYS[item.date] &&
         !used.has(item.jobId) &&
         !excluded.has(item.jobId),
     )
@@ -573,7 +575,7 @@ export function buildWeek(input: WeekInput): WeekSchedule {
 
   // User-opened slots: kept open to other customers rather than auto-suggested
   (draft.openSlots || [])
-    .filter((item) => item.weekStart === weekStart && inWeek.has(item.date))
+    .filter((item) => item.weekStart === weekStart && inWeek.has(item.date) && !MALAYSIA_PUBLIC_HOLIDAYS[item.date])
     .forEach((item) => {
       const cell = cellFor(item.team, item.date);
       if (item.slot === "full") {
@@ -662,6 +664,23 @@ export function buildWeek(input: WeekInput): WeekSchedule {
   const regions: Region[] = ["kluang", "jb"];
   const rainHold = new Set(draft.rainHoldDays);
   for (const date of days) {
+    const holidayName = MALAYSIA_PUBLIC_HOLIDAYS[date];
+    if (holidayName) {
+      // Public holiday: whole day blocked for all teams
+      for (const team of TEAM_NUMBERS) {
+        const cell = cellFor(team, date);
+        delete cell.am;
+        delete cell.pm;
+        cell.extra = [];
+        cell.full = {
+          slot: "full",
+          jobId: null,
+          source: "open",
+          openReason: holidayName,
+        };
+      }
+      continue;
+    }
     if (rainHold.has(date)) {
       // The manager put the day on hold for rain: nothing new goes on it.
       for (const team of TEAM_NUMBERS) {
@@ -764,7 +783,10 @@ export function buildWeek(input: WeekInput): WeekSchedule {
     far: burden[team].far,
     days: days.map((date) => {
       const cell = cellFor(team, date);
-      const entries = cell.full
+      const isHoliday = Boolean(MALAYSIA_PUBLIC_HOLIDAYS[date]);
+      const entries = isHoliday && cell.full
+        ? [cell.full]
+        : cell.full
         ? [
             cell.full,
             {
@@ -799,6 +821,7 @@ export function buildSchedule(args: {
   bookedJobIds: Set<string>;
   draft: ScheduleDraft;
   coordsFor: (jobId: string) => Coordinates | null;
+  allowSuggestions?: boolean;
 }): WeekSchedule {
   const candidateById = new Map(
     args.candidates.map((candidate) => [candidate.job.id, candidate]),
@@ -813,6 +836,8 @@ export function buildSchedule(args: {
     });
     return excluded;
   };
+
+  const shouldSuggest = args.allowSuggestions ?? false;
 
   const weekInput = (weekStart: string, allowSuggestions: boolean): WeekInput => ({
     weekStart,
@@ -832,7 +857,7 @@ export function buildSchedule(args: {
   let week = firstWeek;
   // Bounded: at most a year ahead, however far someone clicks.
   for (let guard = 0; week < args.weekStart && guard < 52; guard += 1) {
-    const earlier = buildWeek(weekInput(week, true));
+    const earlier = buildWeek(weekInput(week, shouldSuggest));
     earlier.teams.forEach((team) =>
       team.days.forEach((day) =>
         day.entries.forEach((entry) => {
@@ -844,5 +869,5 @@ export function buildSchedule(args: {
     );
     week = addDays(week, 7);
   }
-  return buildWeek(weekInput(args.weekStart, true));
+  return buildWeek(weekInput(args.weekStart, shouldSuggest));
 }

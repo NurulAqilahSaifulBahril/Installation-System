@@ -1,4 +1,5 @@
 import { toDateOnly } from "@/lib/dates";
+import { extractPanelLine } from "@/lib/panel-utils";
 import {
   APPROVAL_PAYMENT_PERCENT,
   READY_PAYMENT_PERCENT,
@@ -699,7 +700,9 @@ function rowToJob(row: ProxyRow): InstallationJob {
   const sedaApproved = hasSedaApproval(row.seda_status);
   const sourceAddress = resolveSourceAddress(row.installation_address, row.address);
 
-  const packageLine = firstPackageLine(row.package_item_description);
+  const packageLine =
+    extractPanelLine(row.package_item_description) ||
+    firstPackageLine(row.package_item_description);
   const resolvedPanelQty = parsePanelQtyFromPackageLine(packageLine) ?? row.panel_qty;
   const resolvedPanelRating =
     row.panel_rating ?? parsePanelRatingFromPackageLine(packageLine);
@@ -784,9 +787,11 @@ function rowToJob(row: ProxyRow): InstallationJob {
     stockDetails: "",
     deliveryContactNumber: row.phone || "",
     warehouseLocation: "",
-    panelDetails: `${resolvedPanelQty ?? "—"} panels${
-      resolvedPanelRating ? ` × ${resolvedPanelRating}W` : ""
-    }`,
+    panelDetails:
+      packageLine ||
+      `${resolvedPanelQty ?? "—"} panels${
+        resolvedPanelRating ? ` × ${resolvedPanelRating}W` : ""
+      }`,
     wiringDetails: "",
     batteryDetails: batteryText || "Not available",
     // Owned by ops, not the source system: it is filled from the schedule

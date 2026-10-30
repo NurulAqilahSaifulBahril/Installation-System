@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/audit";
-import { AuthError, requireUser } from "@/lib/auth";
+import { AuthError, requireAdmin } from "@/lib/auth";
 import { readOpsState, writeOpsState, type OpsState } from "@/lib/ops-store";
 import { getCached, getInflight, setCached, setInflight } from "@/lib/ops-state-cache";
 
@@ -78,10 +78,10 @@ const KEY_LABELS: Record<string, string> = {
 export async function PUT(request: Request) {
   let user;
   try {
-    user = await requireUser();
+    user = await requireAdmin();
   } catch (error) {
     const status = error instanceof AuthError ? error.status : 401;
-    return NextResponse.json({ error: "Not signed in." }, { status });
+    return NextResponse.json({ error: status === 403 ? "View-only access: only admins can make changes." : "Not signed in." }, { status });
   }
 
   let body: Record<string, unknown>;

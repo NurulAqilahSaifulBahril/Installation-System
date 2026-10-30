@@ -4,6 +4,7 @@ import type {
   CalendarAssignment,
   CalendarDeliveryRun,
   CalendarGroup,
+  CalendarScheduleDraft,
 } from '@/lib/calendar-day-details';
 import { fetchEligibleSourceJobs } from '@/lib/source-api';
 import { readOpsState } from '@/lib/ops-store';
@@ -55,6 +56,7 @@ export async function GET() {
       teamWeekAssignments?: CalendarAssignment[];
       deliveryRuns?: CalendarDeliveryRun[];
       jobUpdates?: Record<string, JobUpdate>;
+      scheduleDraft?: CalendarScheduleDraft;
     };
 
     const dayDetails = buildCalendarDayDetails(
@@ -62,6 +64,7 @@ export async function GET() {
       state.groups ?? [],
       state.teamWeekAssignments ?? [],
       state.deliveryRuns ?? [],
+      state.scheduleDraft,
     );
 
     return NextResponse.json({ dayDetails });

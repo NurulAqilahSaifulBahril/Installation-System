@@ -18,7 +18,9 @@ type UserRow = {
   id: string;
   username: string;
   display_name: string;
+  phone?: string;
   role: "admin" | "staff";
+  page_access?: string;
   is_active: boolean;
   created_at: string;
   last_seen_at: string | null;
@@ -35,7 +37,7 @@ export async function GET() {
     await ensureInstallationSchema();
     const rows = await queryProxy<UserRow>(
       [
-        "select u.id, u.username, u.display_name, u.role, u.is_active, u.created_at,",
+        "select u.id, u.username, u.display_name, u.phone, u.role, u.page_access, u.is_active, u.created_at,",
         "  (select max(s.last_seen_at) from public.app_sessions s where s.user_id = u.id) as last_seen_at",
         "from public.app_users u",
         "order by u.created_at asc",
@@ -46,7 +48,9 @@ export async function GET() {
         id: row.id,
         username: row.username,
         displayName: row.display_name,
+        phone: row.phone || "",
         role: row.role,
+        pageAccess: row.page_access || "all",
         isActive: row.is_active,
         createdAt: row.created_at,
         lastSeenAt: row.last_seen_at,
@@ -62,9 +66,11 @@ export async function GET() {
 
 const createSchema = z.object({
   username: z.string().min(2).max(50),
+  phone: z.string().max(50).optional(),
   displayName: z.string().min(1).max(100),
-  password: z.string().min(6).max(200),
+  password: z.string().max(200).optional(),
   role: z.enum(["admin", "staff"]),
+  pageAccess: z.string().optional(),
 });
 
 export async function POST(request: Request) {
@@ -78,7 +84,13 @@ export async function POST(request: Request) {
   const parsed = createSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Username (2+), display name, password (6+ chars) and role are required." },
+      { error: "Phone number (or username), display name, and role are required." },
+      { status: 400 },
+    );
+  }
+  if (parsed.data.role === "admin" && (!parsed.data.password || parsed.data.password.length < 6)) {
+    return NextResponse.json(
+      { error: "Admin accounts require a password of at least 6 characters." },
       { status: 400 },
     );
   }
@@ -87,27 +99,34 @@ export async function POST(request: Request) {
     await ensureInstallationSchema();
     const existing = await queryProxy<{ id: string }>(
       "select id from public.app_users where lower(username) = lower($1)",
-      [parsed.data.username],
+      [parsed.data.username.trim()],
     );
     if (existing.length > 0) {
       return NextResponse.json(
-        { error: "That username is already taken." },
+        { error: "That phone number or username is already registered." },
         { status: 409 },
       );
     }
 
     const id = crypto.randomUUID();
+    const pageAccess = parsed.data.pageAccess || "all";
+    const phoneVal = (parsed.data.phone ?? parsed.data.username).trim();
+    const rawPassword = parsed.data.password && parsed.data.password.length >= 6
+      ? parsed.data.password
+      : crypto.randomUUID();
     await queryProxy(
       [
-        "insert into public.app_users (id, username, display_name, password_hash, role)",
-        "values ($1, $2, $3, $4, $5)",
+        "insert into public.app_users (id, username, display_name, phone, password_hash, role, page_access)",
+        "values ($1, $2, $3, $4, $5, $6, $7)",
       ].join("\n"),
       [
         id,
         parsed.data.username.trim(),
         parsed.data.displayName.trim(),
-        hashPassword(parsed.data.password),
+        phoneVal,
+        hashPassword(rawPassword),
         parsed.data.role,
+        pageAccess,
       ],
     );
 
@@ -116,7 +135,7 @@ export async function POST(request: Request) {
       action: "user_created",
       entityType: "app_user",
       entityId: id,
-      summary: `Created user "${parsed.data.username}" (${parsed.data.role})`,
+      summary: `Created user "${parsed.data.username}" (${parsed.data.role}, access: ${pageAccess})`,
     });
 
     return NextResponse.json({ ok: true, id });

@@ -1647,7 +1647,6 @@ button.typeCard {
   }
 }
 
-.desktop .balanceGrid,
 @media (min-width: 900px) {
   .balanceGrid {
     gap: 12px;
@@ -1665,7 +1664,6 @@ button.typeCard {
   overflow: hidden;
 }
 
-.desktop .balanceCard,
 @media (min-width: 900px) {
   .balanceCard {
     padding: 16px;
@@ -1698,7 +1696,6 @@ button.typeCard {
   min-width: 0;
 }
 
-.desktop .balanceCard .typeName,
 @media (min-width: 900px) {
   .balanceCard .typeName {
     font-size: 15px;
@@ -1728,7 +1725,6 @@ button.typeCard {
   font-variant-numeric: tabular-nums;
 }
 
-.desktop .balanceCard .onHandNumber,
 @media (min-width: 900px) {
   .balanceCard .onHandNumber {
     font-size: 34px;
@@ -1741,7 +1737,6 @@ button.typeCard {
   font-weight: 500;
 }
 
-.desktop .balanceCard .onHandLabel,
 @media (min-width: 900px) {
   .balanceCard .onHandLabel {
     font-size: 13px;
@@ -1766,7 +1761,6 @@ button.typeCard {
   font-weight: 600;
 }
 
-.desktop .balanceCard .onHandSplit,
 @media (min-width: 900px) {
   .balanceCard .onHandSplit {
     font-size: 12px;
@@ -1892,7 +1886,6 @@ button.typeCard {
   }
 }
 
-.desktop .txSummaryRow,
 @media (min-width: 900px) {
   .txSummaryRow {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1913,7 +1906,6 @@ button.typeCard {
   overflow: hidden;
 }
 
-.desktop .txKpiCard,
 @media (min-width: 900px) {
   .txKpiCard {
     padding: 12px 14px;
@@ -1928,7 +1920,6 @@ button.typeCard {
   min-width: 0;
 }
 
-.desktop .txKpiHeader,
 @media (min-width: 900px) {
   .txKpiHeader {
     flex-direction: row;
@@ -1953,7 +1944,6 @@ button.typeCard {
   display: block;
 }
 
-.desktop .txKpiLabel,
 @media (min-width: 900px) {
   .txKpiLabel {
     font-size: 12px;
@@ -1970,7 +1960,6 @@ button.typeCard {
   margin: 1px 0;
 }
 
-.desktop .txKpiValue,
 @media (min-width: 900px) {
   .txKpiValue {
     font-size: 20px;
@@ -1984,7 +1973,6 @@ button.typeCard {
   color: var(--muted);
 }
 
-.desktop .txKpiUnit,
 @media (min-width: 900px) {
   .txKpiUnit {
     font-size: 13px;
@@ -2009,7 +1997,6 @@ button.typeCard {
   text-overflow: ellipsis;
 }
 
-.desktop .txKpiSub,
 @media (min-width: 900px) {
   .txKpiSub {
     font-size: 11px;
@@ -2029,7 +2016,6 @@ button.typeCard {
   box-sizing: border-box;
 }
 
-.desktop .txKpiBreakdownGrid,
 @media (min-width: 900px) {
   .txKpiBreakdownGrid {
     gap: 6px;
@@ -2055,7 +2041,6 @@ button.typeCard {
   overflow: hidden;
 }
 
-.desktop .txKpiCatChip,
 @media (min-width: 900px) {
   .txKpiCatChip {
     padding: 6px 4px;
@@ -2081,7 +2066,6 @@ button.typeCard {
   white-space: nowrap;
 }
 
-.desktop .txKpiCatName,
 @media (min-width: 900px) {
   .txKpiCatName {
     font-size: 10px;
@@ -2096,7 +2080,6 @@ button.typeCard {
   display: inline;
 }
 
-.desktop .catLabelFull,
 @media (min-width: 900px) {
   .catLabelFull {
     display: inline;
@@ -2114,7 +2097,6 @@ button.typeCard {
   white-space: nowrap;
 }
 
-.desktop .txKpiCatValIn,
 @media (min-width: 900px) {
   .txKpiCatValIn {
     font-size: 13px;
@@ -2130,7 +2112,6 @@ button.typeCard {
   white-space: nowrap;
 }
 
-.desktop .txKpiCatValOut,
 @media (min-width: 900px) {
   .txKpiCatValOut {
     font-size: 13px;

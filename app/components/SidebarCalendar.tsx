@@ -270,23 +270,6 @@ export default function SidebarCalendar({
                               {customer.visitKind}
                             </em>
                           )}
-                          {customer.source === "proposed" && (
-                            <em
-                              className="calendar-hover-visit is-proposed"
-                              style={{
-                                background: "#52525b",
-                                color: "#f8fafc",
-                                fontStyle: "normal",
-                                padding: "1px 5px",
-                                borderRadius: "3px",
-                                marginLeft: "5px",
-                                fontSize: "0.68rem",
-                                fontWeight: 600,
-                              }}
-                            >
-                              Propose to install
-                            </em>
-                          )}
                         </span>
                         {/* An em dash, not a blank: the column reads as "no
                             time recorded" rather than as a rendering gap. */}

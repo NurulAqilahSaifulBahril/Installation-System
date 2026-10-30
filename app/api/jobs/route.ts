@@ -189,6 +189,72 @@ async function readOperationalRows(sourceIds: string[]) {
   }));
 }
 
+async function readStandaloneJobs(knownSourceIds: string[]): Promise<InstallationJob[]> {
+  try {
+    const rows = await queryProxy<any>(
+      `select * from public.installation_jobs where not (source_invoice_id = any($1::text[]))`,
+      [knownSourceIds],
+    );
+    return rows.map((row) => ({
+      id: row.id || row.source_invoice_id,
+      invoiceNumber: row.invoice_number || `INV-${(row.id || '').replace(/^job-/, '')}`,
+      customerName: row.customer_name || 'Customer',
+      customerPhone: row.delivery_contact_number || '',
+      customerEmail: '',
+      address: row.warehouse_location || '',
+      city: '',
+      state: '',
+      postcode: '',
+      agentName: '',
+      totalAmount: 0,
+      paymentPercent: 100,
+      paymentBalance: 0,
+      firstPaymentDate: null,
+      secondPaymentDate: null,
+      panelQuantity: null,
+      panelRating: null,
+      inverter: row.inverter_battery || '',
+      battery: row.battery_details || '',
+      phase: (row.inverter_battery && row.inverter_battery.toLowerCase().includes('single')) ? 'Single phase' : 'Three phase',
+      inverterType: '',
+      derivedInverterModel: row.inverter_battery || '',
+      sedaStatus: 'Approved',
+      sldUrl: null,
+      packageName: 'Solar PV System',
+      packageType: 'Residential',
+      installationDate: toDateOnly(row.installation_date),
+      customerAvailabilityStatus: normalizeAvailabilityStatus(row.customer_availability_status),
+      preferredInstallationDate: toDateOnly(row.preferred_installation_date),
+      preferredInstallationTime: row.preferred_installation_time || null,
+      secondPreferredInstallationDate: toDateOnly(row.second_preferred_installation_date),
+      availabilityRemarks: row.availability_remarks || '',
+      scheduleStatus: row.schedule_status || 'ready_to_schedule',
+      installationApprovalStatus: row.installation_approval_status || 'date_approved',
+      deliveryStatus: row.delivery_status || 'not_planned',
+      deliveryDate: toDateOnly(row.delivery_date),
+      arrivalDate: toDateOnly(row.arrival_date),
+      arrivalTime: row.arrival_time,
+      stockDetails: row.stock_details || '',
+      deliveryContactNumber: row.delivery_contact_number || '',
+      warehouseLocation: row.warehouse_location || '',
+      panelDetails: row.panel_details || row.power_output || '',
+      wiringDetails: row.wiring_details || '',
+      batteryDetails: row.battery_details || '',
+      inverterBattery: row.inverter_battery || '',
+      powerOutput: row.power_output || row.panel_details || '',
+      paymentOverrideStatus: row.payment_override_status || 'none',
+      paymentOverrideReason: row.payment_override_reason || '',
+      teams: [],
+      remarks: row.remarks || '',
+      installationRemarks: row.installation_remarks || '',
+      sourceUpdatedAt: row.updated_at || null,
+    }));
+  } catch (e) {
+    console.error('Failed to read standalone jobs:', e);
+    return [];
+  }
+}
+
 // The newest upstream edit across the returned jobs. This is the age of the
 // data itself, which is not the same thing as syncedAt (the moment we queried)
 // — a stalled upstream sync leaves syncedAt current while the data goes stale.
@@ -340,11 +406,12 @@ async function loadJobsPayload() {
     // Two independent reads against the same database, previously sequential.
     // readOpsState calls ensureInstallationSchema itself, but that is memoised
     // and already resolved by this point, so it costs nothing here.
-    const [operationalRows, { state }] = await Promise.all([
+    const [operationalRows, standaloneJobs, { state }] = await Promise.all([
       readOperationalRows(jobs.map((job) => job.id)),
+      readStandaloneJobs(jobs.map((job) => job.id)),
       readOpsState(),
     ]);
-    const merged = mergeOperations(jobs, operationalRows);
+    const merged = [...mergeOperations(jobs, operationalRows), ...standaloneJobs];
 
     // Step one: fill in anything the table is missing that the browser-side
     // store holds. See lib/store-reconcile.ts — it only ever fills columns in,

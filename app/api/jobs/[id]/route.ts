@@ -1,7 +1,7 @@
-﻿import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { writeAuditLog } from '@/lib/audit';
-import { AuthError, requireUser } from '@/lib/auth';
+import { AuthError, requireAdmin } from '@/lib/auth';
 import { ensureInstallationSchema } from '@/lib/installation-schema';
 import { queryProxy } from '@/lib/proxy-db';
 import { invalidateJobsCache } from '@/lib/jobs-cache';
@@ -105,10 +105,10 @@ export async function PUT(
 
   let user;
   try {
-    user = await requireUser();
+    user = await requireAdmin();
   } catch (error) {
     const status = error instanceof AuthError ? error.status : 401;
-    return NextResponse.json({ error: 'Not signed in.' }, { status });
+    return NextResponse.json({ error: status === 403 ? 'View-only access: only admins can make changes.' : 'Not signed in.' }, { status });
   }
 
   const parsed = updateSchema.safeParse(await request.json());

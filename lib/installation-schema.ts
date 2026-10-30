@@ -90,6 +90,8 @@ const MIGRATION_SQL = [
   "alter table public.app_users add column if not exists display_name text not null default '';",
   "alter table public.app_users add column if not exists password_hash text not null default '';",
   "alter table public.app_users add column if not exists role text not null default 'staff';",
+  "alter table public.app_users add column if not exists page_access text not null default 'all';",
+  "alter table public.app_users add column if not exists phone text not null default '';",
   'alter table public.app_users add column if not exists is_active boolean not null default true;',
   'alter table public.app_users add column if not exists created_at timestamptz not null default now();',
   'alter table public.app_users add column if not exists updated_at timestamptz not null default now();',

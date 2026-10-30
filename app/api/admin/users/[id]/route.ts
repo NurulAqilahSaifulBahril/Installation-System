@@ -14,8 +14,11 @@ function authFailure(error: unknown) {
 }
 
 const patchSchema = z.object({
+  phone: z.string().max(50).optional(),
+  username: z.string().min(1).max(50).optional(),
   displayName: z.string().min(1).max(100).optional(),
   role: z.enum(["admin", "staff"]).optional(),
+  pageAccess: z.string().optional(),
   isActive: z.boolean().optional(),
   password: z.string().min(6).max(200).optional(),
 });
@@ -64,6 +67,16 @@ export async function PATCH(
     const params: unknown[] = [id];
     const changes: string[] = [];
 
+    if (parsed.data.phone !== undefined) {
+      params.push(parsed.data.phone.trim());
+      sets.push(`phone = $${params.length}`);
+      changes.push("phone");
+    }
+    if (parsed.data.username !== undefined) {
+      params.push(parsed.data.username.trim());
+      sets.push(`username = $${params.length}`);
+      changes.push("username");
+    }
     if (parsed.data.displayName !== undefined) {
       params.push(parsed.data.displayName.trim());
       sets.push(`display_name = $${params.length}`);
@@ -73,6 +86,11 @@ export async function PATCH(
       params.push(parsed.data.role);
       sets.push(`role = $${params.length}`);
       changes.push(`role → ${parsed.data.role}`);
+    }
+    if (parsed.data.pageAccess !== undefined) {
+      params.push(parsed.data.pageAccess);
+      sets.push(`page_access = $${params.length}`);
+      changes.push(`page_access → ${parsed.data.pageAccess}`);
     }
     if (parsed.data.isActive !== undefined) {
       params.push(parsed.data.isActive);

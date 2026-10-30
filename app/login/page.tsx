@@ -15,33 +15,28 @@ import {
   EyeOff,
   LoaderCircle,
   LogIn,
+  ShieldCheck,
+  Smartphone,
   UserPlus,
+  Users,
 } from "lucide-react";
 
 export default function LoginPage() {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+  const [loginRole, setLoginRole] = useState<"admin" | "staff">("admin");
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+
+  // Staff phone + dummy 6-digit OTP state
+  const [phone, setPhone] = useState("");
+  const [otp, setOtp] = useState("");
+  const [dummyOtpSent, setDummyOtpSent] = useState<string | null>(null);
+
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Connection settings have to be reachable from here, not just from the
-  // dashboard. Signing in is itself a database call, so a machine with no
-  // connection yet can never get past this screen to the settings dialog
-  // behind it — which is exactly how a fresh install ends up stuck. A build
-  // that ships credentials never opens this panel; it exists for the key-free
-  // installer, where nothing is stored yet.
-  //
-  // On a machine that is already connected the panel stays out of sight
-  // entirely: it shows which server and database the office runs on to anyone
-  // who opens the app, and offers to repoint them, both before anyone has
-  // signed in. Whoever is signed in can still change the connection from the
-  // dashboard, so hiding it here costs nothing on a working machine — and
-  // connectionTrouble below brings it back when signing in fails for a reason
-  // that looks like the connection, so a wrong or stale one is still fixable
-  // from the one screen you can reach without it.
   const [isDesktop, setIsDesktop] = useState(false);
   const [needsConnection, setNeedsConnection] = useState(false);
   const [connectionTrouble, setConnectionTrouble] = useState(false);
@@ -49,11 +44,6 @@ export default function LoginPage() {
 
   const [weather, setWeather] = useState<Record<string, DailyWeather>>({});
   const [pickedDate, setPickedDate] = useState("");
-  // The schedule shown here comes from /api/public/calendar, which serves it
-  // without a session. That is deliberate, and it means the crews, customer
-  // names and times below are readable by anyone who can open this page.
-  // Failing quietly to an empty calendar is correct: the sign-in form must
-  // still work when the database is unreachable.
   const [dayDetails, setDayDetails] = useState<
     Record<string, CalendarDayDetail>
   >({});
@@ -75,6 +65,7 @@ export default function LoginPage() {
       cancelled = true;
     };
   }, []);
+
   const [connectionSaved, setConnectionSaved] = useState(false);
   const [connectionBusy, setConnectionBusy] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -101,16 +92,8 @@ export default function LoginPage() {
           sourceUrl: current.sourceUrl,
           sourceDatabase: current.sourceDatabase,
         }));
-        // Nothing stored yet is the fresh-install case, so open the panel
-        // rather than making someone hunt for it behind a sign-in they
-        // cannot complete. A half-filled connection counts as unconfigured —
-        // an address with no token cannot sign anyone in either.
         return Boolean(current.url && current.database && current.hasToken);
       })
-      // If we cannot even read the stored settings we do not know whether this
-      // machine is configured. Treating that as unconfigured keeps a fresh
-      // install fixable; the other way would hide the only control that could
-      // rescue it.
       .catch(() => false)
       .then((configured) => {
         setNeedsConnection(!configured);
@@ -130,8 +113,6 @@ export default function LoginPage() {
         setConnectionBusy(false);
         return;
       }
-      // Reload rather than just closing the panel: the setup check below ran
-      // against the old (absent) connection, so its answer is stale now.
       setConnectionSaved(true);
       window.location.reload();
     } catch (saveError) {
@@ -151,13 +132,22 @@ export default function LoginPage() {
         setNeedsSetup(Boolean(payload.needsSetup)),
       )
       .catch(() => {
-        // This check is itself a database call, so failing it means the
-        // connection is unusable — surface the panel rather than leaving a
-        // sign-in button that cannot work.
         setNeedsSetup(false);
         setConnectionTrouble(true);
       });
   }, []);
+
+  function handleSendDummyOtp() {
+    const digits = phone.replace(/\D+/g, "");
+    if (digits.length < 8) {
+      setError("Please enter your phone number first.");
+      return;
+    }
+    setError(null);
+    const code = "123456";
+    setDummyOtpSent(code);
+    setOtp(code);
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -165,10 +155,13 @@ export default function LoginPage() {
     setBusy(true);
     setError(null);
 
+    const isStaffLogin = !needsSetup && loginRole === "staff";
     const endpoint = needsSetup ? "/api/auth/setup" : "/api/auth/login";
     const body = needsSetup
       ? { username, displayName, password }
-      : { username, password };
+      : isStaffLogin
+        ? { mode: "staff", phone, otp }
+        : { mode: "admin", username, password };
 
     try {
       const response = await fetch(endpoint, {
@@ -179,10 +172,9 @@ export default function LoginPage() {
       const payload = (await response.json()) as { error?: string };
       if (!response.ok) {
         setError(payload.error || "Could not sign in.");
-        // 401 is a wrong username or password — the connection worked fine to
-        // find that out. Anything else (503 from a failed query, a proxy
-        // error) points at the connection itself, so offer the panel.
-        if (response.status !== 401) setConnectionTrouble(true);
+        if (response.status !== 401 && response.status !== 400) {
+          setConnectionTrouble(true);
+        }
         setBusy(false);
         return;
       }
@@ -195,117 +187,287 @@ export default function LoginPage() {
   }
 
   const ready = needsSetup !== null;
-  const submittable =
-    username.trim().length > 0 &&
-    password.length > 0 &&
-    (!needsSetup || displayName.trim().length > 0);
+  const isStaffMode = !needsSetup && loginRole === "staff";
+  const submittable = isStaffMode
+    ? phone.replace(/\D+/g, "").length >= 8 && /^\d{6}$/.test(otp.trim())
+    : username.trim().length > 0 &&
+      password.length > 0 &&
+      (!needsSetup || displayName.trim().length > 0);
 
   return (
     <div className="login-layout">
       <div className="login-panels">
-      <form className="login-card" onSubmit={handleSubmit}>
-        <div className="login-brand">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/eternalgy-logo.png" alt="Eternalgy" />
-          <h1>Scheduling Operations</h1>
-          <p>
-            {!ready
-              ? "Checking setup…"
-              : needsSetup
-                ? "First run — create the IT Admin account"
-                : "Sign in to continue"}
-          </p>
-        </div>
-
-        {/* Inside the card, under the heading and above the first field. Its
-            day and month buttons are explicitly type="button" (see
-            SidebarCalendar) — untyped, they would submit this form. */}
-        <aside className="login-calendar" aria-label="Calendar">
-          <SidebarCalendar
-            dayDetails={dayDetails}
-            weather={weather}
-            holidays={MALAYSIA_PUBLIC_HOLIDAYS}
-            selectedDate={pickedDate}
-            onSelectDate={setPickedDate}
-          />
-        </aside>
-
-        <label>
-          Username
-          <input
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
-            autoComplete="username"
-            autoFocus
-            disabled={!ready}
-          />
-        </label>
-
-        {needsSetup && (
-          <label>
-            Display name
-            <input
-              value={displayName}
-              onChange={(event) => setDisplayName(event.target.value)}
-              placeholder="Shown in the audit log"
-            />
-          </label>
-        )}
-
-        <label>
-          Password
-          {/* Typing a password blind is where most failed sign-ins here come
-              from — this is a shared office machine, not a public site. */}
-          <div className="login-password">
-            <input
-              type={showPassword ? "text" : "password"}
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              autoComplete={needsSetup ? "new-password" : "current-password"}
-              disabled={!ready}
-            />
-            <button
-              type="button"
-              className="login-password-toggle"
-              onClick={() => setShowPassword((shown) => !shown)}
-              disabled={!ready}
-              aria-label={showPassword ? "Hide password" : "Show password"}
-              aria-pressed={showPassword}
-              title={showPassword ? "Hide password" : "Show password"}
-            >
-              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
+        <form className="login-card" onSubmit={handleSubmit}>
+          <div className="login-brand">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/eternalgy-logo.png" alt="Eternalgy" />
+            <h1>Scheduling Operations</h1>
+            <p>
+              {!ready
+                ? "Checking setup…"
+                : needsSetup
+                  ? "First run — create the Admin account"
+                  : "Sign in to continue"}
+            </p>
           </div>
-        </label>
 
-        {error && (
-          <p className="login-error" role="alert">
-            {error}
-          </p>
-        )}
+          {/* Inside the card, under the heading and above the first field. Its
+              day and month buttons are explicitly type="button" (see
+              SidebarCalendar) — untyped, they would submit this form. */}
+          <aside className="login-calendar" aria-label="Calendar">
+            <SidebarCalendar
+              dayDetails={dayDetails}
+              weather={weather}
+              holidays={MALAYSIA_PUBLIC_HOLIDAYS}
+              selectedDate={pickedDate}
+              onSelectDate={setPickedDate}
+            />
+          </aside>
 
-        <button
-          className="button primary full"
-          type="submit"
-          disabled={busy || !ready || !submittable}
-        >
-          {busy ? (
-            <LoaderCircle size={16} className="spin" />
-          ) : needsSetup ? (
-            <UserPlus size={16} />
-          ) : (
-            <LogIn size={16} />
+          {!needsSetup && (
+            <div
+              role="tablist"
+              aria-label="Sign in role"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: "8px",
+                padding: "4px",
+                borderRadius: "10px",
+                background: "var(--surface-soft, #f1f5f9)",
+                border: "1px solid var(--line, #e2e8f0)",
+              }}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={loginRole === "admin"}
+                onClick={() => {
+                  setLoginRole("admin");
+                  setError(null);
+                }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "6px",
+                  height: "36px",
+                  borderRadius: "7px",
+                  border:
+                    loginRole === "admin"
+                      ? "1px solid rgba(37, 99, 235, 0.3)"
+                      : "1px solid transparent",
+                  background:
+                    loginRole === "admin"
+                      ? "#2563eb"
+                      : "transparent",
+                  color:
+                    loginRole === "admin"
+                      ? "#ffffff"
+                      : "var(--muted, #64748b)",
+                  fontSize: "0.88rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  boxShadow:
+                    loginRole === "admin"
+                      ? "0 1px 3px rgba(37, 99, 235, 0.25)"
+                      : "none",
+                  transition: "all 0.15s ease",
+                }}
+              >
+                <ShieldCheck size={16} />
+                Admin
+              </button>
+
+              <button
+                type="button"
+                role="tab"
+                aria-selected={loginRole === "staff"}
+                onClick={() => {
+                  setLoginRole("staff");
+                  setError(null);
+                }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "6px",
+                  height: "36px",
+                  borderRadius: "7px",
+                  border:
+                    loginRole === "staff"
+                      ? "1px solid rgba(37, 99, 235, 0.3)"
+                      : "1px solid transparent",
+                  background:
+                    loginRole === "staff"
+                      ? "#2563eb"
+                      : "transparent",
+                  color:
+                    loginRole === "staff"
+                      ? "#ffffff"
+                      : "var(--muted, #64748b)",
+                  fontSize: "0.88rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  boxShadow:
+                    loginRole === "staff"
+                      ? "0 1px 3px rgba(37, 99, 235, 0.25)"
+                      : "none",
+                  transition: "all 0.15s ease",
+                }}
+              >
+                <Users size={16} />
+                Staff
+              </button>
+            </div>
           )}
-          {busy
-            ? needsSetup
-              ? "Creating account…"
-              : "Signing in…"
-            : needsSetup
-              ? "Create admin account"
-              : "Sign in"}
-        </button>
-      </form>
 
+          {isStaffMode ? (
+            <>
+              <label>
+                Phone number
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <input
+                    type="tel"
+                    value={phone}
+                    onChange={(event) => {
+                      setPhone(event.target.value);
+                      setDummyOtpSent(null);
+                    }}
+                    placeholder="e.g. 012-345 6789"
+                    autoComplete="tel"
+                    autoFocus
+                    disabled={!ready}
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={handleSendDummyOtp}
+                    disabled={!ready || phone.replace(/\D+/g, "").length < 8}
+                    style={{ whiteSpace: "nowrap", padding: "0 12px" }}
+                  >
+                    <Smartphone size={15} />
+                    Get OTP
+                  </button>
+                </div>
+              </label>
+
+              <label>
+                6-digit OTP
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={otp}
+                  onChange={(event) =>
+                    setOtp(event.target.value.replace(/\D+/g, "").slice(0, 6))
+                  }
+                  placeholder="123456"
+                  autoComplete="one-time-code"
+                  disabled={!ready}
+                  style={{
+                    letterSpacing: "0.25em",
+                    fontWeight: 600,
+                    fontSize: "1rem",
+                  }}
+                />
+                <span
+                  style={{
+                    fontSize: "0.78rem",
+                    color: dummyOtpSent ? "#16a34a" : "var(--muted, #64748b)",
+                    fontWeight: dummyOtpSent ? 600 : 400,
+                  }}
+                >
+                  {dummyOtpSent
+                    ? `Dummy OTP filled: ${dummyOtpSent}`
+                    : "Dummy OTP for now — enter any 6 digits (e.g. 123456)"}
+                </span>
+              </label>
+            </>
+          ) : (
+            <>
+              <label>
+                Username
+                <input
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  autoComplete="username"
+                  autoFocus
+                  disabled={!ready}
+                />
+              </label>
+
+              {needsSetup && (
+                <label>
+                  Display name
+                  <input
+                    value={displayName}
+                    onChange={(event) => setDisplayName(event.target.value)}
+                    placeholder="Shown in the audit log"
+                  />
+                </label>
+              )}
+
+              <label>
+                Password
+                <div className="login-password">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    autoComplete={
+                      needsSetup ? "new-password" : "current-password"
+                    }
+                    disabled={!ready}
+                  />
+                  <button
+                    type="button"
+                    className="login-password-toggle"
+                    onClick={() => setShowPassword((shown) => !shown)}
+                    disabled={!ready}
+                    aria-label={
+                      showPassword ? "Hide password" : "Show password"
+                    }
+                    aria-pressed={showPassword}
+                    title={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </label>
+            </>
+          )}
+
+          {error && (
+            <p className="login-error" role="alert">
+              {error}
+            </p>
+          )}
+
+          <button
+            className="button primary full"
+            type="submit"
+            disabled={busy || !ready || !submittable}
+          >
+            {busy ? (
+              <LoaderCircle size={16} className="spin" />
+            ) : needsSetup ? (
+              <UserPlus size={16} />
+            ) : (
+              <LogIn size={16} />
+            )}
+            {busy
+              ? needsSetup
+                ? "Creating account…"
+                : "Signing in…"
+              : needsSetup
+                ? "Create admin account"
+                : isStaffMode
+                  ? "Sign in with OTP"
+                  : "Sign in"}
+          </button>
+        </form>
       </div>
 
       {isDesktop && (needsConnection || connectionTrouble) && (

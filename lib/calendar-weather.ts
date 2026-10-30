@@ -27,6 +27,7 @@ export const MALAYSIA_PUBLIC_HOLIDAYS: Record<string, string> = {
   "2026-08-31": "National Day",
   "2026-09-16": "Malaysia Day",
   "2026-11-08": "Deepavali",
+  "2026-11-09": "Public holiday",
   "2026-12-25": "Christmas Day",
 };
 

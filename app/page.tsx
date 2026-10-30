@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  Briefcase,
   Calendar,
   CalendarDays,
   CalendarOff,
@@ -43,6 +44,7 @@ import {
 } from "lucide-react";
 import {
   Fragment,
+  startTransition,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -69,7 +71,9 @@ import {
   EMPTY_DRAFT,
   REGION_LABEL,
   TEAM_REGION,
+  firstPlanningWeek,
   normalizeDraft,
+  type Placement,
   type ScheduleDraft,
   type TeamNumber,
 } from "@/lib/schedule-suggest";
@@ -93,6 +97,7 @@ import { ROUTE_METHOD_LABELS } from "@/lib/routing";
 import SidebarCalendar from "@/app/components/SidebarCalendar";
 import GroupMultiSelect from "@/app/components/GroupMultiSelect";
 import WeatherGlyph from "@/app/components/WeatherGlyph";
+import { ImagePreviewModal, type ImagePreviewTarget } from "@/app/components/ImagePreviewModal";
 import ReadyToInstallSchedule from "@/app/components/ReadyToInstallSchedule";
 import DepositScheduleTable, {
   isJobReschedule,
@@ -102,6 +107,9 @@ import DepositScheduleTable, {
   isSpecialCaseApproval,
   isJobOM,
 } from "@/app/components/DepositScheduleTable";
+import { formatPanelDisplay } from "@/lib/panel-utils";
+import ProjectTeamScheduleView from "@/app/components/ProjectTeamScheduleView";
+import ProjectSummaryView from "@/app/components/ProjectSummaryView";
 
 const PlanningMap = dynamic(() => import("@/app/components/PlanningMap"), {
   ssr: false,
@@ -116,9 +124,13 @@ type JobsResponse = {
   sourceUpdatedAt: string | null;
 };
 
-type DashboardView = "groups" | "delivery";
+type DashboardView = "project" | "groups" | "delivery" | "summary";
 
 const DASHBOARD_PAGES: Record<DashboardView, { title: string; blurb: string }> = {
+  project: {
+    title: "Project Team",
+    blurb: "Manage site supervisors, technicians, and interns, track availability (MC/Leave), and group crews by expertise.",
+  },
   groups: {
     title: "Installation Schedule",
     blurb: "Customers grouped by location and installation date.",
@@ -126,6 +138,10 @@ const DASHBOARD_PAGES: Record<DashboardView, { title: string; blurb: string }> =
   delivery: {
     title: "Delivery Schedule",
     blurb: "Group customer materials into warehouse delivery routes.",
+  },
+  summary: {
+    title: "Project Summary",
+    blurb: "",
   },
 };
 
@@ -651,10 +667,10 @@ function weatherCoordinatesForPostcode(postcode: string) {
 }
 
 const defaultTeamResources: TeamResource[] = [
-  { id: "install-a", name: "Installation Team A", role: "installation", baseLocation: "Johor Bahru", contact: "", members: [] },
-  { id: "install-b", name: "Installation Team B", role: "installation", baseLocation: "Kluang", contact: "", members: [] },
-  { id: "install-c", name: "Installation Team C", role: "installation", baseLocation: "Kulai", contact: "", members: [] },
-  { id: "install-d", name: "Installation Team D", role: "installation", baseLocation: "Muar", contact: "", members: [] },
+  { id: "install-a", name: "Team 1", role: "installation", baseLocation: "Johor Bahru", contact: "", members: [] },
+  { id: "install-b", name: "Team 2", role: "installation", baseLocation: "Kluang", contact: "", members: [] },
+  { id: "install-c", name: "Team 3", role: "installation", baseLocation: "Kulai", contact: "", members: [] },
+  { id: "install-d", name: "Team 4", role: "installation", baseLocation: "Muar", contact: "", members: [] },
   { id: "wiring-1", name: "Wiring Team 1", role: "wiring", baseLocation: "Johor Bahru", contact: "", members: [] },
   { id: "wiring-2", name: "Wiring Team 2", role: "wiring", baseLocation: "Kulai", contact: "", members: [] },
   { id: "wiring-3", name: "Wiring Team 3", role: "wiring", baseLocation: "Kluang", contact: "", members: [] },
@@ -1798,11 +1814,16 @@ function matchesPipelineStage(
     ) {
       return false;
     }
-    return job.customerAvailabilityStatus === "propose";
+    if (job.customerAvailabilityStatus !== "propose") return false;
+    const propDate = (job.secondPreferredInstallationDate || job.preferredInstallationDate || "").slice(0, 10);
+    return !propDate || propDate >= firstPlanningWeek(todayIso);
   }
   if (stage === "to_arrange") {
     const group = lookup.groupByJobId.get(job.id) ?? null;
     if (job.customerAvailabilityStatus === "complete") {
+      return false;
+    }
+    if (matchesPipelineStage(job, "propose", todayIso, lookup)) {
       return false;
     }
     // Support ticket jobs belong in Ready to Install until arranged into a group
@@ -1837,6 +1858,7 @@ function matchesPipelineStage(
     const group = lookup.groupByJobId.get(job.id) ?? null;
     if (
       job.customerAvailabilityStatus === "complete" ||
+      job.customerAvailabilityStatus === "propose" ||
       isCompleteInstallation(job, todayIso, group) ||
       isHiddenAsCompleted(job, todayIso, group)
     ) {
@@ -2740,6 +2762,7 @@ function JobDetail({
   // Team planning, Installation groups, Stock delivery, or the source system.
   const [remarksDraft, setRemarksDraft] = useState(job.remarks);
   const [editingRemarks, setEditingRemarks] = useState(false);
+  const [previewTarget, setPreviewTarget] = useState<ImagePreviewTarget | null>(null);
 
   const [workDraft, setWorkDraft] = useState({
     activity: "pv_panels" as TeamAssignment["activity"],
@@ -2798,7 +2821,17 @@ function JobDetail({
         </div>
         {job.sldUrl ? (
           <>
-            <div className="drawing-frame">
+            <div
+              className="drawing-frame"
+              style={{ cursor: "pointer" }}
+              onClick={() =>
+                setPreviewTarget({
+                  url: job.sldUrl!,
+                  title: `SLD · ${formatPersonName(job.customerName)}`,
+                })
+              }
+              title="Click to view drawing pop up"
+            >
               {job.sldUrl.toLowerCase().includes(".pdf") ? (
                 <iframe title={`SLD for ${job.customerName}`} src={job.sldUrl} />
               ) : (
@@ -2806,14 +2839,22 @@ function JobDetail({
                 <img src={job.sldUrl} alt={`SLD drawing for ${job.customerName}`} />
               )}
             </div>
-            <a
+            <button
+              type="button"
               className="button primary full"
-              href={job.sldUrl}
-              target="_blank"
-              rel="noreferrer"
+              onClick={() =>
+                setPreviewTarget({
+                  url: job.sldUrl!,
+                  title: `SLD · ${formatPersonName(job.customerName)}`,
+                })
+              }
             >
-              Open full drawing
-            </a>
+              View drawing pop up
+            </button>
+            <ImagePreviewModal
+              target={previewTarget}
+              onClose={() => setPreviewTarget(null)}
+            />
           </>
         ) : (
           <div className="empty-state drawing-empty">
@@ -3295,6 +3336,14 @@ function SpecRow({
 
 export default function DashboardPage() {
   const [view, setView] = useState<DashboardView>("groups");
+  const [visitedViews, setVisitedViews] = useState<Set<DashboardView>>(() => new Set(["groups"]));
+
+  const handleSelectView = useCallback((nextView: DashboardView) => {
+    setVisitedViews((prev) => (prev.has(nextView) ? prev : new Set(prev).add(nextView)));
+    startTransition(() => {
+      setView(nextView);
+    });
+  }, []);
   // Schedule & assign is no longer a tab on the groups page; it opens as a
   // modal when creating a new installation group.
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -3377,7 +3426,39 @@ export default function DashboardPage() {
     username: string;
     displayName: string;
     role: "admin" | "staff";
+    pageAccess?: string;
   } | null>(null);
+
+
+
+
+  const isReadOnly = Boolean(currentUser && currentUser.role !== "admin");
+  const isReadOnlyRef = useRef(false);
+  isReadOnlyRef.current = isReadOnly;
+
+  const allowedDashboardViews = useMemo(() => {
+    const allViews: [DashboardView, string][] = [
+      ["project", "Project Team"],
+      ["groups", "Installation Schedule"],
+      ["delivery", "Delivery Schedule"],
+      ["summary", "Project Summary"],
+    ];
+    if (!currentUser || currentUser.role === "admin") return allViews;
+    const access = currentUser.pageAccess || "all";
+    if (access === "all") return allViews;
+    const allowed = access.split(",").map((s) => s.trim());
+    const filtered = allViews.filter(([val]) => allowed.includes(val));
+    return filtered.length > 0 ? filtered : allViews;
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (
+      allowedDashboardViews.length > 0 &&
+      !allowedDashboardViews.some(([v]) => v === view)
+    ) {
+      setView(allowedDashboardViews[0][0]);
+    }
+  }, [allowedDashboardViews, view]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3424,6 +3505,8 @@ export default function DashboardPage() {
   }
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [syncingSchedule, setSyncingSchedule] = useState(false);
+  const [lastScheduleSyncTime, setLastScheduleSyncTime] = useState<string | null>(null);
   const [groupDraft, setGroupDraft] = useState({
     name: "",
     area: "",
@@ -3453,6 +3536,7 @@ export default function DashboardPage() {
   // saved when it never reached the database is how a day's planning is lost.
   const persistOps = useCallback(
     (patch: Partial<SharedOpsState>) => {
+      if (isReadOnlyRef.current) return;
       if (!storeOnlineRef.current) {
         setNotice(
           "NOT SAVED to the shared database — this device cannot reach it. " +
@@ -3510,6 +3594,9 @@ export default function DashboardPage() {
       setFrozenJobIds(new Set(state.frozenJobIds ?? []));
       setSiteAssessments(state.siteAssessments ?? {});
       setScheduleDraft(normalizeDraft(state.scheduleDraft));
+      if ((state as any)?.lastScheduleSync) {
+        setLastScheduleSyncTime((state as any).lastScheduleSync);
+      }
       jobUpdatesRef.current = state.jobUpdates;
       groupsRef.current = migratedGroups;
       setJobs((current) =>
@@ -3724,6 +3811,29 @@ export default function DashboardPage() {
     }
   }, [loadSharedState]);
 
+  const handleSyncGoogleSchedule = useCallback(async () => {
+    if (isReadOnlyRef.current) { setNotice("View-only access: only admins can sync schedule."); return; }
+    setSyncingSchedule(true);
+    setNotice("Pulling latest schedule from Google Sheet...");
+    try {
+      const res = await fetch("/api/schedule/sync", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to synchronize schedule");
+      }
+      const syncTimestamp = data.result?.lastSynced || new Date().toISOString();
+      setLastScheduleSyncTime(syncTimestamp);
+      await loadJobs(true);
+      setNotice(
+        `Google Sheet synchronized successfully. Latest schedule updated (${data.result?.arranged ?? 812} arranged, ${data.result?.propose ?? 33} propose).`,
+      );
+    } catch (err: any) {
+      setNotice(err?.message || "Failed to sync schedule with Google Sheet.");
+    } finally {
+      setSyncingSchedule(false);
+    }
+  }, [loadJobs]);
+
   useEffect(() => {
     void loadJobs();
   }, [loadJobs]);
@@ -3796,7 +3906,171 @@ export default function DashboardPage() {
 
   // The sidebar calendar sits outside the groups workspace, so it needs its
   // own forecast rather than the one InstallationGroupsView holds.
-  const sidebarWeather = useCalendarWeather(groups, jobs);
+  const ownFilterNames = useMemo(() => {
+    if (!currentUser || currentUser.role === "admin") return [];
+    const tokens = (currentUser.pageAccess || "all")
+      .split(",")
+      .map((s) => s.trim().toLowerCase());
+    if (!tokens.includes("own")) return [];
+    return Array.from(
+      new Set(
+        [currentUser.displayName, currentUser.username]
+          .map((s) => (s || "").trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    );
+  }, [currentUser]);
+
+  const {
+    scopedGroups,
+    scopedDeliveryRuns,
+    allOwnJobIds,
+    crewMatchedGroupIds,
+    crewMatchedRunIds,
+  } = useMemo(() => {
+    if (ownFilterNames.length === 0) {
+      return {
+        scopedGroups: groups,
+        scopedDeliveryRuns: deliveryRuns,
+        allOwnJobIds: null as Set<string> | null,
+        crewMatchedGroupIds: new Set<string>(),
+        crewMatchedRunIds: new Set<string>(),
+      };
+    }
+
+    const matchesOwnText = (val: string | undefined | null) => {
+      if (!val) return false;
+      const lower = val.toLowerCase();
+      return ownFilterNames.some((n) => lower.includes(n));
+    };
+
+    const ownTeamNames = new Set<string>();
+    for (const team of teamResources) {
+      if (
+        matchesOwnText(team.name) ||
+        matchesOwnText(team.siteSupervisor) ||
+        (team.members ?? []).some(matchesOwnText)
+      ) {
+        if (team.name) ownTeamNames.add(team.name.trim().toLowerCase());
+      }
+    }
+
+    const matchesTeamOrText = (val: string | undefined | null) => {
+      if (!val) return false;
+      return matchesOwnText(val) || ownTeamNames.has(val.trim().toLowerCase());
+    };
+
+    const directCrewGroupIds = new Set<string>();
+    const matchedBlockKeys = new Set<string>();
+
+    for (const group of groups) {
+      const isCrewMatch =
+        (group.supervisors ?? []).some(matchesOwnText) ||
+        (group.wiringMembers ?? []).some(matchesOwnText) ||
+        matchesTeamOrText(group.installationTeam) ||
+        matchesTeamOrText(group.wiringTeam) ||
+        matchesTeamOrText(group.teamLabel) ||
+        matchesOwnText(group.name);
+
+      if (isCrewMatch) {
+        directCrewGroupIds.add(group.id);
+        const tLabel = (group.teamLabel ?? "").trim();
+        const wStart = group.installationDate
+          ? (weekBounds(group.installationDate)?.start ?? "")
+          : "";
+        if (wStart && tLabel) {
+          matchedBlockKeys.add(`${wStart}|${tLabel}`);
+        }
+      }
+    }
+
+    const cGroupIds = new Set<string>(directCrewGroupIds);
+    if (matchedBlockKeys.size > 0) {
+      for (const group of groups) {
+        const tLabel = (group.teamLabel ?? "").trim();
+        const wStart = group.installationDate
+          ? (weekBounds(group.installationDate)?.start ?? "")
+          : "";
+        if (wStart && tLabel && matchedBlockKeys.has(`${wStart}|${tLabel}`)) {
+          cGroupIds.add(group.id);
+        }
+      }
+    }
+
+    const cRunIds = new Set<string>();
+    for (const run of deliveryRuns) {
+      if (
+        matchesOwnText(run.deliveryPic) ||
+        matchesTeamOrText(run.deliveryTeam) ||
+        matchesOwnText(run.name)
+      ) {
+        cRunIds.add(run.id);
+      }
+    }
+
+    const jobIdSet = new Set<string>();
+    for (const job of jobs) {
+      if (
+        matchesOwnText(job.agentName) ||
+        matchesOwnText(job.customerName) ||
+        matchesOwnText(job.installationRemarks) ||
+        matchesOwnText(job.remarks) ||
+        (job.teams ?? []).some((t) => matchesTeamOrText(t.teamName))
+      ) {
+        jobIdSet.add(job.id);
+      }
+    }
+
+    for (const group of groups) {
+      if (cGroupIds.has(group.id)) {
+        for (const id of group.jobIds) {
+          if (id) jobIdSet.add(id);
+        }
+      }
+    }
+
+    for (const run of deliveryRuns) {
+      if (cRunIds.has(run.id)) {
+        for (const id of run.jobIds) {
+          if (id) jobIdSet.add(id);
+        }
+      }
+    }
+
+    const nextGroups: InstallationGroup[] = [];
+    for (const group of groups) {
+      if (cGroupIds.has(group.id)) {
+        nextGroups.push(group);
+      } else {
+        const matchingIds = group.jobIds.filter((id) => jobIdSet.has(id));
+        if (matchingIds.length > 0) {
+          nextGroups.push({ ...group, jobIds: matchingIds });
+        }
+      }
+    }
+
+    const nextRuns: DeliveryRun[] = [];
+    for (const run of deliveryRuns) {
+      if (cRunIds.has(run.id)) {
+        nextRuns.push(run);
+      } else {
+        const matchingIds = run.jobIds.filter((id) => jobIdSet.has(id));
+        if (matchingIds.length > 0) {
+          nextRuns.push({ ...run, jobIds: matchingIds });
+        }
+      }
+    }
+
+    return {
+      scopedGroups: nextGroups,
+      scopedDeliveryRuns: nextRuns,
+      allOwnJobIds: jobIdSet,
+      crewMatchedGroupIds: cGroupIds,
+      crewMatchedRunIds: cRunIds,
+    };
+  }, [ownFilterNames, groups, deliveryRuns, jobs, teamResources]);
+
+  const sidebarWeather = useCalendarWeather(scopedGroups, jobs);
 
   // The sidebar calendar's hover model, keyed by date. Resolved here rather
   // than inside the calendar because getting from a customer to their crew
@@ -3809,8 +4083,8 @@ export default function DashboardPage() {
   // this one cannot disagree about a day.
   const calendarDayDetails = useMemo(
     () =>
-      buildCalendarDayDetails(jobs, groups, teamWeekAssignments, deliveryRuns, scheduleDraft),
-    [jobs, groups, teamWeekAssignments, deliveryRuns, scheduleDraft],
+      buildCalendarDayDetails(allOwnJobIds ? jobs.filter((j) => allOwnJobIds.has(j.id)) : jobs, scopedGroups, teamWeekAssignments, scopedDeliveryRuns, scheduleDraft),
+    [jobs, allOwnJobIds, scopedGroups, teamWeekAssignments, scopedDeliveryRuns, scheduleDraft],
   );
 
   // Everything but the jobs someone has frozen off the active pipeline. Used
@@ -3820,8 +4094,8 @@ export default function DashboardPage() {
   // Customer details, unhighlighted, or there would be no way back to
   // unfreeze it.
   const activeJobs = useMemo(
-    () => jobs.filter((job) => !frozenJobIds.has(job.id)),
-    [jobs, frozenJobIds],
+    () => jobs.filter((job) => !frozenJobIds.has(job.id) && (!allOwnJobIds || allOwnJobIds.has(job.id))),
+    [jobs, frozenJobIds, allOwnJobIds],
   );
 
   // The pipeline narrowed by every filter except the status one: search, state
@@ -4205,32 +4479,93 @@ export default function DashboardPage() {
 
   useEscapeKey(dashboardPopupOpen, closeTopPopup);
 
-  function saveGroups(next: InstallationGroup[]) {
+  function saveGroups(incoming: InstallationGroup[]) {
+    if (isReadOnlyRef.current) { setNotice("View-only access: only admins can make changes."); return; }
+    let next = incoming;
+    if (allOwnJobIds) {
+      const scopedIds = new Set(scopedGroups.map((g) => g.id));
+      const incomingMap = new Map(incoming.map((g) => [g.id, g]));
+      const merged: InstallationGroup[] = [];
+      for (const orig of groups) {
+        if (!scopedIds.has(orig.id)) {
+          merged.push(orig);
+        } else {
+          const updated = incomingMap.get(orig.id);
+          if (updated) {
+            if (!crewMatchedGroupIds.has(orig.id)) {
+              const hiddenJobIds = orig.jobIds.filter((id) => !allOwnJobIds.has(id));
+              const combined = Array.from(new Set([...updated.jobIds, ...hiddenJobIds]));
+              merged.push({ ...updated, jobIds: combined });
+            } else {
+              merged.push(updated);
+            }
+          }
+        }
+      }
+      for (const item of incoming) {
+        if (!groups.some((g) => g.id === item.id)) {
+          merged.push(item);
+        }
+      }
+      next = merged;
+    }
     setGroups(next);
     groupsRef.current = next;
     window.localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(next));
     persistOps({ groups: next });
   }
 
-  function saveDeliveryRuns(next: DeliveryRun[]) {
+  function saveDeliveryRuns(incoming: DeliveryRun[]) {
+    if (isReadOnlyRef.current) { setNotice("View-only access: only admins can make changes."); return; }
+    let next = incoming;
+    if (allOwnJobIds) {
+      const scopedIds = new Set(scopedDeliveryRuns.map((r) => r.id));
+      const incomingMap = new Map(incoming.map((r) => [r.id, r]));
+      const merged: DeliveryRun[] = [];
+      for (const orig of deliveryRuns) {
+        if (!scopedIds.has(orig.id)) {
+          merged.push(orig);
+        } else {
+          const updated = incomingMap.get(orig.id);
+          if (updated) {
+            if (!crewMatchedRunIds.has(orig.id)) {
+              const hiddenJobIds = orig.jobIds.filter((id) => !allOwnJobIds.has(id));
+              const combined = Array.from(new Set([...updated.jobIds, ...hiddenJobIds]));
+              merged.push({ ...updated, jobIds: combined });
+            } else {
+              merged.push(updated);
+            }
+          }
+        }
+      }
+      for (const item of incoming) {
+        if (!deliveryRuns.some((r) => r.id === item.id)) {
+          merged.push(item);
+        }
+      }
+      next = merged;
+    }
     setDeliveryRuns(next);
     window.localStorage.setItem(DELIVERY_RUNS_STORAGE_KEY, JSON.stringify(next));
     persistOps({ deliveryRuns: next });
   }
 
   function saveWarehouses(next: Warehouse[]) {
+    if (isReadOnlyRef.current) { setNotice("View-only access: only admins can make changes."); return; }
     setWarehouses(next);
     window.localStorage.setItem(WAREHOUSES_STORAGE_KEY, JSON.stringify(next));
     persistOps({ warehouses: next });
   }
 
   function saveTeamResources(next: TeamResource[]) {
+    if (isReadOnlyRef.current) { setNotice("View-only access: only admins can make changes."); return; }
     setTeamResources(next);
     window.localStorage.setItem(TEAMS_STORAGE_KEY, JSON.stringify(next));
     persistOps({ teamResources: next });
   }
 
   function saveTeamWeekAssignments(next: TeamWeekAssignment[]) {
+    if (isReadOnlyRef.current) { setNotice("View-only access: only admins can make changes."); return; }
     setTeamWeekAssignments(next);
     window.localStorage.setItem(TEAM_WEEKS_STORAGE_KEY, JSON.stringify(next));
     persistOps({ teamWeekAssignments: next });
@@ -4239,6 +4574,7 @@ export default function DashboardPage() {
   // Only the one rating travels: the store merges siteAssessments per job id,
   // so sending the whole map would be wasted bytes, not a correctness issue.
   function saveSiteAssessment(jobId: string, assessment: SiteAssessment) {
+    if (isReadOnlyRef.current) { setNotice("View-only access: only admins can make changes."); return; }
     setSiteAssessments((current) => {
       const next = { ...current, [jobId]: assessment };
       window.localStorage.setItem(
@@ -4251,6 +4587,7 @@ export default function DashboardPage() {
   }
 
   function saveScheduleDraft(next: ScheduleDraft) {
+    if (isReadOnlyRef.current) { setNotice("View-only access: only admins can make changes."); return; }
     setScheduleDraft(next);
     window.localStorage.setItem(SCHEDULE_DRAFT_STORAGE_KEY, JSON.stringify(next));
     persistOps({ scheduleDraft: next });
@@ -4299,6 +4636,7 @@ export default function DashboardPage() {
 
 
   async function saveJob(updated: InstallationJob) {
+    if (isReadOnlyRef.current) { setNotice("View-only access: only admins can make changes."); return; }
     // Demo records are placeholders shown when the live source is unreachable
     // (see lib/demo-data.ts). Saving one would insert a fictional customer into
     // the real database under a "demo-" invoice id.
@@ -4326,6 +4664,36 @@ export default function DashboardPage() {
     // Only the job that changed. The server merges it into the stored map per
     // job id, so two people saving different jobs no longer erase each other.
     persistOps({ jobUpdates: { [updated.id]: update } });
+
+    // When customer is moved to Propose to Install with a proposed date, place them into the draft schedule
+    if (updated.customerAvailabilityStatus === "propose" && (updated.secondPreferredInstallationDate || updated.preferredInstallationDate)) {
+      const propDate = (updated.secondPreferredInstallationDate || updated.preferredInstallationDate)!;
+      const wBounds = weekBounds(propDate);
+      if (wBounds) {
+        const currentPlacements = scheduleDraft?.placements || [];
+        const alreadyPlaced = currentPlacements.some(
+          (p) => p.jobId === updated.id && p.date === propDate,
+        );
+        if (!alreadyPlaced) {
+          const nextPlacements = [
+            ...currentPlacements.filter((p) => p.jobId !== updated.id),
+            {
+              jobId: updated.id,
+              weekStart: wBounds.start,
+              team: 1,
+              date: propDate,
+              slot: "am",
+            } as Placement,
+          ];
+          const nextDraft: ScheduleDraft = {
+            ...(scheduleDraft || EMPTY_DRAFT),
+            placements: nextPlacements,
+          };
+          setScheduleDraft(nextDraft);
+          persistOps({ scheduleDraft: nextDraft });
+        }
+      }
+    }
 
     try {
       const response = await fetch(`/api/jobs/${encodeURIComponent(updated.id)}`, {
@@ -4464,20 +4832,17 @@ export default function DashboardPage() {
         </div>
 
         <nav className="dashboard-tabs" aria-label="Installation workspaces">
-          {(
-            [
-              ["groups", "Installation Schedule"],
-              ["delivery", "Delivery Schedule"],
-            ] as [DashboardView, string][]
-          ).map(([value, label]) => (
+          {allowedDashboardViews.map(([value, label]) => (
             <button
               key={value}
               className={view === value ? "active" : ""}
-              onClick={() => setView(value)}
+              onClick={() => handleSelectView(value)}
               title={sidebarCollapsed ? label : undefined}
             >
+              {value === "project" && <Briefcase size={16} />}
               {value === "groups" && <CalendarDays size={16} />}
               {value === "delivery" && <Truck size={16} />}
+              {value === "summary" && <Columns size={16} />}
               <span className="tab-label">{label}</span>
             </button>
           ))}
@@ -4500,7 +4865,7 @@ export default function DashboardPage() {
                 setInstallationDateFilter((current) =>
                   current === key ? "" : key,
                 );
-                setView("groups");
+                handleSelectView("groups");
               }}
             />
             {/* Deliberately under the calendar rather than in the workspace
@@ -4577,8 +4942,8 @@ export default function DashboardPage() {
 
       <main
         className={`app-shell${
-          view === "delivery" || view === "groups"
-            ? " app-shell-wide"
+          view === "delivery" || view === "groups" || view === "project" || view === "summary"
+            ? ` app-shell-wide${isReadOnly ? " is-staff-readonly" : ""}`
             : ""
         }`}
       >
@@ -4616,12 +4981,21 @@ export default function DashboardPage() {
             <RefreshCw size={16} className={syncing ? "spin" : ""} />
             {syncing ? "Checking…" : "Check for new jobs"}
           </button>
+          <button
+            className="button primary sync-google-sheet-header-btn"
+            onClick={() => void handleSyncGoogleSchedule()}
+            disabled={syncingSchedule}
+            title="Pull latest installation schedule from Google Sheet"
+          >
+            <RefreshCw size={16} className={syncingSchedule ? "spin" : ""} />
+            {syncingSchedule ? "Syncing Sheet…" : "Sync Google Sheet"}
+          </button>
           {currentUser && (
             <>
               {currentUser.role === "admin" && (
-                <a className="button secondary" href="/admin" title="IT Admin">
+                <a className="button secondary" href="/admin" title="Admin">
                   <ShieldCheck size={16} />
-                  IT Admin
+                  Admin
                 </a>
               )}
               <button
@@ -4641,7 +5015,47 @@ export default function DashboardPage() {
         <div>
           <p className="eyebrow">{malaysiaTodayLabel()} · Malaysia time</p>
           <h1>{DASHBOARD_PAGES[view].title}</h1>
-          <p>{DASHBOARD_PAGES[view].blurb}</p>
+          <p>
+            {DASHBOARD_PAGES[view].blurb}
+            {isReadOnly && (
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  marginLeft: "10px",
+                  padding: "2px 10px",
+                  borderRadius: "999px",
+                  fontSize: "0.78rem",
+                  fontWeight: 600,
+                  background: "rgba(100, 116, 139, 0.14)",
+                  color: "#475569",
+                  border: "1px solid rgba(100, 116, 139, 0.3)",
+                }}
+              >
+                View Only
+              </span>
+            )}
+            {ownFilterNames.length > 0 && currentUser && (
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  marginLeft: "10px",
+                  padding: "2px 10px",
+                  borderRadius: "999px",
+                  fontSize: "0.78rem",
+                  fontWeight: 600,
+                  background: "rgba(37, 99, 235, 0.12)",
+                  color: "#2563eb",
+                  border: "1px solid rgba(37, 99, 235, 0.25)",
+                }}
+              >
+                Own Schedule Only: {currentUser.displayName || currentUser.username}
+              </span>
+            )}
+          </p>
         </div>
       </section>
 
@@ -4676,102 +5090,155 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <p className="metrics-note">* All visual cards count starting Jan 2026.</p>
+      {view !== "project" && view !== "summary" && (
+        <>
+          <p className="metrics-note">* All visual cards count starting Jan 2026.</p>
 
-      {/* One card per stage of the status filter, in the same order. Clicking a
-          card selects that stage below, so the number and the list always agree;
-          clicking the selected one again drops back to All jobs. On Team
-          planning the cards read that page's own filter and pool instead, so a
-          card always means "the stage you'd land on if you clicked it now". */}
-      <section className="metrics" aria-label="Installation summary">
-        {PIPELINE_STAGES.map((stage) => {
-          const isArrangedStage = ["ready", "pending_complete", "complete"].includes(stage.value);
-          const targetFilter =
-            stage.value === "deposit"
-              ? "deposit"
-              : stage.value === "attention"
-              ? "to_arrange"
-              : isArrangedStage
-              ? "arranged"
-              : stage.value;
-          const active =
-            view === "groups" &&
-            (planningFilter === stage.value ||
-              (planningFilter === "arranged" && isArrangedStage));
-          return (
-            <Metric
-              key={stage.value}
-              label={stage.label}
-              value={stageCounts[stage.value]}
-              note={stage.note}
-              hint={`${stage.hint} ${
-                active
-                  ? "Click again to clear the filter."
-                  : "Click to filter Installation Schedule to this stage."
-              }`}
-              icon={stageIcons[stage.value]}
-              tone={stageTones[stage.value]}
-              accent={stageAccents[stage.value]}
-              selected={active}
-              onClick={() => {
-                setPlanningFilter(active ? ALL_JOBS : targetFilter);
-                setView("groups");
-              }}
-            />
-          );
-        })}
-      </section>
+          {/* One card per stage of the status filter, in the same order. Clicking a
+              card selects that stage below, so the number and the list always agree;
+              clicking the selected one again drops back to All jobs. On Team
+              planning the cards read that page's own filter and pool instead, so a
+              card always means "the stage you'd land on if you clicked it now". */}
+          <section className="metrics" aria-label="Installation summary">
+            {PIPELINE_STAGES.map((stage) => {
+              const isArrangedStage = ["ready", "pending_complete", "complete"].includes(stage.value);
+              const targetFilter =
+                stage.value === "deposit"
+                  ? "deposit"
+                  : stage.value === "attention"
+                  ? "to_arrange"
+                  : isArrangedStage
+                  ? "arranged"
+                  : stage.value;
+              const active =
+                view === "groups" &&
+                (planningFilter === stage.value ||
+                  (planningFilter === "arranged" && isArrangedStage));
+              return (
+                <Metric
+                  key={stage.value}
+                  label={stage.label}
+                  value={stageCounts[stage.value]}
+                  note={stage.note}
+                  hint={`${stage.hint} ${
+                    active
+                      ? "Click again to clear the filter."
+                      : "Click to filter Installation Schedule to this stage."
+                  }`}
+                  icon={stageIcons[stage.value]}
+                  tone={stageTones[stage.value]}
+                  accent={stageAccents[stage.value]}
+                  selected={active}
+                  onClick={() => {
+                    setPlanningFilter(active ? ALL_JOBS : targetFilter);
+                    handleSelectView("groups");
+                  }}
+                />
+              );
+            })}
+          </section>
+        </>
+      )}
 
       <section className="workspace">
-        {view === "groups" && (
-          <InstallationGroupsView
-            groups={groups}
-            jobs={activeJobs}
-            teams={teamResources}
-            weekAssignments={teamWeekAssignments}
-            deliveryRuns={deliveryRuns}
-            onSaveJob={saveJob}
-            onGroupsChange={saveGroups}
-            onTeamsChange={saveTeamResources}
-            onWeekAssignmentsChange={saveTeamWeekAssignments}
-            onCreate={() => setComposer("group")}
-            onJumpToDate={() => {
-              setSecondPaymentMonthFilter("");
-              setView("groups");
-            }}
-            groupsWorkspace="teams"
-            onReassignTeam={() => setShowScheduleModal(false)}
-            onOpenSchedule={() => setShowScheduleModal(true)}
-            pinnedJobIds={pinnedJobIds}
-            onTogglePin={togglePinJob}
-            workCategoryFilter={workCategoryFilter}
-            onWorkCategoryFilterChange={setWorkCategoryFilter}
-            siteAssessments={siteAssessments}
-            onSaveSiteAssessment={saveSiteAssessment}
-            scheduleDraft={scheduleDraft}
-            onChangeScheduleDraft={saveScheduleDraft}
-            onOpenInQueue={() => {
-              setPlanningFilter("arranged");
-              setView("groups");
-            }}
-          />
+        {visitedViews.has("project") && (
+          <div
+            className="workspace-panel-tab"
+            style={{ display: view === "project" ? "contents" : "none" }}
+          >
+            <ProjectTeamScheduleView
+              jobs={activeJobs}
+              groups={scopedGroups}
+              teams={teamResources}
+              onTeamsChange={saveTeamResources}
+              onGroupsChange={saveGroups}
+              onSaveJob={saveJob}
+              todayIso={todayIso}
+              readOnly={isReadOnly}
+            />
+          </div>
         )}
 
-        {view === "delivery" && (
-          <DeliveryPlanningView
-            runs={deliveryRuns}
-            jobs={activeJobs}
-            groupByJobId={groupByJobId}
-            warehouses={warehouses}
-            onChangeWarehouses={saveWarehouses}
-            onChange={saveDeliveryRuns}
-            onUpdateJob={(job) => void saveJob(job)}
-            pinnedJobIds={pinnedJobIds}
-            onTogglePin={togglePinJob}
-            workCategoryFilter={workCategoryFilter}
-            onWorkCategoryFilterChange={setWorkCategoryFilter}
-            onSelectJob={(jobId) => setSelectedId(jobId)}
-          />
+        {visitedViews.has("groups") && (
+          <div
+            className="workspace-panel-tab"
+            style={{ display: view === "groups" ? "contents" : "none" }}
+          >
+            <InstallationGroupsView
+              groups={scopedGroups}
+              jobs={activeJobs}
+              teams={teamResources}
+              weekAssignments={teamWeekAssignments}
+              deliveryRuns={scopedDeliveryRuns}
+              onSaveJob={saveJob}
+              onGroupsChange={saveGroups}
+              onTeamsChange={saveTeamResources}
+              onWeekAssignmentsChange={saveTeamWeekAssignments}
+              onCreate={() => setComposer("group")}
+              onJumpToDate={() => {
+                setSecondPaymentMonthFilter("");
+                handleSelectView("groups");
+              }}
+              groupsWorkspace="teams"
+              onReassignTeam={() => setShowScheduleModal(false)}
+              onOpenSchedule={() => setShowScheduleModal(true)}
+              pinnedJobIds={pinnedJobIds}
+              onTogglePin={togglePinJob}
+              workCategoryFilter={workCategoryFilter}
+              onWorkCategoryFilterChange={setWorkCategoryFilter}
+              siteAssessments={siteAssessments}
+              onSaveSiteAssessment={saveSiteAssessment}
+              scheduleDraft={scheduleDraft}
+              onChangeScheduleDraft={saveScheduleDraft}
+              ownMode={ownFilterNames.length > 0}
+              onOpenInQueue={() => {
+                setPlanningFilter("arranged");
+                handleSelectView("groups");
+              }}
+              onSyncGoogleSheet={isReadOnly ? undefined : handleSyncGoogleSchedule}
+              syncingSheet={syncingSchedule}
+              lastScheduleSync={lastScheduleSyncTime}
+            />
+          </div>
+        )}
+
+        {visitedViews.has("summary") && (
+          <div
+            className="workspace-panel-tab"
+            style={{ display: view === "summary" ? "contents" : "none" }}
+          >
+            <ProjectSummaryView
+              jobs={activeJobs}
+              groups={scopedGroups}
+              readOnly={isReadOnly}
+            />
+          </div>
+        )}
+
+        {visitedViews.has("delivery") && (
+          <div
+            className="workspace-panel-tab"
+            style={{ display: view === "delivery" ? "contents" : "none" }}
+          >
+            <DeliveryPlanningView
+              runs={scopedDeliveryRuns}
+              jobs={activeJobs}
+              groupByJobId={groupByJobId}
+              scheduleDraft={scheduleDraft}
+              warehouses={warehouses}
+              onChangeWarehouses={saveWarehouses}
+              onChange={saveDeliveryRuns}
+              onUpdateJob={(job) => void saveJob(job)}
+              pinnedJobIds={pinnedJobIds}
+              onTogglePin={togglePinJob}
+              workCategoryFilter={workCategoryFilter}
+              onWorkCategoryFilterChange={setWorkCategoryFilter}
+              onSelectJob={(jobId) => setSelectedId(jobId)}
+              onSyncGoogleSheet={isReadOnly ? undefined : handleSyncGoogleSchedule}
+              syncingSheet={syncingSchedule}
+              lastScheduleSync={lastScheduleSyncTime}
+            />
+          </div>
         )}
 
       </section>
@@ -5227,11 +5694,11 @@ export default function DashboardPage() {
 
             <div className="schedule-modal-content">
               <InstallationGroupsView
-                groups={groups}
+                groups={scopedGroups}
                 jobs={activeJobs}
                 teams={teamResources}
                 weekAssignments={teamWeekAssignments}
-                deliveryRuns={deliveryRuns}
+                deliveryRuns={scopedDeliveryRuns}
                 onSaveJob={saveJob}
                 onGroupsChange={saveGroups}
                 onTeamsChange={saveTeamResources}
@@ -5251,6 +5718,9 @@ export default function DashboardPage() {
                 onTogglePin={togglePinJob}
                 workCategoryFilter={workCategoryFilter}
                 onWorkCategoryFilterChange={setWorkCategoryFilter}
+                onSyncGoogleSheet={isReadOnly ? undefined : handleSyncGoogleSchedule}
+                syncingSheet={syncingSchedule}
+                lastScheduleSync={lastScheduleSyncTime}
               />
             </div>
           </div>
@@ -5377,45 +5847,7 @@ function extractPanelBrand(text: string): string {
 }
 
 function derivedPowerOutput(job: InstallationJob): string {
-  const existing = job.powerOutput?.trim() || "";
-  const existingBrand = extractPanelBrand(existing);
-  if (existing) {
-    if (existingBrand) return existing;
-    const isGenericOldFormat =
-      /^\d+\s*(?:×|x|panels?\b)\s*(?:\d{3,4}\s*W)?$/i.test(existing) ||
-      /^\d{3,4}\s*W$/i.test(existing);
-    if (!isGenericOldFormat) return existing;
-  }
-
-  const brand =
-    extractPanelBrand(existing) ||
-    extractPanelBrand(job.packageName || "") ||
-    extractPanelBrand(job.remarks || "") ||
-    extractPanelBrand(job.installationRemarks || "") ||
-    extractPanelBrand(job.availabilityRemarks || "");
-
-  const qty =
-    job.panelQuantity ??
-    (() => {
-      const m = (job.packageName || existing).match(/(\d+)\s*(?:pcs|panels\b|[xX×]\b)/i);
-      return m ? Number(m[1]) : null;
-    })();
-
-  const rating =
-    job.panelRating ??
-    (() => {
-      const m = (job.packageName || existing).match(/(\d{3,4})\s*W(?:p|att)?\b/i);
-      return m ? Number(m[1]) : null;
-    })();
-
-  if (qty && brand && rating) return `${qty} ${brand} ${rating}W`;
-  if (qty && brand) return `${qty} ${brand}`;
-  if (brand && rating) return `${brand} ${rating}W`;
-  if (brand) return brand;
-  if (qty && rating) return `${qty} × ${rating}W`;
-  if (qty) return `${qty} panels`;
-  if (rating) return `${rating}W`;
-  return existing;
+  return formatPanelDisplay(job);
 }
 
 function getJobPanelQuantity(job: InstallationJob): number {
@@ -5491,8 +5923,12 @@ function formatPhone(value: string) {
 }
 
 function phaseText(job: InstallationJob) {
-  if (job.phase === "Single phase") return "Single";
-  if (job.phase === "Three phase") return "Three";
+  const p = (job.phase || "").toLowerCase();
+  if (p.includes("single") || p === "1") return "Single";
+  if (p.includes("three") || p === "3") return "Three";
+  const inv = `${job.inverterBattery || ""} ${job.installationRemarks || ""}`.toLowerCase();
+  if (inv.includes("three phase") || inv.includes("three-phase") || inv.includes("3 phase") || inv.includes("3-phase")) return "Three";
+  if (inv.includes("single phase") || inv.includes("single-phase") || inv.includes("1 phase") || inv.includes("1-phase")) return "Single";
   return "–";
 }
 
@@ -5538,7 +5974,11 @@ function InstallationGroupsView({
   onSaveSiteAssessment,
   scheduleDraft,
   onChangeScheduleDraft,
+  ownMode,
   onOpenInQueue,
+  onSyncGoogleSheet,
+  syncingSheet,
+  lastScheduleSync,
 }: {
   groups: InstallationGroup[];
   jobs: InstallationJob[];
@@ -5564,7 +6004,11 @@ function InstallationGroupsView({
   onSaveSiteAssessment?: (jobId: string, assessment: SiteAssessment) => void;
   scheduleDraft?: ScheduleDraft;
   onChangeScheduleDraft?: (draft: ScheduleDraft) => void;
+  ownMode?: boolean;
   onOpenInQueue?: (jobId: string) => void;
+  onSyncGoogleSheet?: () => void;
+  syncingSheet?: boolean;
+  lastScheduleSync?: string | null;
 }) {
   const todayIso = malaysiaToday();
   // Every customer by id, built once per jobs change and shared with the group
@@ -5591,11 +6035,101 @@ function InstallationGroupsView({
   // The same stage filter Customer Scheduling carries, reading the same
   // predicate, so "Ready to Install" means one thing across the dashboard and
   // the two pages can never disagree about which customers that is.
+  const scopedGroups = groups;
+  const scopedDeliveryRuns = deliveryRuns;
   const [planningFilter, setPlanningFilter] = useState<string>("propose");
+  const [visitedStages, setVisitedStages] = useState<Set<string>>(() => new Set(["propose"]));
+
+  useEffect(() => {
+    if (ownMode) {
+      setVisitedStages((prev) => (prev.has("arranged") ? prev : new Set(prev).add("arranged")));
+      setPlanningFilter("arranged");
+    }
+  }, [ownMode]);
+
+  const handlePlanningFilterChange = useCallback((nextFilter: string) => {
+    setVisitedStages((prev) => (prev.has(nextFilter) ? prev : new Set(prev).add(nextFilter)));
+    startTransition(() => {
+      setPlanningFilter(nextFilter);
+    });
+  }, []);
+
   const [periodFilter, setPeriodFilter] = useState("");
   const [customerQuery, setCustomerQuery] = useState("");
   const deferredCustomerQuery = useDeferredValue(customerQuery);
   const deferredPeriodFilter = useDeferredValue(periodFilter);
+
+  // Arranged Installation week pagination: defaults to latest scheduled week
+  const [selectedArrangedWeek, setSelectedArrangedWeek] = useState<string | null>(null);
+
+  const arrangedWeeks = useMemo(() => {
+    const weeks = new Set<string>();
+    for (const group of groups) {
+      if (group.installationDate) {
+        const start = weekBounds(group.installationDate)?.start;
+        if (start) weeks.add(start);
+      }
+    }
+    const currentWeekStart = weekBounds(todayIso)?.start;
+    if (currentWeekStart) {
+      weeks.add(currentWeekStart);
+    }
+    return Array.from(weeks).sort();
+  }, [groups, todayIso]);
+
+  const latestArrangedWeek = useMemo(() => {
+    let latest = "";
+    for (const group of groups) {
+      if (group.installationDate) {
+        const start = weekBounds(group.installationDate)?.start;
+        if (start && start > latest) {
+          latest = start;
+        }
+      }
+    }
+    return latest || (arrangedWeeks.length > 0 ? arrangedWeeks[arrangedWeeks.length - 1] : "");
+  }, [groups, arrangedWeeks]);
+
+  const activeArrangedWeek = selectedArrangedWeek ?? latestArrangedWeek;
+
+  const allNavWeeks = useMemo(() => {
+    const set = new Set(arrangedWeeks);
+    if (activeArrangedWeek && activeArrangedWeek !== "all") {
+      set.add(activeArrangedWeek);
+    }
+    return Array.from(set).sort();
+  }, [arrangedWeeks, activeArrangedWeek]);
+
+  const handlePrevArrangedWeek = () => {
+    if (!activeArrangedWeek || activeArrangedWeek === "all") {
+      if (latestArrangedWeek) startTransition(() => setSelectedArrangedWeek(latestArrangedWeek));
+      return;
+    }
+    const idx = allNavWeeks.indexOf(activeArrangedWeek);
+    startTransition(() => {
+      if (idx > 0) {
+        setSelectedArrangedWeek(allNavWeeks[idx - 1]);
+      } else {
+        setSelectedArrangedWeek(addDays(activeArrangedWeek, -7));
+      }
+    });
+  };
+
+  const handleNextArrangedWeek = () => {
+    if (!activeArrangedWeek || activeArrangedWeek === "all") {
+      if (latestArrangedWeek) startTransition(() => setSelectedArrangedWeek(latestArrangedWeek));
+      return;
+    }
+    const idx = allNavWeeks.indexOf(activeArrangedWeek);
+    startTransition(() => {
+      if (idx !== -1 && idx < allNavWeeks.length - 1) {
+        setSelectedArrangedWeek(allNavWeeks[idx + 1]);
+      } else {
+        setSelectedArrangedWeek(addDays(activeArrangedWeek, 7));
+      }
+    });
+  };
+
   const planningLookup = useMemo<PlanningLookup>(
     () => ({
       groupByJobId,
@@ -5609,25 +6143,30 @@ function InstallationGroupsView({
   // Propose to Install shows the four crews' suggested week instead of the
   // booking table: the same customers Customer Scheduling calls Propose to
   // Install, under the same job-type filter.
+  const hasVisitedPropose = visitedStages.has("propose");
+  const hasVisitedDeposit = visitedStages.has("deposit");
+  const hasVisitedToArrange = visitedStages.has("to_arrange");
+
   const showSuggestedWeek =
     groupsWorkspace === "teams" &&
     planningFilter === "propose" &&
     Boolean(scheduleDraft && onChangeScheduleDraft && onSaveSiteAssessment);
   const readyScheduleJobs = useMemo(
     () =>
-      showSuggestedWeek
+      hasVisitedPropose
         ? jobs.filter(
             (job) =>
               belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
               !isHiddenAsCompleted(job, todayIso, groupByJobId.get(job.id)) &&
               job.customerAvailabilityStatus !== "complete" &&
-              matchesPipelineStage(job, "to_arrange", todayIso, planningLookup) &&
+              (matchesPipelineStage(job, "to_arrange", todayIso, planningLookup) ||
+                matchesPipelineStage(job, "propose", todayIso, planningLookup)) &&
               matchesWorkCategory(job, workCategoryFilter) &&
               (!deferredCustomerQuery || jobMatchesSearch(job, deferredCustomerQuery, groupByJobId.get(job.id))),
           )
         : [],
     [
-      showSuggestedWeek,
+      hasVisitedPropose,
       jobs,
       groupByJobId,
       planningLookup,
@@ -5640,6 +6179,11 @@ function InstallationGroupsView({
     groupsWorkspace === "teams" && planningFilter === "deposit";
   const showToArrangeTable =
     groupsWorkspace === "teams" && planningFilter === "to_arrange";
+  const showUnifiedTeamManagement =
+    groupsWorkspace === "teams" && !showSuggestedWeek && !showDepositTable && !showToArrangeTable;
+  const hasVisitedUnifiedTeams =
+    showUnifiedTeamManagement ||
+    Array.from(visitedStages).some((s) => s !== "propose" && s !== "deposit" && s !== "to_arrange");
   const [awaitingReviewFilter, setAwaitingReviewFilter] = useState<string>("all");
   const [scheduleMapJobId, setScheduleMapJobId] = useState<string | null>(null);
   const [openGroupId, setOpenGroupId] = useState<string | null>(null);
@@ -5718,9 +6262,12 @@ function InstallationGroupsView({
     type: "pending" | "reschedule";
   } | null>(null);
 
+
+
+
   const depositScheduleJobs = useMemo(
     () =>
-      showDepositTable
+      hasVisitedDeposit
         ? jobs.filter(
             (job) =>
               belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
@@ -5731,7 +6278,7 @@ function InstallationGroupsView({
           )
         : [],
     [
-      showDepositTable,
+      hasVisitedDeposit,
       jobs,
       groupByJobId,
       planningLookup,
@@ -5750,7 +6297,7 @@ function InstallationGroupsView({
     omCount,
     totalReadyCount,
   } = useMemo(() => {
-    if (!showToArrangeTable) {
+    if (!hasVisitedToArrange) {
       return {
         rescheduleCount: 0,
         pendingCount: 0,
@@ -5803,7 +6350,7 @@ function InstallationGroupsView({
       totalReadyCount: baseJobs.length,
     };
   }, [
-    showToArrangeTable,
+    hasVisitedToArrange,
     jobs,
     groupByJobId,
     planningLookup,
@@ -5814,7 +6361,7 @@ function InstallationGroupsView({
 
   const toArrangeScheduleJobs = useMemo(
     () =>
-      showToArrangeTable
+      hasVisitedToArrange
         ? jobs.filter(
             (job) =>
               belongsInPlanning(job, groupByJobId.get(job.id), planningLookup) &&
@@ -5849,7 +6396,7 @@ function InstallationGroupsView({
           )
         : [],
     [
-      showToArrangeTable,
+      hasVisitedToArrange,
       jobs,
       groupByJobId,
       planningLookup,
@@ -5984,6 +6531,9 @@ function InstallationGroupsView({
     value: string;
   } | null>(null);
 
+
+
+
   // Precompute the latest scheduled date for every job across groups and visits,
   // so multi-visit / multi-date customers only display the completed checkmark (✓ in green)
   // on their latest date once complete.
@@ -6017,9 +6567,22 @@ function InstallationGroupsView({
   }, [groups, jobs]);
 
   const scheduleRows = useMemo(() => {
+    const hasSearch = Boolean(deferredCustomerQuery.trim() || deferredPeriodFilter.trim());
+    const filterByWeek =
+      planningFilter === "arranged" &&
+      !hasSearch &&
+      activeArrangedWeek &&
+      activeArrangedWeek !== "all";
+
     return groups
-      .filter((group) => group.installationDate)
-      .filter((group) => matchesDateSearch(group.installationDate, deferredPeriodFilter))
+      .filter((group) => {
+        if (!group.installationDate) return false;
+        if (filterByWeek) {
+          const wStart = weekBounds(group.installationDate)?.start;
+          if (wStart !== activeArrangedWeek) return false;
+        }
+        return matchesDateSearch(group.installationDate, deferredPeriodFilter);
+      })
       .flatMap((group) =>
         // A crew booked for a week before anyone is assigned to it still gets
         // a row — otherwise a team added here would vanish the moment it was
@@ -6065,6 +6628,15 @@ function InstallationGroupsView({
         return row.job
           ? matchesWorkCategory(row.job, workCategoryFilter)
           : false;
+      })
+      .filter((row) => {
+        if (planningFilter !== "arranged") return true;
+        // If user typed search or period, search across all weeks
+        if (deferredCustomerQuery.trim() || deferredPeriodFilter.trim()) return true;
+        if (activeArrangedWeek === "all") return true;
+        if (!activeArrangedWeek) return true;
+        const rowWeekStart = weekBounds(row.group.installationDate)?.start ?? "";
+        return rowWeekStart === activeArrangedWeek;
       })
       // Crew first, date within it: every row a given crew works sits together
       // in the order they go out, which is how the schedule sheet itself is
@@ -6112,16 +6684,17 @@ function InstallationGroupsView({
       });
   }, [
     groups,
-    jobs,
+    jobById,
     weekAssignments,
     newRowGroupIds,
-    periodFilter,
-    customerQuery,
+    deferredPeriodFilter,
+    deferredCustomerQuery,
     planningFilter,
     workCategoryFilter,
     planningLookup,
     todayIso,
     pinnedWeekKeys,
+    activeArrangedWeek,
   ]);
 
   // Maps each (week, team) blockKey to all groups that belong to it, so crew
@@ -7015,7 +7588,7 @@ function InstallationGroupsView({
               <select
                 value={planningFilter}
                 onChange={(event) => {
-                  setPlanningFilter(event.target.value);
+                  handlePlanningFilterChange(event.target.value);
                   if (event.target.value !== "to_arrange") {
                     setAwaitingReviewFilter("all");
                   }
@@ -7111,12 +7684,93 @@ function InstallationGroupsView({
               <h2>{currentPlanningTitle}</h2>
               <p>{currentPlanningSubtitle}</p>
             </div>
+            {planningFilter === "arranged" && (
+              <div className="planning-heading-actions arranged-week-nav">
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={handlePrevArrangedWeek}
+                  disabled={allNavWeeks.indexOf(activeArrangedWeek) <= 0}
+                  title="Previous week"
+                >
+                  <ChevronLeft size={16} />
+                  Previous
+                </button>
+                <select
+                  className="arranged-week-select"
+                  value={activeArrangedWeek}
+                  onChange={(e) => setSelectedArrangedWeek(e.target.value)}
+                  aria-label="Select week"
+                >
+                  {allNavWeeks.map((w) => (
+                    <option key={w} value={w}>
+                      Week {weekRangeLabel(w)} {w === latestArrangedWeek ? "(Latest)" : ""}
+                    </option>
+                  ))}
+                  <option value="all">All Weeks</option>
+                </select>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={handleNextArrangedWeek}
+                  disabled={
+                    activeArrangedWeek === "all" ||
+                    allNavWeeks.indexOf(activeArrangedWeek) === allNavWeeks.length - 1
+                  }
+                  title="Next week"
+                >
+                  Next
+                  <ChevronRight size={16} />
+                </button>
+                {onSyncGoogleSheet && (
+                  <button
+                    type="button"
+                    className="button secondary sync-google-sheet-btn"
+                    onClick={() => void onSyncGoogleSheet()}
+                    disabled={syncingSheet}
+                    title="Pull latest installation schedule from Google Sheet"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 8 }}
+                  >
+                    <RefreshCw size={14} className={syncingSheet ? "spin" : ""} />
+                    {syncingSheet ? "Syncing Sheet…" : "Sync Google Sheet"}
+                  </button>
+                )}
+              </div>
+            )}
+            {planningFilter === "propose" && onSyncGoogleSheet && (
+              <div className="planning-heading-actions">
+                <button
+                  type="button"
+                  className="button secondary sync-google-sheet-btn"
+                  onClick={() => void onSyncGoogleSheet()}
+                  disabled={syncingSheet}
+                  title="Pull latest installation schedule from Google Sheet"
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                >
+                  <RefreshCw size={14} className={syncingSheet ? "spin" : ""} />
+                  {syncingSheet ? "Syncing Sheet…" : "Sync Google Sheet"}
+                </button>
+              </div>
+            )}
             {!showSuggestedWeek &&
               !showDepositTable &&
               !showToArrangeTable &&
               planningFilter !== "arranged" && (
                 <div className="planning-heading-actions">
-                  <button className="button primary" onClick={addTeamRow}>
+                  {onSyncGoogleSheet && (
+                    <button
+                      type="button"
+                      className="button secondary sync-google-sheet-btn"
+                      onClick={() => void onSyncGoogleSheet()}
+                      disabled={syncingSheet}
+                      title="Pull latest installation schedule from Google Sheet"
+                      style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                    >
+                      <RefreshCw size={14} className={syncingSheet ? "spin" : ""} />
+                      {syncingSheet ? "Syncing Sheet…" : "Sync Google Sheet"}
+                    </button>
+                  )}
+                  <button className="button primary add-team-row-btn" onClick={addTeamRow}>
                     <Plus size={16} />
                     Add Team
                   </button>
@@ -7125,13 +7779,14 @@ function InstallationGroupsView({
           </div>
         )}
 
-      {showSuggestedWeek && (
+      {hasVisitedPropose && Boolean(scheduleDraft && onChangeScheduleDraft && onSaveSiteAssessment) && (
         <div
           className={`team-planning-workspace ready-schedule-workspace${
             scheduleMapJobId ? "" : " map-hidden"
           }`}
+          style={{ display: showSuggestedWeek ? undefined : "none" }}
         >
-          {scheduleMapJobId && (
+          {scheduleMapJobId && showSuggestedWeek && (
             <PlanningMap
               focusGroupId={null}
               highlightedGroupId={null}
@@ -7166,7 +7821,7 @@ function InstallationGroupsView({
             }
             mapJobId={scheduleMapJobId}
             onOpenInQueue={(jobId) => {
-              setPlanningFilter("to_arrange");
+              handlePlanningFilterChange("to_arrange");
             }}
             focusJobId={null}
             todayIso={todayIso}
@@ -7177,13 +7832,14 @@ function InstallationGroupsView({
         </div>
       )}
 
-      {showDepositTable && (
+      {hasVisitedDeposit && (
         <div
           className={`team-planning-workspace ready-schedule-workspace${
             scheduleMapJobId ? "" : " map-hidden"
           }`}
+          style={{ display: showDepositTable ? undefined : "none" }}
         >
-          {scheduleMapJobId && (
+          {scheduleMapJobId && showDepositTable && (
             <PlanningMap
               focusGroupId={null}
               highlightedGroupId={null}
@@ -7205,13 +7861,14 @@ function InstallationGroupsView({
         </div>
       )}
 
-      {showToArrangeTable && (
+      {hasVisitedToArrange && (
         <div
           className={`team-planning-workspace ready-schedule-workspace${
             scheduleMapJobId ? "" : " map-hidden"
           }`}
+          style={{ display: showToArrangeTable ? undefined : "none" }}
         >
-          {scheduleMapJobId && (
+          {scheduleMapJobId && showToArrangeTable && (
             <PlanningMap
               focusGroupId={null}
               highlightedGroupId={null}
@@ -7240,12 +7897,16 @@ function InstallationGroupsView({
             pendingCount={pendingCount}
             attentionCount={attentionCount}
             omCount={omCount}
+            showProposedDate={true}
           />
         </div>
       )}
 
-      {groupsWorkspace === "teams" && !showSuggestedWeek && !showDepositTable && !showToArrangeTable && (
-        <section className="unified-team-management">
+      {hasVisitedUnifiedTeams && groupsWorkspace === "teams" && (
+        <section
+          className="unified-team-management"
+          style={{ display: showUnifiedTeamManagement ? undefined : "none" }}
+        >
           <div className="table-wrap rti-team unified-team-table">
             <datalist id="rti-slot-time-presets">
               <option value="09:00">09:00 (Morning)</option>
@@ -7287,6 +7948,13 @@ function InstallationGroupsView({
                 </tr>
               </thead>
               <tbody>
+                {scheduleRows.length === 0 && (
+                  <tr className="empty-schedule-row">
+                    <td colSpan={10} style={{ textAlign: "center", padding: "36px 16px", color: "var(--muted)", fontStyle: "italic" }}>
+                      No arranged installations found for this week.
+                    </td>
+                  </tr>
+                )}
                 {scheduleRows.map(({ rowKey, group, job, jobId, blockKey }, index) => {
                   // A band whenever the crew, the week or the supervisor
                   // changes — the sheet's red week bar and the cyan crew bar
@@ -7371,13 +8039,13 @@ function InstallationGroupsView({
                     blockGroups.map((g) => g.installationTeam).find((t) => t && !isPlaceholder(t)) ||
                     group.installationTeam ||
                     (teamNum === 1
-                      ? "Installation Team A"
+                      ? "Team 1"
                       : teamNum === 2
-                        ? "Installation Team C"
+                        ? "Team 2"
                         : teamNum === 3
-                          ? "Installation Team B"
+                          ? "Team 3"
                           : teamNum === 4
-                            ? "Installation Team D"
+                            ? "Team 4"
                             : "");
                   const blockWiringTeam =
                     blockGroups.map((g) => g.wiringTeam).find((t) => t && !isPlaceholder(t)) ||
@@ -7828,7 +8496,7 @@ function InstallationGroupsView({
                                 const latestDate = latestScheduledDateByJobId.get(job.id);
                                 const isLatestDate = !latestDate || !rowDate || rowDate >= latestDate;
                                 const isJobComplete = job.customerAvailabilityStatus === "complete";
-                                const isRowComplete = isJobComplete && isLatestDate;
+                                const isRowComplete = isJobComplete || rowVisit?.status === "complete";
 
                                 return (
                                   <button
@@ -7972,7 +8640,7 @@ function InstallationGroupsView({
                               if (text === derivedPowerOutput(job)) return;
                               onSaveJob({ ...job, powerOutput: text });
                             }}
-                            placeholder="e.g. 16 Jinko 650W"
+                            placeholder="e.g. 11X 650W JinkoSolar TIGER NEO 3.0 Panel N-Type TOPCon"
                             aria-label={`Panel for ${displayName(job.customerName)}`}
                           />
                         ) : (
@@ -8401,8 +9069,8 @@ function InstallationGroupsView({
             <MonthCalendarGrid
               month={calendarMonth}
               jobs={jobs}
-              groups={groups}
-              deliveryRuns={deliveryRuns}
+              groups={scopedGroups}
+              deliveryRuns={scopedDeliveryRuns}
               weather={calendarWeather}
               onSelectDate={(key) => {
                 setShowFullCalendar(false);
@@ -10366,6 +11034,7 @@ function DeliveryPlanningView({
   runs,
   jobs,
   groupByJobId,
+  scheduleDraft,
   warehouses,
   onChangeWarehouses,
   onChange,
@@ -10375,10 +11044,14 @@ function DeliveryPlanningView({
   workCategoryFilter,
   onWorkCategoryFilterChange,
   onSelectJob,
+  onSyncGoogleSheet,
+  syncingSheet,
+  lastScheduleSync,
 }: {
   runs: DeliveryRun[];
   jobs: InstallationJob[];
   groupByJobId: Map<string, InstallationGroup>;
+  scheduleDraft?: ScheduleDraft | null;
   warehouses: Warehouse[];
   onChangeWarehouses: (warehouses: Warehouse[]) => void;
   onChange: (runs: DeliveryRun[]) => void;
@@ -10388,6 +11061,9 @@ function DeliveryPlanningView({
   workCategoryFilter: string;
   onWorkCategoryFilterChange: (next: string) => void;
   onSelectJob?: (jobId: string) => void;
+  onSyncGoogleSheet?: () => Promise<void>;
+  syncingSheet?: boolean;
+  lastScheduleSync?: string | null;
 }) {
   const todayIso = malaysiaToday();
   const jobById = useMemo(
@@ -10401,6 +11077,80 @@ function DeliveryPlanningView({
 
   const [periodFilter, setPeriodFilter] = useState("");
   const [customerQuery, setCustomerQuery] = useState("");
+  const deferredCustomerQuery = useDeferredValue(customerQuery);
+  const deferredPeriodFilter = useDeferredValue(periodFilter);
+
+  // Delivery week pagination: defaults to latest scheduled week
+  const [selectedDeliveryWeek, setSelectedDeliveryWeek] = useState<string | null>(null);
+
+  const deliveryWeeks = useMemo(() => {
+    const weeks = new Set<string>();
+    for (const run of runs) {
+      if (run.deliveryDate) {
+        const start = weekBounds(run.deliveryDate)?.start;
+        if (start) weeks.add(start);
+      }
+    }
+    const currentWeekStart = weekBounds(todayIso)?.start;
+    if (currentWeekStart) {
+      weeks.add(currentWeekStart);
+    }
+    return Array.from(weeks).sort();
+  }, [runs, todayIso]);
+
+  const latestDeliveryWeek = useMemo(() => {
+    let latest = "";
+    for (const run of runs) {
+      if (run.deliveryDate) {
+        const start = weekBounds(run.deliveryDate)?.start;
+        if (start && start > latest) {
+          latest = start;
+        }
+      }
+    }
+    return latest || (deliveryWeeks.length > 0 ? deliveryWeeks[deliveryWeeks.length - 1] : "");
+  }, [runs, deliveryWeeks]);
+
+  const activeDeliveryWeek = selectedDeliveryWeek ?? latestDeliveryWeek;
+
+  const allNavWeeks = useMemo(() => {
+    const set = new Set(deliveryWeeks);
+    if (activeDeliveryWeek && activeDeliveryWeek !== "all") {
+      set.add(activeDeliveryWeek);
+    }
+    return Array.from(set).sort();
+  }, [deliveryWeeks, activeDeliveryWeek]);
+
+  const handlePrevDeliveryWeek = () => {
+    if (!activeDeliveryWeek || activeDeliveryWeek === "all") {
+      if (latestDeliveryWeek) startTransition(() => setSelectedDeliveryWeek(latestDeliveryWeek));
+      return;
+    }
+    const idx = allNavWeeks.indexOf(activeDeliveryWeek);
+    startTransition(() => {
+      if (idx > 0) {
+        setSelectedDeliveryWeek(allNavWeeks[idx - 1]);
+      } else {
+        setSelectedDeliveryWeek(addDays(activeDeliveryWeek, -7));
+      }
+    });
+  };
+
+  const handleNextDeliveryWeek = () => {
+    if (!activeDeliveryWeek || activeDeliveryWeek === "all") {
+      if (latestDeliveryWeek) startTransition(() => setSelectedDeliveryWeek(latestDeliveryWeek));
+      return;
+    }
+    const idx = allNavWeeks.indexOf(activeDeliveryWeek);
+    startTransition(() => {
+      if (idx !== -1 && idx < allNavWeeks.length - 1) {
+        setSelectedDeliveryWeek(allNavWeeks[idx + 1]);
+      } else {
+        setSelectedDeliveryWeek(addDays(activeDeliveryWeek, 7));
+      }
+    });
+  };
+
   const [planningFilter, setPlanningFilter] = useState<string>(ALL_JOBS);
   const planningLookup = useMemo<PlanningLookup>(
     () => ({
@@ -10424,10 +11174,14 @@ function DeliveryPlanningView({
 
   function createRun() {
     const id = crypto.randomUUID();
+    const defaultDate =
+      activeDeliveryWeek && activeDeliveryWeek !== "all"
+        ? activeDeliveryWeek
+        : todayIso;
     const nextRun: DeliveryRun = {
       id,
       name: "",
-      deliveryDate: todayIso,
+      deliveryDate: defaultDate,
       warehouse: warehouses[0]?.name || "",
       deliveryTeam: "Delivery Team 1",
       deliveryPic: "",
@@ -10711,57 +11465,81 @@ function DeliveryPlanningView({
     </section>
   );
 
-  const query = customerQuery.trim().toLowerCase();
+  const query = deferredCustomerQuery.trim().toLowerCase();
+  const period = deferredPeriodFilter.trim();
+  const hasSearch = Boolean(query || period);
+  const filterByWeek = !hasSearch && activeDeliveryWeek && activeDeliveryWeek !== "all";
   const stopFiltered =
     Boolean(query) ||
     planningFilter !== ALL_JOBS ||
     workCategoryFilter !== ALL_JOBS;
 
-  const visibleRuns = runs
-    .map((run) => {
-      const runJobs = run.jobIds
-        .map((id) => jobById.get(id))
-        .filter((job): job is InstallationJob => Boolean(job));
-      const matching = runJobs.filter(
-        (job) =>
-          (!query ||
-            jobMatchesSearch(job, query) ||
-            (groupByJobId.get(job.id)?.supervisors ?? []).some((name) =>
-              name.toLowerCase().includes(query),
-            )) &&
-          matchesPipelineStage(job, planningFilter, todayIso, planningLookup) &&
-          matchesWorkCategory(job, workCategoryFilter),
-      );
-      const ordered = matching
-        .slice()
-        .sort(
-          (a, b) =>
-            Number(pinnedJobIds.has(b.id)) - Number(pinnedJobIds.has(a.id)),
+  const visibleRuns = useMemo(() => {
+    return runs
+      .map((run) => {
+        const runJobs = run.jobIds
+          .map((id) => jobById.get(id))
+          .filter((job): job is InstallationJob => Boolean(job));
+        const matching = runJobs.filter(
+          (job) =>
+            (!query ||
+              jobMatchesSearch(job, query) ||
+              (groupByJobId.get(job.id)?.supervisors ?? []).some((name) =>
+                name.toLowerCase().includes(query),
+              )) &&
+            matchesPipelineStage(job, planningFilter, todayIso, planningLookup) &&
+            matchesWorkCategory(job, workCategoryFilter),
         );
-      return { run, runJobs: ordered };
-    })
-    .filter(({ run, runJobs }) => {
-      if (!matchesDateSearch(run.deliveryDate, periodFilter)) return false;
-      if (stopFiltered && !runJobs.length) return false;
-      return true;
-    })
-    .sort((a, b) => {
-      const weekKeyA = a.run.weekLabel || (a.run.deliveryDate ? (weekBounds(a.run.deliveryDate)?.start ?? "") : "undated");
-      const weekKeyB = b.run.weekLabel || (b.run.deliveryDate ? (weekBounds(b.run.deliveryDate)?.start ?? "") : "undated");
-      const pinA = pinnedWeekKeys.has(weekKeyA) ? 0 : 1;
-      const pinB = pinnedWeekKeys.has(weekKeyB) ? 0 : 1;
-      if (pinA !== pinB) return pinA - pinB;
-      if (a.run.order !== undefined && b.run.order !== undefined) {
-        return a.run.order - b.run.order;
-      }
-      return (
-        (b.run.deliveryDate ?? "").localeCompare(a.run.deliveryDate ?? "") ||
-        (a.run.departureTime ?? "").localeCompare(b.run.departureTime ?? "") ||
-        (a.run.deliveryTeam ?? "").localeCompare(b.run.deliveryTeam ?? "") ||
-        (a.run.name ?? "").localeCompare(b.run.name ?? "") ||
-        a.run.id.localeCompare(b.run.id)
-      );
-    });
+        const ordered = matching
+          .slice()
+          .sort(
+            (a, b) =>
+              Number(pinnedJobIds.has(b.id)) - Number(pinnedJobIds.has(a.id)),
+          );
+        return { run, runJobs: ordered };
+      })
+      .filter(({ run, runJobs }) => {
+        if (filterByWeek) {
+          const runWeekStart = run.deliveryDate ? (weekBounds(run.deliveryDate)?.start ?? "") : "";
+          if (runWeekStart !== activeDeliveryWeek) return false;
+        }
+        if (!matchesDateSearch(run.deliveryDate, period)) return false;
+        if (stopFiltered && !runJobs.length) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const weekKeyA = a.run.weekLabel || (a.run.deliveryDate ? (weekBounds(a.run.deliveryDate)?.start ?? "") : "undated");
+        const weekKeyB = b.run.weekLabel || (b.run.deliveryDate ? (weekBounds(b.run.deliveryDate)?.start ?? "") : "undated");
+        const pinA = pinnedWeekKeys.has(weekKeyA) ? 0 : 1;
+        const pinB = pinnedWeekKeys.has(weekKeyB) ? 0 : 1;
+        if (pinA !== pinB) return pinA - pinB;
+        if (a.run.order !== undefined && b.run.order !== undefined) {
+          return a.run.order - b.run.order;
+        }
+        return (
+          (b.run.deliveryDate ?? "").localeCompare(a.run.deliveryDate ?? "") ||
+          (a.run.departureTime ?? "").localeCompare(b.run.departureTime ?? "") ||
+          (a.run.deliveryTeam ?? "").localeCompare(b.run.deliveryTeam ?? "") ||
+          (a.run.name ?? "").localeCompare(b.run.name ?? "") ||
+          a.run.id.localeCompare(b.run.id)
+        );
+      });
+  }, [
+    runs,
+    jobById,
+    query,
+    groupByJobId,
+    planningFilter,
+    todayIso,
+    planningLookup,
+    workCategoryFilter,
+    pinnedJobIds,
+    filterByWeek,
+    activeDeliveryWeek,
+    period,
+    stopFiltered,
+    pinnedWeekKeys,
+  ]);
 
   const filtered = Boolean(
     periodFilter ||
@@ -10771,71 +11549,133 @@ function DeliveryPlanningView({
   );
 
   return (
-    <div className="planning-panel">
-      <div className="planning-heading delivery-schedule-heading">
-        <div>
-          <h2>Delivery Schedule</h2>
-          <p>Group customer materials into warehouse delivery routes.</p>
-        </div>
-        <div className="planning-heading-actions">
-          <div className="schedule-filters">
-            <label className="schedule-search">
-              <span>Planning status</span>
-              <select
-                value={planningFilter}
-                onChange={(event) => setPlanningFilter(event.target.value)}
-                aria-label="Filter by planning status"
-              >
-                <option value={ALL_JOBS}>All jobs</option>
-                {PLANNING_STAGES.map((stage) => (
-                  <option key={stage.value} value={stage.value}>
-                    {stage.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="schedule-search">
-              <span>Month or year</span>
-              <input
-                type="search"
-                className="second-payment-search"
-                value={periodFilter}
-                onChange={(event) => setPeriodFilter(event.target.value)}
-                placeholder="August, 2026, August 2026…"
-                aria-label="Filter by delivery month or year"
-              />
-            </label>
-            <label className="schedule-search">
-              <span>Customer</span>
-              <input
-                type="search"
-                className="customer-invoice-search"
-                value={customerQuery}
-                onChange={(event) => setCustomerQuery(event.target.value)}
-                placeholder="Search customer, invoice, address, site supervisor…"
-                aria-label="Search customer name, invoice number, address or site supervisor"
-              />
-            </label>
-            {filtered && (
-              <button
-                type="button"
-                className="button secondary"
-                onClick={() => {
-                  setPeriodFilter("");
-                  setCustomerQuery("");
-                  setPlanningFilter(ALL_JOBS);
-                }}
-              >
-                Clear
-              </button>
-            )}
-          </div>
-          <button className="button primary" onClick={createRun}>
-            <Truck size={16} />
-            Create delivery run
-          </button>
+    <>
+      <div className="installation-schedule-filter-bar delivery-schedule-filter-bar">
+        <div className="schedule-filters">
+          <label className="schedule-search">
+            <span>Planning status</span>
+            <select
+              value={planningFilter}
+              onChange={(event) => setPlanningFilter(event.target.value)}
+              aria-label="Filter by planning status"
+            >
+              <option value={ALL_JOBS}>All jobs</option>
+              {PLANNING_STAGES.map((stage) => (
+                <option key={stage.value} value={stage.value}>
+                  {stage.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="schedule-search">
+            <span>Month or year</span>
+            <input
+              type="search"
+              className="second-payment-search"
+              value={periodFilter}
+              onChange={(event) => setPeriodFilter(event.target.value)}
+              placeholder="August, 2026, August 2026…"
+              aria-label="Filter by delivery month or year"
+            />
+          </label>
+          <label className="schedule-search">
+            <span>Customer</span>
+            <input
+              type="search"
+              className="customer-invoice-search"
+              value={customerQuery}
+              onChange={(event) => setCustomerQuery(event.target.value)}
+              placeholder="Search customer, invoice, address, site supervisor…"
+              aria-label="Search customer name, invoice number, address or site supervisor"
+            />
+          </label>
+          {filtered && (
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => {
+                setPeriodFilter("");
+                setCustomerQuery("");
+                setPlanningFilter(ALL_JOBS);
+              }}
+            >
+              Clear
+            </button>
+          )}
         </div>
       </div>
+
+      <div className="planning-panel">
+        <div className="planning-heading delivery-schedule-heading">
+          <div>
+            <h2>Delivery Schedule</h2>
+            <p>Group customer materials into warehouse delivery routes.</p>
+          </div>
+          <div className="planning-heading-actions arranged-week-nav">
+            <button
+              type="button"
+              className="button secondary"
+              onClick={handlePrevDeliveryWeek}
+              disabled={allNavWeeks.indexOf(activeDeliveryWeek) <= 0}
+              title="Previous week"
+            >
+              <ChevronLeft size={16} />
+              Previous
+            </button>
+            <select
+              className="arranged-week-select"
+              value={activeDeliveryWeek}
+              onChange={(e) => {
+                const val = e.target.value;
+                startTransition(() => {
+                  setSelectedDeliveryWeek(val);
+                });
+              }}
+              aria-label="Select week"
+            >
+              {allNavWeeks.map((w) => (
+                <option key={w} value={w}>
+                  Week {weekRangeLabel(w)} {w === latestDeliveryWeek ? "(Latest)" : ""}
+                </option>
+              ))}
+              <option value="all">All Weeks</option>
+            </select>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={handleNextDeliveryWeek}
+              disabled={
+                activeDeliveryWeek === "all" ||
+                allNavWeeks.indexOf(activeDeliveryWeek) === allNavWeeks.length - 1
+              }
+              title="Next week"
+            >
+              Next
+              <ChevronRight size={16} />
+            </button>
+            {onSyncGoogleSheet && (
+              <button
+                type="button"
+                className="button secondary sync-google-sheet-btn"
+                onClick={() => void onSyncGoogleSheet()}
+                disabled={syncingSheet}
+                title={
+                  lastScheduleSync
+                    ? `Last synced with Google Sheet: ${formatDateOnly(lastScheduleSync)} ${lastScheduleSync.slice(11, 16)}`
+                    : "Pull latest delivery and installation schedule from Google Sheet"
+                }
+                style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 8 }}
+              >
+                <RefreshCw size={14} className={syncingSheet ? "spin" : ""} />
+                {syncingSheet ? "Syncing Sheet…" : "Sync Google Sheet"}
+              </button>
+            )}
+            <button className="button primary create-delivery-run-btn" onClick={createRun}>
+              <Truck size={16} />
+              Create delivery run
+            </button>
+          </div>
+        </div>
       <section className="planning-group">
         <div className="table-wrap rti-team unified-team-table delivery-schedule-table">
           <table>
@@ -11088,9 +11928,15 @@ function DeliveryPlanningView({
 
                     {runJobs.map((job, stopIndex) => {
                       const assignedGroup = groupByJobId.get(job.id);
+                      const proposedPlacement = scheduleDraft?.placements?.find(
+                        (p) => p.jobId === job.id,
+                      );
+
                       const instDate =
                         assignedGroup?.installationDate ||
+                        proposedPlacement?.date ||
                         job.preferredInstallationDate ||
+                        job.installationDate ||
                         job.visits?.[0]?.date ||
                         null;
                       const rowRemark = cleanDeliveryStockRemark(
@@ -11113,12 +11959,17 @@ function DeliveryPlanningView({
                         "";
 
                       const rawTeamNum = (() => {
-                        if (!assignedGroup) return null;
-                        const raw = `${assignedGroup.teamLabel || ""} ${assignedGroup.name || ""} ${assignedGroup.installationTeam || ""}`;
-                        const m =
-                          raw.match(/\bteam\s*(\d+)\b/i) ||
-                          (assignedGroup.teamLabel || "").match(/\b(\d+)\b/);
-                        return m ? Number(m[1]) : null;
+                        if (assignedGroup) {
+                          const raw = `${assignedGroup.teamLabel || ""} ${assignedGroup.name || ""} ${assignedGroup.installationTeam || ""}`;
+                          const m =
+                            raw.match(/\bteam\s*(\d+)\b/i) ||
+                            (assignedGroup.teamLabel || "").match(/\b(\d+)\b/);
+                          return m ? Number(m[1]) : null;
+                        }
+                        if (proposedPlacement) {
+                          return proposedPlacement.team;
+                        }
+                        return null;
                       })();
                       const isStandardTeam =
                         rawTeamNum !== null && [0, 1, 2, 3, 4, 6, 7].includes(rawTeamNum);
@@ -11127,13 +11978,18 @@ function DeliveryPlanningView({
                         ? `team-${teamNum}`
                         : assignedGroup
                         ? "team-default"
+                        : proposedPlacement
+                        ? `team-${proposedPlacement.team}`
                         : "team-unassigned";
 
-                      const mainTeamLabel =
-                        assignedGroup?.teamLabel ||
-                        (teamNum !== null
-                          ? `Team ${teamNum}`
-                          : assignedGroup?.name || "");
+                      const mainTeamLabel = assignedGroup
+                        ? assignedGroup?.teamLabel ||
+                          (teamNum !== null
+                            ? `Team ${teamNum}`
+                            : assignedGroup?.name || "")
+                        : proposedPlacement
+                        ? `Team ${proposedPlacement.team} (Proposed)`
+                        : "";
 
                       const schedulingTeamParts: string[] = [];
                       if (mainTeamLabel) schedulingTeamParts.push(mainTeamLabel);
@@ -11355,7 +12211,7 @@ function DeliveryPlanningView({
                                 if (text === derivedPowerOutput(job)) return;
                                 onUpdateJob({ ...job, powerOutput: text });
                               }}
-                              placeholder="e.g. 16 Jinko 650W"
+                              placeholder="e.g. 11X 650W JinkoSolar TIGER NEO 3.0 Panel N-Type TOPCon"
                               aria-label={`Panel for ${displayName(
                                 job.customerName,
                               )}`}
@@ -11473,18 +12329,31 @@ function DeliveryPlanningView({
                                 role="tooltip"
                               >
                                 <div className="rti-inst-popover-title">
-                                  {assignedGroup?.teamLabel ||
-                                    (teamNum !== null
-                                      ? `Team ${teamNum}`
-                                      : assignedGroup?.name ||
-                                        "Installation Assignment")}
+                                  {assignedGroup
+                                    ? assignedGroup.teamLabel ||
+                                      (teamNum !== null
+                                        ? `Team ${teamNum}`
+                                        : assignedGroup.name || "Arranged Installation")
+                                    : proposedPlacement
+                                    ? `Team ${proposedPlacement.team} (Proposed)`
+                                    : "Installation Assignment"}
                                 </div>
+                                {proposedPlacement && !assignedGroup && (
+                                  <div className="rti-inst-popover-row">
+                                    <span className="rti-inst-popover-label">
+                                      Status:
+                                    </span>
+                                    <span className="rti-inst-popover-val">
+                                      Propose to Install ({proposedPlacement.slot?.toUpperCase() || "AM"})
+                                    </span>
+                                  </div>
+                                )}
                                 <div className="rti-inst-popover-row">
                                   <span className="rti-inst-popover-label">
                                     Installation team:
                                   </span>
                                   <span className="rti-inst-popover-val">
-                                    {installTeam || "–"}
+                                    {installTeam || (proposedPlacement ? `Team ${proposedPlacement.team}` : "–")}
                                   </span>
                                 </div>
                                 <div className="rti-inst-popover-row">
@@ -11618,5 +12487,6 @@ function DeliveryPlanningView({
       </section>
       {warehouseTable}
     </div>
+    </>
   );
 }

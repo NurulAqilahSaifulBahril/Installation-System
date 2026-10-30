@@ -150,6 +150,7 @@ export type JobVisit = {
   // because the sheet these came from has no fixed vocabulary.
   kind?: string;
   notes?: string;
+  status?: string;
 };
 
 export type InstallationJob = {

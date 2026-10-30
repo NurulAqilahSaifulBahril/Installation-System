@@ -3,22 +3,39 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   ArrowLeft,
+  ClipboardList,
   KeyRound,
   LoaderCircle,
   RefreshCw,
   ShieldCheck,
   UserPlus,
+  Users,
 } from "lucide-react";
 
 type AdminUser = {
   id: string;
   username: string;
+  phone?: string;
   displayName: string;
   role: "admin" | "staff";
+  pageAccess?: string;
   isActive: boolean;
   createdAt: string;
   lastSeenAt: string | null;
 };
+
+const PRESET_OPTIONS = [
+  { value: "all", label: "All Pages" },
+  { value: "groups,delivery,project", label: "Operations (Install, Delivery, Team)" },
+  { value: "groups,delivery", label: "Installation & Delivery" },
+  { value: "groups,delivery,own", label: "Installation & Delivery (Own Name Only)" },
+  { value: "groups", label: "Installation Schedule Only" },
+  { value: "groups,own", label: "Installation Schedule (Own Name Only)" },
+  { value: "delivery", label: "Delivery Schedule Only" },
+  { value: "delivery,own", label: "Delivery Schedule (Own Name Only)" },
+  { value: "project", label: "Project Team Only" },
+  { value: "warehouse", label: "Warehouse Only" },
+] as const;
 
 type AuditEntry = {
   id: number;
@@ -57,6 +74,7 @@ export default function AdminPage() {
   const [authState, setAuthState] = useState<"loading" | "denied" | "ok">(
     "loading",
   );
+  const [activeTab, setActiveTab] = useState<"users" | "audit">("users");
 
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [usersError, setUsersError] = useState<string | null>(null);
@@ -66,9 +84,11 @@ export default function AdminPage() {
     displayName: "",
     password: "",
     role: "staff" as "admin" | "staff",
+    pageAccess: "all",
   });
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+
 
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [auditPage, setAuditPage] = useState(0);
@@ -171,7 +191,7 @@ export default function AdminPage() {
         setCreateError(payload.error || "Could not create user.");
         return;
       }
-      setDraft({ username: "", displayName: "", password: "", role: "staff" });
+      setDraft({ username: "", displayName: "", password: "", role: "staff", pageAccess: "all" });
       loadUsers();
       loadAudit(0);
     } catch {
@@ -220,9 +240,9 @@ export default function AdminPage() {
     return (
       <div className="login-layout">
         <div className="login-card">
-          <h1>IT Admin</h1>
+          <h1>Admin</h1>
           <p>
-            Your account does not have admin access. Ask an IT Admin to raise
+            Your account does not have admin access. Ask an Admin to raise
             your role if you need it.
           </p>
           <a className="button secondary full" href="/">
@@ -239,7 +259,7 @@ export default function AdminPage() {
       <div className="admin-heading">
         <div>
           <h1>
-            <ShieldCheck size={22} style={{ verticalAlign: "-4px" }} /> IT Admin
+            <ShieldCheck size={22} style={{ verticalAlign: "-4px" }} /> Admin
           </h1>
           <p>
             User accounts and the change audit log. Signed in as{" "}
@@ -252,95 +272,374 @@ export default function AdminPage() {
         </a>
       </div>
 
-      <section className="admin-panel">
-        <h2>Users</h2>
-        {usersError && (
-          <p className="login-error" role="alert">
-            {usersError}
-          </p>
-        )}
-        <div className="admin-table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Username</th>
-                <th>Display name</th>
-                <th>Role</th>
-                <th>Status</th>
-                <th>Last seen</th>
-                <th>Created</th>
-                <th aria-label="Actions"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((user) => (
-                <tr key={user.id}>
-                  <td>
-                    <strong>{user.username}</strong>
-                  </td>
-                  <td>{user.displayName}</td>
-                  <td>
-                    <span className={`admin-badge role-${user.role}`}>
-                      {user.role === "admin" ? "IT Admin" : "Staff"}
-                    </span>
-                  </td>
-                  <td>
-                    {user.isActive ? (
-                      <span className="admin-badge role-staff">Active</span>
+      <div
+        role="tablist"
+        aria-label="Admin sections"
+        style={{
+          display: "flex",
+          gap: "8px",
+          borderBottom: "1px solid var(--line)",
+          paddingBottom: "2px",
+        }}
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "users"}
+          onClick={() => setActiveTab("users")}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            padding: "10px 18px",
+            fontSize: "0.9rem",
+            fontWeight: 600,
+            background: activeTab === "users" ? "var(--surface)" : "transparent",
+            color: activeTab === "users" ? "var(--ink)" : "var(--muted)",
+            border: "1px solid",
+            borderColor: activeTab === "users" ? "var(--line)" : "transparent",
+            borderBottom: activeTab === "users" ? "2px solid #2563eb" : "none",
+            borderRadius: "8px 8px 0 0",
+            cursor: "pointer",
+          }}
+        >
+          <Users size={16} />
+          Users ({users.length})
+        </button>
+
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "audit"}
+          onClick={() => setActiveTab("audit")}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            padding: "10px 18px",
+            fontSize: "0.9rem",
+            fontWeight: 600,
+            background: activeTab === "audit" ? "var(--surface)" : "transparent",
+            color: activeTab === "audit" ? "var(--ink)" : "var(--muted)",
+            border: "1px solid",
+            borderColor: activeTab === "audit" ? "var(--line)" : "transparent",
+            borderBottom: activeTab === "audit" ? "2px solid #2563eb" : "none",
+            borderRadius: "8px 8px 0 0",
+            cursor: "pointer",
+          }}
+        >
+          <ClipboardList size={16} />
+          Audit Log
+        </button>
+      </div>
+
+      {activeTab === "users" && (
+        <section className="admin-panel">
+          {usersError && (
+            <p className="login-error" role="alert">
+              {usersError}
+            </p>
+          )}
+
+          {(
+            [
+              {
+                key: "admin",
+                title: "Admins (Can Edit)",
+                list: users.filter((u) => u.role === "admin"),
+                emptyText: "No admin accounts found.",
+              },
+              {
+                key: "staff",
+                title: "Staff (View Only)",
+                list: users.filter((u) => u.role === "staff"),
+                emptyText: "No staff accounts yet.",
+              },
+            ] as const
+          ).map((group, idx) => (
+            <div
+              key={group.key}
+              style={{ marginTop: idx > 0 ? "24px" : "0" }}
+            >
+              <h2
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  marginBottom: "10px",
+                }}
+              >
+                {group.title}
+                <span
+                  style={{
+                    fontSize: "0.78rem",
+                    fontWeight: 600,
+                    padding: "2px 8px",
+                    borderRadius: "999px",
+                    background:
+                      group.key === "admin"
+                        ? "rgba(59, 108, 176, 0.14)"
+                        : "var(--surface-soft)",
+                    color:
+                      group.key === "admin"
+                        ? "var(--accent, #3b6cb0)"
+                        : "var(--muted)",
+                  }}
+                >
+                  {group.list.length}
+                </span>
+              </h2>
+              <div className="admin-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Phone number</th>
+                      <th>Display name</th>
+                      <th>Role</th>
+                      <th>Page Access</th>
+                      <th>Status</th>
+                      <th>Last seen</th>
+                      <th>Created</th>
+                      <th aria-label="Actions"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.list.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          style={{
+                            textAlign: "center",
+                            padding: "18px",
+                            color: "var(--muted)",
+                            fontStyle: "italic",
+                          }}
+                        >
+                          {group.emptyText}
+                        </td>
+                      </tr>
                     ) : (
-                      <span className="admin-badge inactive">Deactivated</span>
+                      group.list.map((user) => {
+                        const phoneOrUser = user.phone || user.username;
+                        return (
+                        <tr key={user.id}>
+                          <td>
+                            <input
+                              type="text"
+                              defaultValue={phoneOrUser}
+                              key={`${user.id}-phone-${phoneOrUser}`}
+                              placeholder="e.g. 012-345 6789"
+                              title="Click to edit phone number"
+                              aria-label={`Phone number for ${user.displayName || user.username}`}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") e.currentTarget.blur();
+                              }}
+                              onBlur={(e) => {
+                                const nextVal = e.target.value.trim();
+                                if (nextVal && nextVal !== phoneOrUser) {
+                                  void patchUser(
+                                    user.id,
+                                    user.role === "staff"
+                                      ? { phone: nextVal, username: nextVal }
+                                      : { phone: nextVal },
+                                  );
+                                } else {
+                                  e.target.value = phoneOrUser;
+                                }
+                              }}
+                              style={{
+                                height: "28px",
+                                padding: "0 8px",
+                                borderRadius: "6px",
+                                border: "1px solid transparent",
+                                background: "transparent",
+                                color: "var(--ink)",
+                                fontSize: "13px",
+                                fontWeight: 600,
+                                width: "100%",
+                                minWidth: "130px",
+                              }}
+                              onFocus={(e) => {
+                                e.currentTarget.style.borderColor = "var(--line)";
+                                e.currentTarget.style.background = "var(--surface)";
+                              }}
+                              onBlurCapture={(e) => {
+                                e.currentTarget.style.borderColor = "transparent";
+                                e.currentTarget.style.background = "transparent";
+                              }}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="text"
+                              defaultValue={user.displayName}
+                              key={`${user.id}-${user.displayName}`}
+                              title="Display name (used to match 'Own Name Only' schedules)"
+                              aria-label={`Display name for ${user.username}`}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") e.currentTarget.blur();
+                              }}
+                              onBlur={(e) => {
+                                const nextName = e.target.value.trim();
+                                if (nextName && nextName !== user.displayName) {
+                                  void patchUser(user.id, { displayName: nextName });
+                                } else {
+                                  e.target.value = user.displayName;
+                                }
+                              }}
+                              style={{
+                                height: "28px",
+                                padding: "0 8px",
+                                borderRadius: "6px",
+                                border: "1px solid transparent",
+                                background: "transparent",
+                                color: "var(--ink)",
+                                fontSize: "13px",
+                                width: "100%",
+                                minWidth: "130px",
+                              }}
+                              onFocus={(e) => {
+                                e.currentTarget.style.borderColor = "var(--line)";
+                                e.currentTarget.style.background = "var(--surface)";
+                              }}
+                              onBlurCapture={(e) => {
+                                e.currentTarget.style.borderColor = "transparent";
+                                e.currentTarget.style.background = "transparent";
+                              }}
+                            />
+                          </td>
+                          <td>
+                            <select
+                              value={user.role}
+                              onChange={(e) => {
+                                const newRole = e.target.value as "admin" | "staff";
+                                if (user.id === me?.id && newRole === "staff") {
+                                  window.alert("You cannot demote your own account.");
+                                  return;
+                                }
+                                void patchUser(user.id, { role: newRole });
+                              }}
+                              disabled={user.id === me?.id}
+                              title={
+                                user.id === me?.id
+                                  ? "You cannot demote your own account"
+                                  : "Change user role"
+                              }
+                              className={`admin-badge role-${user.role}`}
+                              style={{
+                                height: "28px",
+                                padding: "0 8px",
+                                borderRadius: "999px",
+                                fontSize: "12px",
+                                fontWeight: 600,
+                                border: "1px solid var(--line)",
+                                cursor: user.id === me?.id ? "not-allowed" : "pointer",
+                                opacity: user.id === me?.id ? 0.75 : 1,
+                                background:
+                                  user.role === "admin"
+                                    ? "rgba(59, 108, 176, 0.14)"
+                                    : "var(--surface-soft)",
+                                color:
+                                  user.role === "admin"
+                                    ? "var(--accent, #3b6cb0)"
+                                    : "var(--muted)",
+                                outline: "none",
+                              }}
+                              aria-label={`Role for ${user.username}`}
+                            >
+                              <option value="staff">Staff (View Only)</option>
+                              <option value="admin">Admin (Can Edit)</option>
+                            </select>
+                          </td>
+                          <td>
+                            <select
+                              value={user.role === "admin" ? "all" : (user.pageAccess || "all")}
+                              onChange={(e) => void patchUser(user.id, { pageAccess: e.target.value })}
+                              disabled={user.role === "admin"}
+                              style={{
+                                height: "28px",
+                                padding: "0 8px",
+                                borderRadius: "6px",
+                                border: "1px solid var(--line)",
+                                background: "var(--surface)",
+                                color: "var(--ink)",
+                                fontSize: "12px",
+                                fontWeight: 500,
+                                cursor: user.role === "admin" ? "default" : "pointer",
+                                opacity: user.role === "admin" ? 0.75 : 1,
+                                outline: "none",
+                              }}
+                              title={
+                                user.role === "admin"
+                                  ? "Admins always have full access to all pages"
+                                  : "Change page access"
+                              }
+                              aria-label={`Page access for ${user.username}`}
+                            >
+                              {PRESET_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                              {user.pageAccess &&
+                                user.pageAccess !== "all" &&
+                                !PRESET_OPTIONS.some((o) => o.value === user.pageAccess) && (
+                                  <option value={user.pageAccess}>
+                                    Custom ({user.pageAccess})
+                                  </option>
+                                )}
+                            </select>
+                          </td>
+                          <td>
+                            {user.isActive ? (
+                              <span className="admin-badge role-staff">Active</span>
+                            ) : (
+                              <span className="admin-badge inactive">Deactivated</span>
+                            )}
+                          </td>
+                          <td className="audit-time">{formatTime(user.lastSeenAt)}</td>
+                          <td className="audit-time">{formatTime(user.createdAt)}</td>
+                          <td>
+                            <div className="row-actions">
+                              <button
+                                type="button"
+                                className="button secondary"
+                                onClick={() => resetPassword(user)}
+                              >
+                                <KeyRound size={14} />
+                                Reset password
+                              </button>
+                              {user.id !== me?.id && (
+                                <button
+                                  type="button"
+                                  className="button secondary"
+                                  onClick={() =>
+                                    void patchUser(user.id, {
+                                      isActive: !user.isActive,
+                                    })
+                                  }
+                                >
+                                  {user.isActive ? "Deactivate" : "Reactivate"}
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                        );
+                      })
                     )}
-                  </td>
-                  <td className="audit-time">{formatTime(user.lastSeenAt)}</td>
-                  <td className="audit-time">{formatTime(user.createdAt)}</td>
-                  <td>
-                    <div className="row-actions">
-                      <button
-                        type="button"
-                        className="button secondary"
-                        onClick={() => resetPassword(user)}
-                      >
-                        <KeyRound size={14} />
-                        Reset password
-                      </button>
-                      {user.id !== me?.id && (
-                        <>
-                          <button
-                            type="button"
-                            className="button secondary"
-                            onClick={() =>
-                              void patchUser(user.id, {
-                                role: user.role === "admin" ? "staff" : "admin",
-                              })
-                            }
-                          >
-                            {user.role === "admin" ? "Make staff" : "Make admin"}
-                          </button>
-                          <button
-                            type="button"
-                            className="button secondary"
-                            onClick={() =>
-                              void patchUser(user.id, {
-                                isActive: !user.isActive,
-                              })
-                            }
-                          >
-                            {user.isActive ? "Deactivate" : "Reactivate"}
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
 
         <form className="admin-form-row" onSubmit={handleCreate}>
           <label>
-            Username
+            Phone number
             <input
+              type="tel"
+              placeholder="e.g. 012-345 6789"
               value={draft.username}
               onChange={(event) =>
                 setDraft({ ...draft, username: event.target.value })
@@ -350,23 +649,26 @@ export default function AdminPage() {
           <label>
             Display name
             <input
+              placeholder="e.g. Mun"
               value={draft.displayName}
               onChange={(event) =>
                 setDraft({ ...draft, displayName: event.target.value })
               }
             />
           </label>
-          <label>
-            Password
-            <input
-              type="password"
-              value={draft.password}
-              onChange={(event) =>
-                setDraft({ ...draft, password: event.target.value })
-              }
-              autoComplete="new-password"
-            />
-          </label>
+          {draft.role === "admin" && (
+            <label>
+              Password
+              <input
+                type="password"
+                value={draft.password}
+                onChange={(event) =>
+                  setDraft({ ...draft, password: event.target.value })
+                }
+                autoComplete="new-password"
+              />
+            </label>
+          )}
           <label>
             Role
             <select
@@ -378,8 +680,26 @@ export default function AdminPage() {
                 })
               }
             >
-              <option value="staff">Staff</option>
-              <option value="admin">IT Admin</option>
+              <option value="staff">Staff (View Only)</option>
+              <option value="admin">Admin (Can Edit)</option>
+            </select>
+          </label>
+          <label>
+            Page Access
+            <select
+              value={draft.pageAccess}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  pageAccess: event.target.value,
+                })
+              }
+            >
+              {PRESET_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
             </select>
           </label>
           <button
@@ -389,7 +709,7 @@ export default function AdminPage() {
               creating ||
               !draft.username.trim() ||
               !draft.displayName.trim() ||
-              draft.password.length < 6
+              (draft.role === "admin" && draft.password.length < 6)
             }
           >
             {creating ? (
@@ -406,7 +726,9 @@ export default function AdminPage() {
           </p>
         )}
       </section>
+      )}
 
+      {activeTab === "audit" && (
       <section className="admin-panel">
         <h2>Audit log</h2>
         <div className="admin-audit-filters">
@@ -513,6 +835,7 @@ export default function AdminPage() {
           </button>
         </div>
       </section>
+      )}
     </div>
   );
 }

@@ -15,7 +15,8 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { ImagePreviewModal, type ImagePreviewTarget } from "@/app/components/ImagePreviewModal";
 import {
   isSedaApproved,
   type InstallationJob,
@@ -24,6 +25,7 @@ import {
   type SiteAssessment,
   type SiteDifficulty,
 } from "@/lib/types";
+import { formatPanelDisplay } from "@/lib/panel-utils";
 import {
   categorizeIssue,
   derivePriority,
@@ -102,45 +104,7 @@ function extractPanelBrand(text: string): string {
 }
 
 function panelText(job: InstallationJob): string {
-  const existing = job.powerOutput?.trim() || "";
-  const existingBrand = extractPanelBrand(existing);
-  if (existing) {
-    if (existingBrand) return existing;
-    const isGenericOldFormat =
-      /^\d+\s*(?:×|x|panels?\b)\s*(?:\d{3,4}\s*W)?$/i.test(existing) ||
-      /^\d{3,4}\s*W$/i.test(existing);
-    if (!isGenericOldFormat) return existing;
-  }
-
-  const brand =
-    extractPanelBrand(existing) ||
-    extractPanelBrand(job.packageName || "") ||
-    extractPanelBrand(job.remarks || "") ||
-    extractPanelBrand(job.installationRemarks || "") ||
-    extractPanelBrand(job.availabilityRemarks || "");
-
-  const qty =
-    job.panelQuantity ??
-    (() => {
-      const m = (job.packageName || existing).match(/(\d+)\s*(?:pcs|panels\b|[xX×]\b)/i);
-      return m ? Number(m[1]) : null;
-    })();
-
-  const rating =
-    job.panelRating ??
-    (() => {
-      const m = (job.packageName || existing).match(/(\d{3,4})\s*W(?:p|att)?\b/i);
-      return m ? Number(m[1]) : null;
-    })();
-
-  if (qty && brand && rating) return `${qty} ${brand} ${rating}W`;
-  if (qty && brand) return `${qty} ${brand}`;
-  if (brand && rating) return `${brand} ${rating}W`;
-  if (brand) return brand;
-  if (qty && rating) return `${qty} × ${rating}W`;
-  if (qty) return `${qty} panels`;
-  if (rating) return `${rating}W`;
-  return existing;
+  return formatPanelDisplay(job);
 }
 
 function inverterText(job: InstallationJob) {
@@ -305,6 +269,7 @@ export default function DepositScheduleTable({
   pendingCount,
   attentionCount,
   omCount,
+  showProposedDate = false,
 }: {
   jobs: InstallationJob[];
   assessments: Record<string, SiteAssessment>;
@@ -323,16 +288,32 @@ export default function DepositScheduleTable({
   pendingCount?: number;
   attentionCount?: number;
   omCount?: number;
+  showProposedDate?: boolean;
 }) {
   const [filesJobId, setFilesJobId] = useState<string | null>(null);
   const [filesByJob, setFilesByJob] = useState<Record<string, FilesState>>({});
   const [panelDraft, setPanelDraft] = useState<Record<string, string>>({});
   const [inverterDraft, setInverterDraft] = useState<Record<string, string>>({});
   const [remarkDraft, setRemarkDraft] = useState<Record<string, string>>({});
+  const [proposedDateDraft, setProposedDateDraft] = useState<Record<string, string>>({});
+  // Pending 10-second transition for jobs whose date was set
+  const [pendingMoves, setPendingMoves] = useState<
+    Record<string, { date: string; secondsRemaining: number }>
+  >({});
+  const pendingTimersRef = useRef<Record<string, NodeJS.Timeout>>({});
+  const pendingIntervalsRef = useRef<Record<string, NodeJS.Timeout>>({});
+
+  useEffect(() => {
+    return () => {
+      Object.values(pendingTimersRef.current).forEach(clearTimeout);
+      Object.values(pendingIntervalsRef.current).forEach(clearInterval);
+    };
+  }, []);
 
   const [selectedIssueCategory, setSelectedIssueCategory] = useState<IssueCategory>("all");
   const [selectedPriority, setSelectedPriority] = useState<IssuePriority>("all");
   const [ticketModalJob, setTicketModalJob] = useState<InstallationJob | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<ImagePreviewTarget | null>(null);
 
   useEffect(() => {
     if (awaitingReviewFilter !== "om") {
@@ -384,6 +365,30 @@ export default function DepositScheduleTable({
     }
     return jobs;
   }, [jobs, awaitingReviewFilter, selectedIssueCategory, selectedPriority]);
+
+  const { sortedJobs, reviewColorByJobId } = useMemo(() => {
+    const colorMap = new Map<string, AwaitingReviewCategory>();
+    for (const job of displayedJobs) {
+      colorMap.set(job.id, getJobReviewColor(job, todayIso));
+    }
+    const order: Record<string, number> = {
+      new_ready: 0,
+      special_case: 1,
+      reschedule: 2,
+      pending: 3,
+      attention: 4,
+      om: 5,
+    };
+    const sorted = [...displayedJobs].sort((a, b) => {
+      const aType = colorMap.get(a.id) ?? "new_ready";
+      const bType = colorMap.get(b.id) ?? "new_ready";
+      if (aType !== bType) {
+        return (order[aType] ?? 9) - (order[bType] ?? 9);
+      }
+      return 0;
+    });
+    return { sortedJobs: sorted, reviewColorByJobId: colorMap };
+  }, [displayedJobs, todayIso]);
 
   useEffect(() => {
     if (!filesJobId || filesByJob[filesJobId]) return;
@@ -442,6 +447,130 @@ export default function DepositScheduleTable({
     }
   }
 
+  function executeMove(job: InstallationJob, date: string) {
+    if (pendingTimersRef.current[job.id]) {
+      clearTimeout(pendingTimersRef.current[job.id]);
+      delete pendingTimersRef.current[job.id];
+    }
+    if (pendingIntervalsRef.current[job.id]) {
+      clearInterval(pendingIntervalsRef.current[job.id]);
+      delete pendingIntervalsRef.current[job.id];
+    }
+    setPendingMoves((prev) => {
+      const copy = { ...prev };
+      delete copy[job.id];
+      return copy;
+    });
+
+    const isReschedule = isJobReschedule(job);
+    const updatedJob: InstallationJob = {
+      ...job,
+      preferredInstallationDate: date,
+      secondPreferredInstallationDate: isReschedule
+        ? date
+        : job.secondPreferredInstallationDate || date,
+      customerAvailabilityStatus: "propose",
+    };
+    onSaveJob?.(updatedJob);
+  }
+
+  function handleCancelMove(jobId: string) {
+    if (pendingTimersRef.current[jobId]) {
+      clearTimeout(pendingTimersRef.current[jobId]);
+      delete pendingTimersRef.current[jobId];
+    }
+    if (pendingIntervalsRef.current[jobId]) {
+      clearInterval(pendingIntervalsRef.current[jobId]);
+      delete pendingIntervalsRef.current[jobId];
+    }
+    setPendingMoves((prev) => {
+      const copy = { ...prev };
+      delete copy[jobId];
+      return copy;
+    });
+    setProposedDateDraft((prev) => {
+      const copy = { ...prev };
+      delete copy[jobId];
+      return copy;
+    });
+  }
+
+  function handleMoveNow(job: InstallationJob) {
+    const pending = pendingMoves[job.id];
+    const date = pending?.date || proposedDateDraft[job.id];
+    if (date) {
+      executeMove(job, date);
+    }
+  }
+
+  function handleProposedDateChange(job: InstallationJob, value: string) {
+    setProposedDateDraft((prev) => ({ ...prev, [job.id]: value }));
+
+    // If date is cleared, cancel any pending move
+    if (!value) {
+      if (pendingTimersRef.current[job.id]) {
+        clearTimeout(pendingTimersRef.current[job.id]);
+        delete pendingTimersRef.current[job.id];
+      }
+      if (pendingIntervalsRef.current[job.id]) {
+        clearInterval(pendingIntervalsRef.current[job.id]);
+        delete pendingIntervalsRef.current[job.id];
+      }
+      setPendingMoves((prev) => {
+        const copy = { ...prev };
+        delete copy[job.id];
+        return copy;
+      });
+      return;
+    }
+
+    // Reset previous timer for this job if user changes date again
+    if (pendingTimersRef.current[job.id]) {
+      clearTimeout(pendingTimersRef.current[job.id]);
+      delete pendingTimersRef.current[job.id];
+    }
+    if (pendingIntervalsRef.current[job.id]) {
+      clearInterval(pendingIntervalsRef.current[job.id]);
+      delete pendingIntervalsRef.current[job.id];
+    }
+
+    // Set initial 10-second countdown in state
+    setPendingMoves((prev) => ({
+      ...prev,
+      [job.id]: { date: value, secondsRemaining: 10 },
+    }));
+
+    // Interval to count down every second
+    const intervalId = setInterval(() => {
+      setPendingMoves((prev) => {
+        const current = prev[job.id];
+        if (!current) return prev;
+        if (current.secondsRemaining <= 1) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [job.id]: { ...current, secondsRemaining: current.secondsRemaining - 1 },
+        };
+      });
+    }, 1000);
+    pendingIntervalsRef.current[job.id] = intervalId;
+
+    // Timeout to execute the move after 10 seconds
+    const timerId = setTimeout(() => {
+      executeMove(job, value);
+    }, 10000);
+    pendingTimersRef.current[job.id] = timerId;
+  }
+
+  function handleProposedDateBlur(job: InstallationJob) {
+    const draftVal = proposedDateDraft[job.id];
+    // If a date is filled and no countdown is currently running, start it
+    if (draftVal && !pendingTimersRef.current[job.id]) {
+      handleProposedDateChange(job, draftVal);
+    }
+  }
+
   function sedaCell(job: InstallationJob) {
     if (job.sedaApprovedDate) return shortDate(job.sedaApprovedDate);
     if (isSedaApproved(job.sedaStatus)) {
@@ -482,11 +611,36 @@ export default function DepositScheduleTable({
         <div className="rti-thumbs">
           {urls.map((url, index) =>
             isImageUrl(url) ? (
-              <a key={url} href={url} target="_blank" rel="noopener noreferrer">
+              <a
+                key={url}
+                href={url}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setPreviewTarget({
+                    url,
+                    title: `${displayName(job.customerName)} · ${label} ${index + 1}`,
+                    images: urls.filter(isImageUrl),
+                    currentIndex: urls.filter(isImageUrl).indexOf(url),
+                  });
+                }}
+                title={`Click to view ${label} ${index + 1}`}
+              >
                 <img src={url} alt={`${label} ${index + 1}`} loading="lazy" />
               </a>
             ) : (
-              <a key={url} className="rti-file-link" href={url} target="_blank" rel="noopener noreferrer">
+              <a
+                key={url}
+                className="rti-file-link"
+                href={url}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setPreviewTarget({
+                    url,
+                    title: `${displayName(job.customerName)} · ${isVideoUrl(url) ? "Video" : label} ${index + 1}`,
+                  });
+                }}
+                title={`Click to view ${isVideoUrl(url) ? "Video" : label} ${index + 1}`}
+              >
                 <FileText size={14} />
                 {isVideoUrl(url) ? "Video" : label} {index + 1}
               </a>
@@ -531,7 +685,7 @@ export default function DepositScheduleTable({
     );
   }
 
-  const COLUMN_COUNT = 10;
+  const COLUMN_COUNT = showProposedDate ? 11 : 10;
 
   return (
     <div className="rti">
@@ -735,7 +889,7 @@ export default function DepositScheduleTable({
       )}
 
       <div className="table-wrap rti-team">
-        <table>
+        <table className="deposit-schedule-table">
           <colgroup>
             <col className="rti-col-customer" />
             <col className="rti-col-address" />
@@ -747,9 +901,10 @@ export default function DepositScheduleTable({
             <col className="rti-col-inverter" />
             <col className="rti-col-sld" />
             <col className="rti-col-remark" />
+            {showProposedDate && <col className="rti-col-propose-date" />}
           </colgroup>
-          <thead>
-            <tr>
+          <thead className="deposit-schedule-thead">
+            <tr className="deposit-schedule-header-row">
               <th>Customer</th>
               <th>Address</th>
               <th>Phone</th>
@@ -760,6 +915,7 @@ export default function DepositScheduleTable({
               <th>Inverter</th>
               <th>{awaitingReviewFilter === "om" ? "Document" : "SLD"}</th>
               <th>Remark</th>
+              {showProposedDate && <th>Propose to Install Date</th>}
             </tr>
           </thead>
           <tbody>
@@ -772,21 +928,13 @@ export default function DepositScheduleTable({
                 </td>
               </tr>
             ) : (
-              [...displayedJobs].sort((a, b) => {
-                const aType = getJobReviewColor(a, todayIso);
-                const bType = getJobReviewColor(b, todayIso);
-                const order: Record<string, number> = { new_ready: 0, special_case: 1, reschedule: 2, pending: 3, attention: 4, om: 5 };
-                if (aType !== bType) {
-                  return (order[aType] ?? 9) - (order[bType] ?? 9);
-                }
-                return 0;
-              }).map((job) => {
+              sortedJobs.map((job) => {
                 const paymentLabel = job.secondPaymentDate ? "2nd payment:" : "Deposit payment:";
                 const paymentDateVal = job.secondPaymentDate || job.firstPaymentDate;
                 const isKoh = isKohKengKiatCustomer(job);
                 const reviewType =
                   showAwaitingReviewFilter && awaitingReviewFilter === "all"
-                    ? getJobReviewColor(job, todayIso)
+                    ? reviewColorByJobId.get(job.id) ?? null
                     : null;
                 const cat = job.issueCategory || categorizeIssue(job.packageName, job.installationRemarks || job.remarks);
                 const prio = job.priority || derivePriority(job.packageName, job.installationRemarks || job.remarks);
@@ -858,7 +1006,7 @@ export default function DepositScheduleTable({
                           className="rti-cell-textarea"
                           rows={2}
                           value={panelDraft[job.id] ?? panelText(job)}
-                          placeholder="e.g. 16 Jinko 650W"
+                          placeholder="e.g. 11X 650W JinkoSolar TIGER NEO 3.0 Panel N-Type TOPCon"
                           aria-label={`Panel for ${displayName(job.customerName)}`}
                           onChange={(e) => handlePanelChange(job.id, e.target.value)}
                           onBlur={() => handlePanelBlur(job)}
@@ -937,6 +1085,77 @@ export default function DepositScheduleTable({
                           onBlur={() => handleRemarkBlur(job)}
                         />
                       </td>
+                      {showProposedDate && (
+                        <td className="rti-edit-cell rti-propose-date-cell">
+                          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                            <input
+                              type="date"
+                              className="rti-cell-date"
+                              value={proposedDateDraft[job.id] ?? ""}
+                              aria-label={`Propose to Install Date for ${displayName(job.customerName)}`}
+                              onChange={(e) => handleProposedDateChange(job, e.target.value)}
+                              onBlur={() => handleProposedDateBlur(job)}
+                            />
+                            {pendingMoves[job.id] && (
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  gap: "4px",
+                                  fontSize: "0.72rem",
+                                  background: "#eff6ff",
+                                  color: "#1d4ed8",
+                                  padding: "3px 6px",
+                                  borderRadius: "4px",
+                                  border: "1px solid #bfdbfe",
+                                }}
+                              >
+                                <span style={{ fontWeight: 600 }}>
+                                  Moving in {pendingMoves[job.id].secondsRemaining}s…
+                                </span>
+                                <div style={{ display: "inline-flex", gap: "3px" }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveNow(job)}
+                                    style={{
+                                      background: "#2563eb",
+                                      color: "#ffffff",
+                                      border: "none",
+                                      borderRadius: "3px",
+                                      padding: "1px 5px",
+                                      fontSize: "0.68rem",
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                    }}
+                                    title="Move to Propose to Install immediately"
+                                  >
+                                    Now
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCancelMove(job.id)}
+                                    style={{
+                                      background: "transparent",
+                                      color: "#dc2626",
+                                      border: "none",
+                                      borderRadius: "3px",
+                                      padding: "1px 4px",
+                                      fontSize: "0.68rem",
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                      textDecoration: "underline",
+                                    }}
+                                    title="Cancel move"
+                                  >
+                                    Undo
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      )}
                     </tr>
                     {filesJobId === job.id && (
                       <tr className="rti-panel-row">
@@ -1033,10 +1252,17 @@ export default function DepositScheduleTable({
                         <a
                           key={idx}
                           href={fullUrl}
-                          target="_blank"
-                          rel="noreferrer"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            setPreviewTarget({
+                              url: fullUrl,
+                              title: `Ticket attachment ${idx + 1}`,
+                              images: (ticketModalJob.supportTicket?.images ?? []).map((u) => (u.startsWith("//") ? `https:${u}` : u)),
+                              currentIndex: idx,
+                            });
+                          }}
                           className="om-modal-image-thumb"
-                          title="Open full photo in new tab"
+                          title="Click to view attachment"
                         >
                           <img src={fullUrl} alt={`Ticket attachment ${idx + 1}`} />
                           <span className="om-modal-img-zoom"><ExternalLink size={13} /> View Full</span>
@@ -1064,6 +1290,10 @@ export default function DepositScheduleTable({
           </div>
         </div>
       )}
+      <ImagePreviewModal
+        target={previewTarget}
+        onClose={() => setPreviewTarget(null)}
+      />
     </div>
   );
 }

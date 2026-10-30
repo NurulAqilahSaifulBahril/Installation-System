@@ -1,3 +1,5 @@
+import { malaysiaToday } from "@/lib/dates";
+import { firstPlanningWeek } from "@/lib/schedule-suggest";
 import type {
   CalendarDayCustomer,
   CalendarDayDetail,
@@ -105,10 +107,13 @@ export function buildCalendarDayDetails(
     assignmentsByGroup.set(assignment.installationGroupId, list);
   });
 
+  const frontWeek = firstPlanningWeek(malaysiaToday());
+
   const placementsByJobId = new Map<string, CalendarPlacement[]>();
   if (scheduleDraft?.placements) {
     scheduleDraft.placements.forEach((placement) => {
       if (!placement.jobId || !placement.date) return;
+      if (placement.date.slice(0, 10) < frontWeek) return;
       const list = placementsByJobId.get(placement.jobId) ?? [];
       list.push(placement);
       placementsByJobId.set(placement.jobId, list);
@@ -168,44 +173,76 @@ export function buildCalendarDayDetails(
   };
 
   jobs.forEach((job) => {
-    const jobPlacements = placementsByJobId.get(job.id) ?? [];
-    const jobGroups = (groupsByJobId.get(job.id) ?? []).filter(
-      (group) => group.installationDate,
-    );
+    const jobPlacements = [
+      ...(placementsByJobId.get(job.id) ?? []),
+      ...(job.invoiceNumber && job.invoiceNumber !== job.id
+        ? (placementsByJobId.get(job.invoiceNumber) ?? [])
+        : []),
+    ];
+    const jobGroups = [
+      ...(groupsByJobId.get(job.id) ?? []),
+      ...(job.invoiceNumber && job.invoiceNumber !== job.id
+        ? (groupsByJobId.get(job.invoiceNumber) ?? [])
+        : []),
+    ].filter((group) => group.installationDate);
 
     const placementDays = jobPlacements
-      .filter((placement) => {
-        // If the job has already been completed/installed on an earlier date, ignore stale draft placements on future dates
-        if (
-          job.installationDate &&
-          job.installationDate < placement.date &&
-          (job.customerAvailabilityStatus === "complete" ||
-            job.scheduleStatus === "installed")
-        ) {
-          return false;
-        }
-        return true;
-      })
+      .filter(() => job.customerAvailabilityStatus !== "complete")
       .map((placement) => ({
-        date: placement.date,
+        date: placement.date.slice(0, 10),
         group: null as CalendarGroup | null,
         placement,
       }));
 
-    // One entry per placement or group the job is in, each on that slot/group's own date
+    const proposedDateRaw =
+      job.customerAvailabilityStatus !== "complete"
+        ? job.customerAvailabilityStatus === "propose"
+          ? job.secondPreferredInstallationDate || job.preferredInstallationDate
+          : job.secondPreferredInstallationDate ||
+            (!job.installationDate && jobGroups.length === 0
+              ? job.preferredInstallationDate
+              : null)
+        : null;
+    const rawProposedSlice = proposedDateRaw ? proposedDateRaw.slice(0, 10) : null;
+    const proposedDate =
+      rawProposedSlice && rawProposedSlice >= frontWeek ? rawProposedSlice : null;
+
     const installDays: {
       date: string;
       group: CalendarGroup | null;
       placement?: CalendarPlacement;
-    }[] =
-      placementDays.length > 0
-        ? placementDays
-        : jobGroups.length > 0
-        ? jobGroups.map((group) => ({ date: group.installationDate, group }))
-        : (() => {
-            const date = job.installationDate || job.preferredInstallationDate;
-            return date ? [{ date, group: null }] : [];
-          })();
+    }[] = [...placementDays];
+
+    const coveredDates = new Set(installDays.map((d) => d.date));
+
+    if (proposedDate && !coveredDates.has(proposedDate)) {
+      coveredDates.add(proposedDate);
+      installDays.push({
+        date: proposedDate,
+        group: null,
+        placement: {
+          jobId: job.id,
+          team: 1,
+          date: proposedDate,
+          slot: "am",
+        },
+      });
+    }
+
+    jobGroups.forEach((group) => {
+      const gDate = group.installationDate.slice(0, 10);
+      if (gDate && !coveredDates.has(gDate)) {
+        coveredDates.add(gDate);
+        installDays.push({ date: gDate, group });
+      }
+    });
+
+    if (installDays.length === 0) {
+      const fallbackRaw = job.installationDate || proposedDate;
+      if (fallbackRaw) {
+        installDays.push({ date: fallbackRaw.slice(0, 10), group: null });
+      }
+    }
 
     // Every return-trip visit is its own day too, on top of the install
     // day(s) above, unless a visit happens to land on a date already
@@ -245,7 +282,7 @@ export function buildCalendarDayDetails(
 
       const teamCrew = placement ? scheduleDraft?.teamCrews?.[placement.team] : undefined;
 
-      const isConfirmedGroup = group ? group.id.startsWith("map-") : false;
+      const isConfirmedGroup = Boolean(group) || date < frontWeek;
       const isConfirmedInstall =
         job.customerAvailabilityStatus === "complete" ||
         job.scheduleStatus === "installed";
