@@ -6,6 +6,7 @@ import {
   Briefcase,
   Calendar,
   Car,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
@@ -69,6 +70,8 @@ export type ProjectTeamMember = {
     reason?: string;
     startDate?: string;
     endDate?: string;
+    leaveId?: string;
+    approvalStatus?: "pending" | "approved" | "rejected";
   };
   assignedCrewId?: string | null;
   notes?: string;
@@ -203,7 +206,7 @@ function addDays(isoDate: string, days: number): string {
 
 // Check if a member is unavailable (MC / Leave) during a specific week
 function isMemberUnavailableInWeek(member: ProjectTeamMember, weekStart: string): boolean {
-  if (member.availability.status === "available") return false;
+  if (member.availability.status === "available" || member.availability.approvalStatus === "rejected") return false;
   const bounds = weekBounds(weekStart);
   if (!bounds) return true;
 
@@ -1338,6 +1341,9 @@ export function ProjectTeamScheduleView({
               Boolean(matchedLeave.has_mc) ||
               /\b(mc|medical|sick)\b/i.test(String(matchedLeave.type || "")) ||
               /\b(mc|medical|sick)\b/i.test(String(matchedLeave.note || ""));
+            const rawStatus = (matchedLeave.status || "approved").toLowerCase();
+            const approval: "approved" | "rejected" | "pending" =
+              rawStatus === "rejected" ? "rejected" : rawStatus === "pending" ? "pending" : "approved";
             return {
               ...m,
               phone: updatedPhone,
@@ -1346,6 +1352,8 @@ export function ProjectTeamScheduleView({
                 startDate: matchedLeave.from_date.slice(0, 10),
                 endDate: (matchedLeave.to_date || matchedLeave.from_date).slice(0, 10),
                 reason: matchedLeave.note || matchedLeave.type || undefined,
+                leaveId: matchedLeave.id,
+                approvalStatus: approval,
               },
             };
           }
@@ -1780,6 +1788,7 @@ export function ProjectTeamScheduleView({
   const [roleFilter, setRoleFilter] = useState<string>("all");
   const [availabilityFilter, setAvailabilityFilter] = useState<string>("all");
   const [expertiseFilter, setExpertiseFilter] = useState<string>("all");
+  const [leaveApprovalFilter, setLeaveApprovalFilter] = useState<"all" | "pending" | "approved" | "rejected">("all");
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -2580,6 +2589,7 @@ export function ProjectTeamScheduleView({
             reason: nextStatus !== "available" ? nextReason : undefined,
             startDate: nextStatus !== "available" ? nextStart : undefined,
             endDate: nextStatus !== "available" ? nextEnd : undefined,
+            approvalStatus: nextStatus !== "available" ? "approved" : undefined,
           },
         };
       })
@@ -2616,6 +2626,86 @@ export function ProjectTeamScheduleView({
           }),
         });
       }
+      void loadHrLeavesFromNurulDb();
+    } catch {
+      // Ignore network errors
+    }
+  }
+
+  // Approve leave record in NUrul_DB
+  async function handleApproveLeave(member: ProjectTeamMember) {
+    if (readOnly) return;
+    setMembers((prev) =>
+      prev.map((m) =>
+        m.id === member.id
+          ? {
+              ...m,
+              availability: {
+                ...m.availability,
+                approvalStatus: "approved",
+              },
+            }
+          : m
+      )
+    );
+
+    try {
+      await fetch("/api/hr-leaves", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "approve",
+          id: member.availability.leaveId,
+          employeeName: member.name,
+          employeeId: member.id,
+          status: "approved",
+          fromDate: member.availability.startDate,
+          toDate: member.availability.endDate,
+          type: member.availability.status === "mc" ? "Medical Leave" : "Annual Leave",
+          note: member.availability.reason,
+          hasMc: member.availability.status === "mc",
+        }),
+      });
+      void loadHrLeavesFromNurulDb();
+    } catch {
+      // Ignore network errors
+    }
+  }
+
+  // Reject leave record in NUrul_DB
+  async function handleRejectLeave(member: ProjectTeamMember) {
+    if (readOnly) return;
+    setMembers((prev) =>
+      prev.map((m) =>
+        m.id === member.id
+          ? {
+              ...m,
+              availability: {
+                ...m.availability,
+                approvalStatus: "rejected",
+              },
+            }
+          : m
+      )
+    );
+
+    try {
+      await fetch("/api/hr-leaves", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "reject",
+          id: member.availability.leaveId,
+          employeeName: member.name,
+          employeeId: member.id,
+          status: "rejected",
+          fromDate: member.availability.startDate,
+          toDate: member.availability.endDate,
+          type: member.availability.status === "mc" ? "Medical Leave" : "Annual Leave",
+          note: member.availability.reason,
+          hasMc: member.availability.status === "mc",
+        }),
+      });
       void loadHrLeavesFromNurulDb();
     } catch {
       // Ignore network errors
@@ -4903,21 +4993,113 @@ export function ProjectTeamScheduleView({
 
             {/* SECTION 1: Active Absence & Replacement Alerts */}
             <div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
-                <h4 style={{ margin: 0, fontSize: "0.92rem", fontWeight: 700, color: "var(--ink)", display: "flex", alignItems: "center", gap: "6px" }}>
-                  <AlertCircle size={15} style={{ color: "#dc2626" }} />
-                  Personnel Absence & Availability Status
-                </h4>
-                <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
-                  Click Update on any member to log MC or leave to NUrul_DB
-                </span>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px", flexWrap: "wrap", gap: "8px" }}>
+                <div>
+                  <h4 style={{ margin: 0, fontSize: "0.92rem", fontWeight: 700, color: "var(--ink)", display: "flex", alignItems: "center", gap: "6px" }}>
+                    <AlertCircle size={15} style={{ color: "#dc2626" }} />
+                    Personnel Absence & Availability Status
+                  </h4>
+                  <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
+                    Review, approve (✓), or reject (✕) leave requests to update NUrul_DB and crew availability.
+                  </span>
+                </div>
+
+                {/* Filter Pills: All / Pending / Approved / Rejected */}
+                {(() => {
+                  const allAbsent = members.filter((m) => m.availability.status !== "available");
+                  const pendingCount = allAbsent.filter((m) => (m.availability.approvalStatus || "approved") === "pending").length;
+                  const approvedCount = allAbsent.filter((m) => (m.availability.approvalStatus || "approved") === "approved").length;
+                  const rejectedCount = allAbsent.filter((m) => m.availability.approvalStatus === "rejected").length;
+
+                  if (allAbsent.length === 0) return null;
+
+                  return (
+                    <div style={{ display: "flex", alignItems: "center", gap: "4px", background: "var(--surface-soft)", padding: "3px", borderRadius: "8px", border: "1px solid var(--line)" }}>
+                      <button
+                        onClick={() => setLeaveApprovalFilter("all")}
+                        style={{
+                          fontSize: "0.74rem",
+                          fontWeight: leaveApprovalFilter === "all" ? 700 : 500,
+                          padding: "3px 8px",
+                          borderRadius: "6px",
+                          border: "none",
+                          background: leaveApprovalFilter === "all" ? "var(--surface)" : "transparent",
+                          color: leaveApprovalFilter === "all" ? "var(--ink)" : "var(--muted)",
+                          cursor: "pointer",
+                          boxShadow: leaveApprovalFilter === "all" ? "0 1px 2px rgba(0,0,0,0.06)" : "none",
+                        }}
+                      >
+                        All ({allAbsent.length})
+                      </button>
+                      <button
+                        onClick={() => setLeaveApprovalFilter("pending")}
+                        style={{
+                          fontSize: "0.74rem",
+                          fontWeight: leaveApprovalFilter === "pending" ? 700 : 500,
+                          padding: "3px 8px",
+                          borderRadius: "6px",
+                          border: "none",
+                          background: leaveApprovalFilter === "pending" ? "var(--surface)" : "transparent",
+                          color: leaveApprovalFilter === "pending" ? "#92400e" : "var(--muted)",
+                          cursor: "pointer",
+                          boxShadow: leaveApprovalFilter === "pending" ? "0 1px 2px rgba(0,0,0,0.06)" : "none",
+                        }}
+                      >
+                        Pending ({pendingCount})
+                      </button>
+                      <button
+                        onClick={() => setLeaveApprovalFilter("approved")}
+                        style={{
+                          fontSize: "0.74rem",
+                          fontWeight: leaveApprovalFilter === "approved" ? 700 : 500,
+                          padding: "3px 8px",
+                          borderRadius: "6px",
+                          border: "none",
+                          background: leaveApprovalFilter === "approved" ? "var(--surface)" : "transparent",
+                          color: leaveApprovalFilter === "approved" ? "#047857" : "var(--muted)",
+                          cursor: "pointer",
+                          boxShadow: leaveApprovalFilter === "approved" ? "0 1px 2px rgba(0,0,0,0.06)" : "none",
+                        }}
+                      >
+                        Approved ({approvedCount})
+                      </button>
+                      <button
+                        onClick={() => setLeaveApprovalFilter("rejected")}
+                        style={{
+                          fontSize: "0.74rem",
+                          fontWeight: leaveApprovalFilter === "rejected" ? 700 : 500,
+                          padding: "3px 8px",
+                          borderRadius: "6px",
+                          border: "none",
+                          background: leaveApprovalFilter === "rejected" ? "var(--surface)" : "transparent",
+                          color: leaveApprovalFilter === "rejected" ? "#b91c1c" : "var(--muted)",
+                          cursor: "pointer",
+                          boxShadow: leaveApprovalFilter === "rejected" ? "0 1px 2px rgba(0,0,0,0.06)" : "none",
+                        }}
+                      >
+                        Rejected ({rejectedCount})
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "12px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: "12px" }}>
                 {members
-                  .filter((m) => m.availability.status !== "available")
+                  .filter((m) => {
+                    if (m.availability.status === "available") return false;
+                    const status = m.availability.approvalStatus || "approved";
+                    if (leaveApprovalFilter === "pending") return status === "pending";
+                    if (leaveApprovalFilter === "approved") return status === "approved";
+                    if (leaveApprovalFilter === "rejected") return status === "rejected";
+                    return true;
+                  })
                   .map((m) => {
                     const isMC = m.availability.status === "mc";
+                    const approvalStatus = m.availability.approvalStatus || "approved";
+                    const isApproved = approvalStatus === "approved";
+                    const isRejected = approvalStatus === "rejected";
+                    const isPending = approvalStatus === "pending";
                     const isAwayInActiveWeek = isMemberUnavailableInWeek(m, activeWeek);
                     const assignedCrew = currentWeekCrews.find(
                       (c) =>
@@ -4933,22 +5115,26 @@ export function ProjectTeamScheduleView({
                           padding: "14px 16px",
                           borderRadius: "10px",
                           border: "1px solid",
-                          borderColor: isMC ? "#fca5a5" : "#fde68a",
-                          background: isMC ? "#fff5f5" : "#fffbeb",
+                          borderColor: isRejected ? "#e2e8f0" : isMC ? "#fca5a5" : "#fde68a",
+                          background: isRejected ? "#f8fafc" : isMC ? "#fff5f5" : "#fffbeb",
                           display: "flex",
                           flexDirection: "column",
                           gap: "8px",
+                          opacity: isRejected ? 0.8 : 1,
+                          transition: "all 0.15s ease",
                         }}
                       >
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                            {isMC ? (
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                            {isRejected ? (
+                              <X size={18} style={{ color: "#94a3b8" }} />
+                            ) : isMC ? (
                               <ShieldAlert size={18} style={{ color: "#dc2626" }} />
                             ) : (
                               <Clock size={18} style={{ color: "#d97706" }} />
                             )}
                             <div>
-                              <strong style={{ fontSize: "0.95rem", color: "var(--ink)" }}>{m.name}</strong>
+                              <strong style={{ fontSize: "0.95rem", color: isRejected ? "#64748b" : "var(--ink)" }}>{m.name}</strong>
                               <span style={{ fontSize: "0.75rem", color: "var(--muted)", marginLeft: "6px" }}>
                                 ({m.role === "site_supervisor" ? "Supervisor" : m.role === "technician" ? "Technician" : "Intern"})
                               </span>
@@ -4959,29 +5145,135 @@ export function ProjectTeamScheduleView({
                                 padding: "2px 6px",
                                 borderRadius: "4px",
                                 fontWeight: 700,
-                                background: isMC ? "#fee2e2" : "#fef3c7",
-                                color: isMC ? "#991b1b" : "#92400e",
+                                background: isRejected ? "#f1f5f9" : isMC ? "#fee2e2" : "#fef3c7",
+                                color: isRejected ? "#64748b" : isMC ? "#991b1b" : "#92400e",
                               }}
                             >
                               {isMC ? "MEDICAL CERTIFICATE (MC)" : "ON LEAVE"}
                             </span>
+
+                            {/* Approval Status Badge */}
+                            {isApproved ? (
+                              <span
+                                style={{
+                                  fontSize: "0.68rem",
+                                  padding: "2px 6px",
+                                  borderRadius: "10px",
+                                  fontWeight: 700,
+                                  background: "#ecfdf5",
+                                  color: "#065f46",
+                                  border: "1px solid #a7f3d0",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "3px",
+                                }}
+                              >
+                                <Check size={11} /> Approved
+                              </span>
+                            ) : isRejected ? (
+                              <span
+                                style={{
+                                  fontSize: "0.68rem",
+                                  padding: "2px 6px",
+                                  borderRadius: "10px",
+                                  fontWeight: 700,
+                                  background: "#fef2f2",
+                                  color: "#991b1b",
+                                  border: "1px solid #fecaca",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "3px",
+                                }}
+                              >
+                                <X size={11} /> Rejected
+                              </span>
+                            ) : (
+                              <span
+                                style={{
+                                  fontSize: "0.68rem",
+                                  padding: "2px 6px",
+                                  borderRadius: "10px",
+                                  fontWeight: 700,
+                                  background: "#fffbeb",
+                                  color: "#92400e",
+                                  border: "1px solid #fde68a",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "3px",
+                                }}
+                              >
+                                ⏳ Pending
+                              </span>
+                            )}
                           </div>
 
                           {!readOnly && (
-                            <button
-                              onClick={() => handleOpenQuickAvailability(m)}
-                              style={{
-                                fontSize: "0.75rem",
-                                padding: "3px 8px",
-                                borderRadius: "6px",
-                                border: "1px solid var(--line)",
-                                background: "var(--surface)",
-                                cursor: "pointer",
-                                fontWeight: 600,
-                              }}
-                            >
-                              Update
-                            </button>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                              {/* Approve '✓' Button */}
+                              <button
+                                onClick={() => void handleApproveLeave(m)}
+                                disabled={isApproved}
+                                title={isApproved ? "Leave is already approved" : "Approve leave request (✓)"}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                  fontSize: "0.75rem",
+                                  fontWeight: 700,
+                                  padding: "4px 9px",
+                                  borderRadius: "6px",
+                                  border: isApproved ? "1px solid #a7f3d0" : "1px solid #059669",
+                                  background: isApproved ? "#f0fdf4" : "#059669",
+                                  color: isApproved ? "#047857" : "#ffffff",
+                                  cursor: isApproved ? "default" : "pointer",
+                                  opacity: isApproved ? 0.75 : 1,
+                                  transition: "all 0.15s ease",
+                                }}
+                              >
+                                <Check size={13} style={{ strokeWidth: 3 }} />
+                                <span>{isApproved ? "Approved" : "Approve"}</span>
+                              </button>
+
+                              {/* Reject 'X' Button */}
+                              <button
+                                onClick={() => void handleRejectLeave(m)}
+                                disabled={isRejected}
+                                title={isRejected ? "Leave is already rejected" : "Reject leave request (X)"}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                  fontSize: "0.75rem",
+                                  fontWeight: 700,
+                                  padding: "4px 9px",
+                                  borderRadius: "6px",
+                                  border: isRejected ? "1px solid #fca5a5" : "1px solid #dc2626",
+                                  background: isRejected ? "#fef2f2" : "#dc2626",
+                                  color: isRejected ? "#b91c1c" : "#ffffff",
+                                  cursor: isRejected ? "default" : "pointer",
+                                  opacity: isRejected ? 0.75 : 1,
+                                  transition: "all 0.15s ease",
+                                }}
+                              >
+                                <X size={13} style={{ strokeWidth: 3 }} />
+                                <span>{isRejected ? "Rejected" : "Reject"}</span>
+                              </button>
+
+                              <button
+                                onClick={() => handleOpenQuickAvailability(m)}
+                                style={{
+                                  fontSize: "0.75rem",
+                                  padding: "4px 8px",
+                                  borderRadius: "6px",
+                                  border: "1px solid var(--line)",
+                                  background: "var(--surface)",
+                                  cursor: "pointer",
+                                  fontWeight: 600,
+                                }}
+                              >
+                                Update
+                              </button>
+                            </div>
                           )}
                         </div>
 
@@ -5001,13 +5293,15 @@ export function ProjectTeamScheduleView({
                           )}
                         </div>
 
-                        <div style={{ fontSize: "0.76rem", fontWeight: 600, color: isAwayInActiveWeek ? "#b91c1c" : "#15803d" }}>
-                          {isAwayInActiveWeek
+                        <div style={{ fontSize: "0.76rem", fontWeight: 600, color: isRejected ? "#64748b" : isAwayInActiveWeek ? "#b91c1c" : "#15803d" }}>
+                          {isRejected
+                            ? `✕ Leave request rejected — personnel remains Available for scheduled installation.`
+                            : isAwayInActiveWeek
                             ? `⚠️ Affects scheduled Week ${weekRangeLabel(activeWeek)}`
                             : `✓ Outside active Week ${weekRangeLabel(activeWeek)}`}
                         </div>
 
-                        {assignedCrew && isAwayInActiveWeek && (
+                        {assignedCrew && isAwayInActiveWeek && !isRejected && (
                           <div
                             style={{
                               marginTop: "4px",

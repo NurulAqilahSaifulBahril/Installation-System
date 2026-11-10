@@ -92,6 +92,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, deleted: leaveId });
     }
 
+    if (action === "approve" || action === "reject") {
+      const targetStatus = action === "approve" ? "approved" : "rejected";
+      if (leaveId) {
+        await queryProxy(
+          `UPDATE public.hr_leaves
+           SET status = $1, reviewed_by = $2, updated_at = NOW()
+           WHERE id = $3`,
+          [targetStatus, (body.reviewedBy as string) || "Scheduler", leaveId],
+        );
+        return NextResponse.json({ ok: true, id: leaveId, status: targetStatus });
+      }
+    }
+
     const employeeName = (body.employeeName || body.employee_name || "") as string;
     let empId = (body.employeeId || body.employee_id || "") as string;
 
