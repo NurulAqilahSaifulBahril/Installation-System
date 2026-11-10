@@ -452,7 +452,7 @@ export const DEFAULT_MEMBERS: ProjectTeamMember[] = [
     name: "Kaije",
     role: "site_supervisor",
     phone: "017-890 1234",
-    expertise: ["Electrical Wiring (AC/DC)", "Inverter & BESS Commissioning", "Testing & Commissioning (T&C)"],
+    expertise: ["Roof Mounting & Structural", "Electrical Wiring (AC/DC)", "Inverter & BESS Commissioning", "Testing & Commissioning (T&C)"],
     availability: { status: "available" },
     assignedCrewId: null,
     notes: "Lead site supervisor in Arranged Installation. Inverter & grid connection specialist.",
@@ -594,7 +594,7 @@ export const DEFAULT_MEMBERS: ProjectTeamMember[] = [
     name: "Yuan",
     role: "technician",
     phone: "018-443 7812",
-    expertise: ["Roof Mounting & Structural", "Troubleshooting & O&M"],
+    expertise: ["Roof Mounting & Structural", "Electrical Wiring (AC/DC)", "Testing & Commissioning (T&C)", "Troubleshooting & O&M"],
     availability: { status: "available" },
     assignedCrewId: null,
     notes: "Roof mounting & structural specialist in Arranged Installation (Ah Yuan / Loh Shun Yuan). Expert in leak-proof flashing and waterproofing.",
@@ -2961,377 +2961,188 @@ export function ProjectTeamScheduleView({
                       borderRadius: coverage.hasUnavailableMember ? "10px 10px 0 0" : "11px 11px 0 0",
                       borderBottom: `1px solid ${teamColor.border}`,
                       display: "flex",
-                      flexDirection: "column",
+                      alignItems: "flex-start",
+                      justifyContent: "space-between",
                       gap: "10px",
                     }}
                   >
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "flex-start",
-                        justifyContent: "space-between",
-                        gap: "10px",
-                      }}
-                    >
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                        <input
+                          type="text"
+                          className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
+                          value={crew.name}
+                          onChange={(e) => handleInlineUpdateCrew(crew.id, "name", e.target.value)}
+                          placeholder="Team Name"
+                          style={{
+                            fontWeight: 800,
+                            fontSize: "0.95rem",
+                            letterSpacing: "0.2px",
+                            padding: "3px 6px",
+                            width: "auto",
+                            maxWidth: "150px",
+                            color: teamColor.text,
+                          }}
+                          title="Click to edit team name"
+                        />
+                        {crew.targetDate && (
+                          <span
+                            style={{
+                              background: teamColor.isLight ? "rgba(0, 0, 0, 0.12)" : "rgba(255, 255, 255, 0.2)",
+                              color: teamColor.text,
+                              padding: "2px 8px",
+                              borderRadius: "12px",
+                              fontSize: "0.71rem",
+                              fontWeight: 700,
+                            }}
+                          >
+                            {crew.targetDate}
+                          </span>
+                        )}
+                        {coverage.hasUnavailableMember ? (
+                          <span
+                            style={{
+                              background: "#fee2e2",
+                              color: "#b91c1c",
+                              padding: "2px 8px",
+                              borderRadius: "12px",
+                              fontSize: "0.72rem",
+                              fontWeight: 700,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                            }}
+                          >
+                            <AlertCircle size={12} />
+                            Unavailable Cover Needed
+                          </span>
+                        ) : coverage.totalCount === 0 && !displayInstallTeam && !displayWiringTeam ? (
+                          <span
+                            style={{
+                              background: "rgba(255, 255, 255, 0.92)",
+                              color: "#334155",
+                              padding: "2px 8px",
+                              borderRadius: "12px",
+                              fontSize: "0.72rem",
+                              fontWeight: 700,
+                            }}
+                          >
+                            Empty Team
+                          </span>
+                        ) : coverage.isFullyCovered ? (
+                          <span
+                            style={{
+                              background: "#dcfce7",
+                              color: "#15803d",
+                              padding: "2px 8px",
+                              borderRadius: "12px",
+                              fontSize: "0.72rem",
+                              fontWeight: 700,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                            }}
+                          >
+                            <CheckCircle2 size={12} />
+                            Ready & Balanced
+                          </span>
+                        ) : (
+                          <span
+                            style={{
+                              background: "#dcfce7",
+                              color: "#15803d",
+                              padding: "2px 8px",
+                              borderRadius: "12px",
+                              fontSize: "0.72rem",
+                              fontWeight: 700,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                            }}
+                          >
+                            <CheckCircle2 size={12} />
+                            Ready & Balanced
+                          </span>
+                        )}
+                      </div>
+
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          fontSize: "0.78rem",
+                          color: teamColor.subText,
+                          marginTop: "4px",
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
+                          <MapPin size={13} style={{ color: teamColor.subText, flexShrink: 0 }} />
                           <input
                             type="text"
                             className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
-                            value={crew.name}
-                            onChange={(e) => handleInlineUpdateCrew(crew.id, "name", e.target.value)}
-                            placeholder="Team Name"
+                            value={crew.baseLocation}
+                            onChange={(e) => handleInlineUpdateCrew(crew.id, "baseLocation", e.target.value)}
+                            placeholder="Base Location"
                             style={{
-                              fontWeight: 800,
-                              fontSize: "0.95rem",
-                              letterSpacing: "0.2px",
-                              padding: "3px 6px",
-                              width: "auto",
-                              maxWidth: "150px",
+                              fontSize: "0.78rem",
+                              fontWeight: 600,
                               color: teamColor.text,
+                              padding: "2px 6px",
+                              width: "110px",
                             }}
-                            title="Click to edit team name"
+                            title="Click to edit base location"
                           />
-                          {crew.targetDate && (
-                            <span
-                              style={{
-                                background: teamColor.isLight ? "rgba(0, 0, 0, 0.12)" : "rgba(255, 255, 255, 0.2)",
-                                color: teamColor.text,
-                                padding: "2px 8px",
-                                borderRadius: "12px",
-                                fontSize: "0.71rem",
-                                fontWeight: 700,
-                              }}
-                            >
-                              {crew.targetDate}
-                            </span>
-                          )}
-                          {coverage.hasUnavailableMember ? (
-                            <span
-                              style={{
-                                background: "#fee2e2",
-                                color: "#b91c1c",
-                                padding: "2px 8px",
-                                borderRadius: "12px",
-                                fontSize: "0.72rem",
-                                fontWeight: 700,
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "4px",
-                              }}
-                            >
-                              <AlertCircle size={12} />
-                              Unavailable Cover Needed
-                            </span>
-                          ) : coverage.totalCount === 0 && !displayInstallTeam && !displayWiringTeam ? (
-                            <span
-                              style={{
-                                background: "rgba(255, 255, 255, 0.92)",
-                                color: "#334155",
-                                padding: "2px 8px",
-                                borderRadius: "12px",
-                                fontSize: "0.72rem",
-                                fontWeight: 700,
-                              }}
-                            >
-                              Empty Team
-                            </span>
-                          ) : coverage.isFullyCovered ? (
-                            <span
-                              style={{
-                                background: "#dcfce7",
-                                color: "#15803d",
-                                padding: "2px 8px",
-                                borderRadius: "12px",
-                                fontSize: "0.72rem",
-                                fontWeight: 700,
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "4px",
-                              }}
-                            >
-                              <CheckCircle2 size={12} />
-                              Ready & Balanced
-                            </span>
-                          ) : (
-                            <span
-                              style={{
-                                background: "rgba(255, 255, 255, 0.92)",
-                                color: "#1e293b",
-                                padding: "2px 8px",
-                                borderRadius: "12px",
-                                fontSize: "0.72rem",
-                                fontWeight: 700,
-                              }}
-                            >
-                              {displayInstallTeam || "Scheduled"}
-                            </span>
-                          )}
                         </div>
 
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "8px",
-                            fontSize: "0.78rem",
-                            color: teamColor.subText,
-                            marginTop: "4px",
-                            flexWrap: "wrap",
-                          }}
-                        >
-                          <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
-                            <MapPin size={13} style={{ color: teamColor.subText, flexShrink: 0 }} />
-                            <input
-                              type="text"
-                              className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
-                              value={crew.baseLocation}
-                              onChange={(e) => handleInlineUpdateCrew(crew.id, "baseLocation", e.target.value)}
-                              placeholder="Base Location"
-                              style={{
-                                fontSize: "0.78rem",
-                                fontWeight: 600,
-                                color: teamColor.text,
-                                padding: "2px 6px",
-                                width: "110px",
-                              }}
-                              title="Click to edit base location"
-                            />
-                          </div>
-                        </div>
-                      </div>
+                        <span style={{ color: teamColor.subText, opacity: 0.7 }}>·</span>
 
-                      <div style={{ display: "flex", gap: "4px" }}>
-                        <button
-                          onClick={() => handleDeleteCrew(crew.id)}
-                          title="Delete Crew"
-                          style={{
-                            background: teamColor.isLight ? "rgba(0, 0, 0, 0.08)" : "rgba(255, 255, 255, 0.16)",
-                            border: "none",
-                            color: teamColor.text,
-                            cursor: "pointer",
-                            padding: "5px",
-                            borderRadius: "6px",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                          }}
-                        >
-                          <Trash2 size={15} />
-                        </button>
+                        <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
+                          <Car size={13} style={{ color: teamColor.subText, flexShrink: 0 }} />
+                          <input
+                            type="text"
+                            className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
+                            list="registered-crew-cars"
+                            value={displayCar}
+                            readOnly={readOnly}
+                            onChange={(e) => setDraftField("car", e.target.value)}
+                            onBlur={(e) => handleCommitCrewField(crew, "car", e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
+                            placeholder="Assign car / vehicle..."
+                            style={{
+                              fontSize: "0.78rem",
+                              fontWeight: 600,
+                              color: teamColor.text,
+                              padding: "2px 6px",
+                              width: "180px",
+                            }}
+                            title="Click to edit assigned car"
+                          />
+                        </div>
                       </div>
                     </div>
 
-                    {/* Team Header Details from Propose to Install & Arranged Installation */}
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                        gap: "8px",
-                        paddingTop: "8px",
-                        borderTop: teamColor.isLight
-                          ? "1px solid rgba(0, 0, 0, 0.12)"
-                          : "1px solid rgba(255, 255, 255, 0.22)",
-                      }}
-                    >
-                      <div>
-                        <div
-                          style={{
-                            fontSize: "0.66rem",
-                            fontWeight: 700,
-                            textTransform: "uppercase",
-                            letterSpacing: "0.4px",
-                            color: teamColor.subText,
-                            marginBottom: "2px",
-                          }}
-                        >
-                          Installation Team
-                        </div>
-                        <input
-                          type="text"
-                          list="crew-install-teams-datalist"
-                          className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
-                          value={displayInstallTeam}
-                          readOnly={readOnly}
-                          onChange={(e) => setDraftField("installationTeam", e.target.value)}
-                          onBlur={(e) => handleCommitCrewField(crew, "installationTeam", e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                          }}
-                          placeholder="Assign installation team..."
-                          style={{
-                            width: "100%",
-                            fontSize: "0.78rem",
-                            fontWeight: 700,
-                            color: teamColor.text,
-                            padding: "4px 7px",
-                            background: teamColor.isLight ? "rgba(255, 255, 255, 0.45)" : "rgba(0, 0, 0, 0.18)",
-                            borderRadius: "6px",
-                            border: teamColor.isLight
-                              ? "1px solid rgba(0, 0, 0, 0.15)"
-                              : "1px solid rgba(255, 255, 255, 0.25)",
-                          }}
-                        />
-                      </div>
-
-                      <div>
-                        <div
-                          style={{
-                            fontSize: "0.66rem",
-                            fontWeight: 700,
-                            textTransform: "uppercase",
-                            letterSpacing: "0.4px",
-                            color: teamColor.subText,
-                            marginBottom: "2px",
-                          }}
-                        >
-                          Wiring Team
-                        </div>
-                        <input
-                          type="text"
-                          list="crew-wiring-teams-datalist"
-                          className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
-                          value={displayWiringTeam}
-                          readOnly={readOnly}
-                          onChange={(e) => setDraftField("wiringTeam", e.target.value)}
-                          onBlur={(e) => handleCommitCrewField(crew, "wiringTeam", e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                          }}
-                          placeholder="Assign wiring team..."
-                          style={{
-                            width: "100%",
-                            fontSize: "0.78rem",
-                            fontWeight: 700,
-                            color: teamColor.text,
-                            padding: "4px 7px",
-                            background: teamColor.isLight ? "rgba(255, 255, 255, 0.45)" : "rgba(0, 0, 0, 0.18)",
-                            borderRadius: "6px",
-                            border: teamColor.isLight
-                              ? "1px solid rgba(0, 0, 0, 0.15)"
-                              : "1px solid rgba(255, 255, 255, 0.25)",
-                          }}
-                        />
-                      </div>
-
-                      <div>
-                        <div
-                          style={{
-                            fontSize: "0.66rem",
-                            fontWeight: 700,
-                            textTransform: "uppercase",
-                            letterSpacing: "0.4px",
-                            color: teamColor.subText,
-                            marginBottom: "2px",
-                          }}
-                        >
-                          Site Supervisor
-                        </div>
-                        <input
-                          type="text"
-                          list="crew-supervisors-datalist"
-                          className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
-                          value={displaySupervisor}
-                          readOnly={readOnly}
-                          onChange={(e) => setDraftField("siteSupervisor", e.target.value)}
-                          onBlur={(e) => handleCommitCrewField(crew, "siteSupervisor", e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                          }}
-                          placeholder="Assign site supervisor..."
-                          style={{
-                            width: "100%",
-                            fontSize: "0.78rem",
-                            fontWeight: 700,
-                            color: teamColor.text,
-                            padding: "4px 7px",
-                            background: teamColor.isLight ? "rgba(255, 255, 255, 0.45)" : "rgba(0, 0, 0, 0.18)",
-                            borderRadius: "6px",
-                            border: teamColor.isLight
-                              ? "1px solid rgba(0, 0, 0, 0.15)"
-                              : "1px solid rgba(255, 255, 255, 0.25)",
-                          }}
-                        />
-                      </div>
-
-                      <div>
-                        <div
-                          style={{
-                            fontSize: "0.66rem",
-                            fontWeight: 700,
-                            textTransform: "uppercase",
-                            letterSpacing: "0.4px",
-                            color: teamColor.subText,
-                            marginBottom: "2px",
-                          }}
-                        >
-                          Car
-                        </div>
-                        <input
-                          type="text"
-                          list="registered-crew-cars"
-                          className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
-                          value={displayCar}
-                          readOnly={readOnly}
-                          onChange={(e) => setDraftField("car", e.target.value)}
-                          onBlur={(e) => handleCommitCrewField(crew, "car", e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                          }}
-                          placeholder="Assign car / vehicle..."
-                          style={{
-                            width: "100%",
-                            fontSize: "0.78rem",
-                            fontWeight: 700,
-                            color: teamColor.text,
-                            padding: "4px 7px",
-                            background: teamColor.isLight ? "rgba(255, 255, 255, 0.45)" : "rgba(0, 0, 0, 0.18)",
-                            borderRadius: "6px",
-                            border: teamColor.isLight
-                              ? "1px solid rgba(0, 0, 0, 0.15)"
-                              : "1px solid rgba(255, 255, 255, 0.25)",
-                          }}
-                        />
-                      </div>
-
-                      <div style={{ gridColumn: "1 / -1" }}>
-                        <div
-                          style={{
-                            fontSize: "0.66rem",
-                            fontWeight: 700,
-                            textTransform: "uppercase",
-                            letterSpacing: "0.4px",
-                            color: teamColor.subText,
-                            marginBottom: "2px",
-                          }}
-                        >
-                          Team Member
-                        </div>
-                        <input
-                          type="text"
-                          className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
-                          value={displayMembers}
-                          readOnly={readOnly}
-                          onChange={(e) => setDraftField("membersText", e.target.value)}
-                          onBlur={(e) => handleCommitCrewField(crew, "membersText", e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                          }}
-                          placeholder="Team members (e.g. Jamar, Faiz, Shahir)..."
-                          style={{
-                            width: "100%",
-                            fontSize: "0.78rem",
-                            fontWeight: 700,
-                            color: teamColor.text,
-                            padding: "4px 7px",
-                            background: teamColor.isLight ? "rgba(255, 255, 255, 0.45)" : "rgba(0, 0, 0, 0.18)",
-                            borderRadius: "6px",
-                            border: teamColor.isLight
-                              ? "1px solid rgba(0, 0, 0, 0.15)"
-                              : "1px solid rgba(255, 255, 255, 0.25)",
-                          }}
-                        />
-                      </div>
+                    <div style={{ display: "flex", gap: "4px" }}>
+                      <button
+                        onClick={() => handleDeleteCrew(crew.id)}
+                        title="Delete Crew"
+                        style={{
+                          background: teamColor.isLight ? "rgba(0, 0, 0, 0.08)" : "rgba(255, 255, 255, 0.16)",
+                          border: "none",
+                          color: teamColor.text,
+                          cursor: "pointer",
+                          padding: "5px",
+                          borderRadius: "6px",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <Trash2 size={15} />
+                      </button>
                     </div>
                   </div>
 
@@ -3445,6 +3256,113 @@ export function ProjectTeamScheduleView({
 
                   {/* Crew Roster List */}
                   <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: "12px", flex: 1 }}>
+                    {/* Installation Team & Wiring Team section inside the green box */}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                        gap: "10px",
+                      }}
+                    >
+                      <div>
+                        <div
+                          style={{
+                            fontSize: "0.75rem",
+                            fontWeight: 700,
+                            color: "var(--muted)",
+                            textTransform: "uppercase",
+                            marginBottom: "6px",
+                          }}
+                        >
+                          Installation Team
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
+                            padding: "8px 12px",
+                            background: "var(--surface-soft)",
+                            borderRadius: "8px",
+                            border: "1px solid var(--line)",
+                          }}
+                        >
+                          <Briefcase size={15} style={{ color: "#2563eb", flexShrink: 0 }} />
+                          <input
+                            type="text"
+                            list="crew-install-teams-datalist"
+                            value={displayInstallTeam}
+                            readOnly={readOnly}
+                            onChange={(e) => setDraftField("installationTeam", e.target.value)}
+                            onBlur={(e) => handleCommitCrewField(crew, "installationTeam", e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
+                            placeholder="Not assigned"
+                            style={{
+                              width: "100%",
+                              border: "none",
+                              background: "transparent",
+                              outline: "none",
+                              fontSize: "0.84rem",
+                              fontWeight: 700,
+                              color: "var(--ink)",
+                              padding: 0,
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <div
+                          style={{
+                            fontSize: "0.75rem",
+                            fontWeight: 700,
+                            color: "var(--muted)",
+                            textTransform: "uppercase",
+                            marginBottom: "6px",
+                          }}
+                        >
+                          Wiring Team
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
+                            padding: "8px 12px",
+                            background: "var(--surface-soft)",
+                            borderRadius: "8px",
+                            border: "1px solid var(--line)",
+                          }}
+                        >
+                          <Zap size={15} style={{ color: "#059669", flexShrink: 0 }} />
+                          <input
+                            type="text"
+                            list="crew-wiring-teams-datalist"
+                            value={displayWiringTeam}
+                            readOnly={readOnly}
+                            onChange={(e) => setDraftField("wiringTeam", e.target.value)}
+                            onBlur={(e) => handleCommitCrewField(crew, "wiringTeam", e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            }}
+                            placeholder="Not assigned"
+                            style={{
+                              width: "100%",
+                              border: "none",
+                              background: "transparent",
+                              outline: "none",
+                              fontSize: "0.84rem",
+                              fontWeight: 700,
+                              color: "var(--ink)",
+                              padding: 0,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
                     {/* Site Supervisor section */}
                     <div>
                       <div style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", marginBottom: "6px", display: "flex", justifyContent: "space-between" }}>
