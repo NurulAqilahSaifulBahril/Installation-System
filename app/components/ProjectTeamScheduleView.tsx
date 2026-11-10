@@ -5276,10 +5276,10 @@ export function ProjectTeamScheduleView({
                           padding: "3px 9px",
                           borderRadius: "6px",
                           border: "none",
-                          background: leaveApprovalFilter === "approved" ? "var(--surface)" : "transparent",
-                          color: leaveApprovalFilter === "approved" ? "#047857" : "var(--muted)",
+                          background: leaveApprovalFilter === "approved" ? "#059669" : "transparent",
+                          color: leaveApprovalFilter === "approved" ? "#ffffff" : "var(--muted)",
                           cursor: "pointer",
-                          boxShadow: leaveApprovalFilter === "approved" ? "0 1px 2px rgba(0,0,0,0.06)" : "none",
+                          boxShadow: leaveApprovalFilter === "approved" ? "0 1px 2px rgba(5,150,105,0.25)" : "none",
                         }}
                       >
                         Approved ({approvedCount})
@@ -5292,10 +5292,10 @@ export function ProjectTeamScheduleView({
                           padding: "3px 9px",
                           borderRadius: "6px",
                           border: "none",
-                          background: leaveApprovalFilter === "rejected" ? "var(--surface)" : "transparent",
-                          color: leaveApprovalFilter === "rejected" ? "#b91c1c" : "var(--muted)",
+                          background: leaveApprovalFilter === "rejected" ? "#dc2626" : "transparent",
+                          color: leaveApprovalFilter === "rejected" ? "#ffffff" : "var(--muted)",
                           cursor: "pointer",
-                          boxShadow: leaveApprovalFilter === "rejected" ? "0 1px 2px rgba(0,0,0,0.06)" : "none",
+                          boxShadow: leaveApprovalFilter === "rejected" ? "0 1px 2px rgba(220,38,38,0.25)" : "none",
                         }}
                       >
                         Rejected ({rejectedCount})
@@ -5494,35 +5494,37 @@ export function ProjectTeamScheduleView({
                                     <span
                                       style={{
                                         fontSize: "0.72rem",
-                                        padding: "3px 8px",
+                                        padding: "3px 9px",
                                         borderRadius: "999px",
                                         fontWeight: 700,
-                                        background: "#ecfdf5",
-                                        color: "#065f46",
-                                        border: "1px solid #a7f3d0",
+                                        background: "#059669",
+                                        color: "#ffffff",
+                                        border: "1px solid #047857",
                                         display: "inline-flex",
                                         alignItems: "center",
                                         gap: "3px",
+                                        boxShadow: "0 1px 2px rgba(5,150,105,0.25)",
                                       }}
                                     >
-                                      <Check size={11} /> Approved
+                                      <Check size={11} style={{ strokeWidth: 2.5 }} /> Approved
                                     </span>
                                   ) : isRejected ? (
                                     <span
                                       style={{
                                         fontSize: "0.72rem",
-                                        padding: "3px 8px",
+                                        padding: "3px 9px",
                                         borderRadius: "999px",
                                         fontWeight: 700,
-                                        background: "#fef2f2",
-                                        color: "#991b1b",
-                                        border: "1px solid #fecaca",
+                                        background: "#dc2626",
+                                        color: "#ffffff",
+                                        border: "1px solid #b91c1c",
                                         display: "inline-flex",
                                         alignItems: "center",
                                         gap: "3px",
+                                        boxShadow: "0 1px 2px rgba(220,38,38,0.25)",
                                       }}
                                     >
-                                      <X size={11} /> Rejected
+                                      <X size={11} style={{ strokeWidth: 2.5 }} /> Rejected
                                     </span>
                                   ) : (
                                     <span
@@ -5559,18 +5561,19 @@ export function ProjectTeamScheduleView({
                                           gap: "3px",
                                           fontSize: "0.74rem",
                                           fontWeight: 700,
-                                          padding: "4px 8px",
+                                          padding: "4px 9px",
                                           borderRadius: "6px",
-                                          border: isApproved ? "1px solid #a7f3d0" : "1px solid #059669",
-                                          background: isApproved ? "#f0fdf4" : "#059669",
-                                          color: isApproved ? "#047857" : "#ffffff",
+                                          border: "1px solid #047857",
+                                          background: "#059669",
+                                          color: "#ffffff",
                                           cursor: isApproved ? "default" : "pointer",
                                           opacity: isApproved ? 0.75 : 1,
+                                          boxShadow: isApproved ? "none" : "0 1px 2px rgba(5,150,105,0.25)",
                                           transition: "all 0.15s ease",
                                         }}
                                       >
                                         <Check size={12} style={{ strokeWidth: 3 }} />
-                                        <span>{isApproved ? "Approved" : "Approve"}</span>
+                                        <span style={{ color: "#ffffff" }}>{isApproved ? "Approved" : "Approve"}</span>
                                       </button>
 
                                       {/* Reject button 'X' */}
@@ -5584,18 +5587,19 @@ export function ProjectTeamScheduleView({
                                           gap: "3px",
                                           fontSize: "0.74rem",
                                           fontWeight: 700,
-                                          padding: "4px 8px",
+                                          padding: "4px 9px",
                                           borderRadius: "6px",
-                                          border: isRejected ? "1px solid #fca5a5" : "1px solid #dc2626",
-                                          background: isRejected ? "#fef2f2" : "#dc2626",
-                                          color: isRejected ? "#b91c1c" : "#ffffff",
+                                          border: "1px solid #b91c1c",
+                                          background: "#dc2626",
+                                          color: "#ffffff",
                                           cursor: isRejected ? "default" : "pointer",
                                           opacity: isRejected ? 0.75 : 1,
+                                          boxShadow: isRejected ? "none" : "0 1px 2px rgba(220,38,38,0.25)",
                                           transition: "all 0.15s ease",
                                         }}
                                       >
                                         <X size={12} style={{ strokeWidth: 3 }} />
-                                        <span>{isRejected ? "Rejected" : "Reject"}</span>
+                                        <span style={{ color: "#ffffff" }}>{isRejected ? "Rejected" : "Reject"}</span>
                                       </button>
 
                                       {item.member && (
