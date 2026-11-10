@@ -4840,29 +4840,10 @@ export function ProjectTeamScheduleView({
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
                     gap: "10px",
                   }}
                 >
-                  <div
-                    style={{
-                      padding: "10px 14px",
-                      background: "var(--surface-soft)",
-                      borderRadius: "8px",
-                      border: "1px solid var(--line)",
-                    }}
-                  >
-                    <div style={{ fontSize: "0.72rem", color: "var(--muted)", fontWeight: 700, textTransform: "uppercase" }}>
-                      NUrul_DB Leaves
-                    </div>
-                    <div style={{ fontSize: "1.25rem", fontWeight: 800, color: "var(--ink)", marginTop: "2px" }}>
-                      {dbLeaves.length}
-                    </div>
-                    <div style={{ fontSize: "0.7rem", color: "var(--muted)", marginTop: "2px" }}>
-                      {dbPeople.length} employees synced
-                    </div>
-                  </div>
-
                   <div
                     style={{
                       padding: "10px 14px",
@@ -5070,148 +5051,6 @@ export function ProjectTeamScheduleView({
                   </div>
                 )}
               </div>
-            </div>
-
-            {/* SECTION 2: Live Records from NUrul_DB (public.hr_leaves) */}
-            <div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
-                <h4 style={{ margin: 0, fontSize: "0.92rem", fontWeight: 700, color: "var(--ink)", display: "flex", alignItems: "center", gap: "6px" }}>
-                  <Database size={15} style={{ color: "#059669" }} />
-                  NUrul_DB Leave Records (<code>public.hr_leaves</code>)
-                </h4>
-                <span style={{ fontSize: "0.74rem", color: "var(--muted)" }}>
-                  {dbLeaves.length} record(s) loaded
-                </span>
-              </div>
-
-              {dbLeaves.length === 0 ? (
-                <div
-                  style={{
-                    padding: "24px 20px",
-                    background: "var(--surface-soft)",
-                    borderRadius: "8px",
-                    border: "1px dashed var(--line)",
-                    textAlign: "center",
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    gap: "6px",
-                  }}
-                >
-                  <Database size={24} style={{ color: "var(--muted)", opacity: 0.7 }} />
-                  <div style={{ fontSize: "0.88rem", fontWeight: 700, color: "var(--ink)" }}>
-                    No Leave Records in NUrul_DB (public.hr_leaves)
-                  </div>
-                  <div style={{ fontSize: "0.78rem", color: "var(--muted)", maxWidth: "520px" }}>
-                    Connected successfully to <code>NUrul_DB</code> ({dbPeople.length} employee profiles matched from <code>public.hr_people</code>). When leave requests or MC records are submitted in NUrul_DB, or updated here via &quot;Update Availability&quot;, they will immediately appear in this table and flag affected teams.
-                  </div>
-                </div>
-              ) : (
-                <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: "8px" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem", textAlign: "left" }}>
-                    <thead>
-                      <tr style={{ background: "var(--surface-soft)", borderBottom: "1px solid var(--line)", color: "var(--muted)", textTransform: "uppercase", fontSize: "0.72rem", letterSpacing: "0.3px" }}>
-                        <th style={{ padding: "10px 14px", fontWeight: 700 }}>Employee</th>
-                        <th style={{ padding: "10px 14px", fontWeight: 700 }}>Type</th>
-                        <th style={{ padding: "10px 14px", fontWeight: 700 }}>Period</th>
-                        <th style={{ padding: "10px 14px", fontWeight: 700 }}>Reason / Notes</th>
-                        <th style={{ padding: "10px 14px", fontWeight: 700 }}>Active Week Impact</th>
-                        <th style={{ padding: "10px 14px", fontWeight: 700 }}>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {dbLeaves.map((l) => {
-                        const isMC = Boolean(l.has_mc) || /\b(mc|medical|sick)\b/i.test(l.type || "");
-                        const overlapsActive = isLeaveRowOverlappingWeek(l, activeWeek);
-                        const empName = l.employee_name || l.employee_username || l.employee_id;
-
-                        return (
-                          <tr key={l.id} style={{ borderBottom: "1px solid var(--line)", background: overlapsActive ? "#fff8f8" : "transparent" }}>
-                            <td style={{ padding: "10px 14px" }}>
-                              <strong style={{ color: "var(--ink)", display: "block" }}>{empName}</strong>
-                              <span style={{ fontSize: "0.72rem", color: "var(--muted)" }}>ID: {l.employee_id}</span>
-                            </td>
-                            <td style={{ padding: "10px 14px" }}>
-                              <span
-                                style={{
-                                  fontSize: "0.72rem",
-                                  padding: "3px 8px",
-                                  borderRadius: "6px",
-                                  fontWeight: 700,
-                                  background: isMC ? "#fee2e2" : "#fef3c7",
-                                  color: isMC ? "#991b1b" : "#92400e",
-                                  border: `1px solid ${isMC ? "#fca5a5" : "#fde68a"}`,
-                                  display: "inline-block",
-                                }}
-                              >
-                                {isMC ? "Medical Leave (MC)" : l.type || "Leave"}
-                              </span>
-                            </td>
-                            <td style={{ padding: "10px 14px", color: "var(--ink)" }}>
-                              <div style={{ fontWeight: 600 }}>{l.from_date?.slice(0, 10)} to {l.to_date?.slice(0, 10) || l.from_date?.slice(0, 10)}</div>
-                            </td>
-                            <td style={{ padding: "10px 14px", color: "var(--ink)", maxWidth: "240px" }}>
-                              {l.note || <span style={{ color: "var(--muted)", fontStyle: "italic" }}>None</span>}
-                            </td>
-                            <td style={{ padding: "10px 14px" }}>
-                              {overlapsActive ? (
-                                <span
-                                  style={{
-                                    fontSize: "0.72rem",
-                                    padding: "2px 8px",
-                                    borderRadius: "12px",
-                                    fontWeight: 700,
-                                    background: "#fee2e2",
-                                    color: "#b91c1c",
-                                    border: "1px solid #fca5a5",
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    gap: "4px",
-                                  }}
-                                >
-                                  ⚠️ Overlaps Week {weekRangeLabel(activeWeek)}
-                                </span>
-                              ) : (
-                                <span
-                                  style={{
-                                    fontSize: "0.72rem",
-                                    padding: "2px 8px",
-                                    borderRadius: "12px",
-                                    fontWeight: 600,
-                                    background: "#f0fdf4",
-                                    color: "#15803d",
-                                    border: "1px solid #bbf7d0",
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    gap: "4px",
-                                  }}
-                                >
-                                  ✓ Outside Active Week
-                                </span>
-                              )}
-                            </td>
-                            <td style={{ padding: "10px 14px" }}>
-                              <span
-                                style={{
-                                  fontSize: "0.72rem",
-                                  padding: "2px 8px",
-                                  borderRadius: "6px",
-                                  fontWeight: 600,
-                                  background: l.status === "approved" ? "#ecfdf5" : "#f1f5f9",
-                                  color: l.status === "approved" ? "#065f46" : "#475569",
-                                  textTransform: "capitalize",
-                                }}
-                              >
-                                {l.status || "approved"}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
             </div>
           </div>
         </div>
