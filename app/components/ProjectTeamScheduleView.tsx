@@ -37,6 +37,7 @@ import {
   Zap,
 } from "lucide-react";
 import type { InstallationJob } from "@/lib/types";
+import type { TeamCrewAssignment } from "@/lib/schedule-suggest";
 
 export type ProjectTeamMemberRole = "site_supervisor" | "technician" | "intern";
 
@@ -85,6 +86,8 @@ export type InstallationCrew = {
   wiringTeam?: string;
   supervisorsText?: string;
   membersText?: string;
+  sectionIndex?: number;
+  groupIds?: string[];
 };
 
 export function isPlaceholder(value: string | undefined | null): boolean {
@@ -147,12 +150,19 @@ export type ProjectTeamScheduleViewProps = {
   onSaveJob?: (job: InstallationJob) => void;
   todayIso?: string;
   readOnly?: boolean;
+  // The crew entered per team on Propose to Install (scheduleDraft.teamCrews),
+  // used for weeks still being planned
+  proposeTeamCrews?: Partial<Record<number, TeamCrewAssignment>>;
 };
 
-const PROJECT_MEMBERS_STORAGE_KEY = "installation_project_team_members_v6";
-const PROJECT_CREWS_STORAGE_KEY = "installation_project_crews_v5";
-const PROJECT_WEEKLY_CREWS_KEY = "installation_project_weekly_crews_v4";
+const PROJECT_MEMBERS_STORAGE_KEY = "installation_project_team_members_v7";
+const PROJECT_CREWS_STORAGE_KEY = "installation_project_crews_v6";
+const PROJECT_WEEKLY_CREWS_KEY = "installation_project_weekly_crews_v6";
 const PROJECT_CARS_STORAGE_KEY = "installation_project_cars_v4";
+
+// Minimum date / week start for Team Grouping schedule (starting from October 2026)
+const MIN_TEAM_GROUPING_DATE = "2026-10-01";
+const MIN_TEAM_GROUPING_WEEK = "2026-09-28";
 
 // Date formatting utilities matching Arranged Installation
 const DAY_MONTH = new Intl.DateTimeFormat("en-GB", {
@@ -300,6 +310,7 @@ export const KEY_ARRANGED_SUPERVISORS = [
   "kaije",
   "xiangjun",
   "ahzu",
+  "siongchin",
   "joshua",
   "kai kian",
   "jia hao",
@@ -364,6 +375,7 @@ export function normalizeArrangedName(
   contextRole?: ProjectTeamMemberRole
 ): { name: string; role: ProjectTeamMemberRole } | null {
   if (!raw) return null;
+  const isInternHint = /\bintern\b/i.test(raw);
   let clean = raw.trim();
   clean = clean
     .replace(/\([^)]*\)/g, " ")
@@ -390,6 +402,7 @@ export function normalizeArrangedName(
   if (lower === "kaije" || lower === "kaijie" || lower === "jiajie") return { name: "Kaije", role: "site_supervisor" };
   if (lower === "xiangjun" || lower === "xiang jun") return { name: "XiangJun", role: "site_supervisor" };
   if (lower === "ahzu" || lower === "ah zu" || lower === "ah") return { name: "Ahzu", role: "site_supervisor" };
+  if (lower === "siongchin" || lower === "siong chin") return { name: "SiongChin", role: "site_supervisor" };
   if (lower === "joshua" || lower === "joshia") return { name: "Joshua", role: "site_supervisor" };
   if (lower === "kai kian" || lower === "kaikian") return { name: "Kai Kian", role: "site_supervisor" };
   if (lower === "jia hao" || lower === "jiahao") return { name: "Jia Hao", role: "site_supervisor" };
@@ -423,7 +436,7 @@ export function normalizeArrangedName(
 
   // If contextual role provided
   let inferredRole: ProjectTeamMemberRole = contextRole || "technician";
-  if (lower.includes("intern")) {
+  if (isInternHint || lower.includes("intern")) {
     inferredRole = "intern";
     clean = clean.replace(/intern\s*/i, "").trim() || clean;
   }
@@ -463,6 +476,16 @@ export const DEFAULT_MEMBERS: ProjectTeamMember[] = [
     availability: { status: "available" },
     assignedCrewId: null,
     notes: "Site supervisor & technical installer in Arranged Installation.",
+  },
+  {
+    id: "mem-sup-siongchin",
+    name: "SiongChin",
+    role: "site_supervisor",
+    phone: "012-778 9900",
+    expertise: ["Roof Mounting & Structural", "Electrical Wiring (AC/DC)", "Testing & Commissioning (T&C)"],
+    availability: { status: "available" },
+    assignedCrewId: null,
+    notes: "Site supervisor in Arranged Installation.",
   },
   {
     id: "mem-sup-joshua",
@@ -723,7 +746,8 @@ export const DEFAULT_MEMBERS: ProjectTeamMember[] = [
 // Synchronizes and maps members ensuring all Arranged Installation personnel have canonical names & roles
 export function syncArrangedMembers(
   existingMembers: ProjectTeamMember[],
-  groups?: any[]
+  groups?: any[],
+  proposeTeamCrews?: Partial<Record<number, TeamCrewAssignment>>
 ): ProjectTeamMember[] {
   const memberMapByName = new Map<string, ProjectTeamMember>();
 
@@ -766,63 +790,74 @@ export function syncArrangedMembers(
     }
   }
 
+  const registerSupervisorString = (sup: string) => {
+    if (!sup) return;
+    const split = String(sup).split(/[,/&]/);
+    for (const s of split) {
+      const norm = normalizeArrangedName(s, "site_supervisor");
+      if (!norm || CREATED_DUMMY_NAMES.has(norm.name.toLowerCase().trim())) continue;
+      const k = norm.name.toLowerCase().trim();
+      if (!memberMapByName.has(k)) {
+        memberMapByName.set(k, {
+          id: `mem-sup-auto-${k.replace(/\s+/g, "-")}`,
+          name: norm.name,
+          role: norm.role,
+          phone: "012-000 0000",
+          expertise: ["SEDA & Safety Compliance", "Roof Mounting & Structural", "Testing & Commissioning (T&C)"],
+          availability: { status: "available" },
+          assignedCrewId: null,
+          notes: "Imported from Arranged Installation supervisors schedule.",
+        });
+      }
+    }
+  };
+
+  const registerCrewMemberString = (wm: string) => {
+    if (!wm) return;
+    const split = String(wm).split(/[,/&]/);
+    for (const m of split) {
+      const norm = normalizeArrangedName(m, "technician");
+      if (!norm || CREATED_DUMMY_NAMES.has(norm.name.toLowerCase().trim())) continue;
+      const k = norm.name.toLowerCase().trim();
+      if (!memberMapByName.has(k)) {
+        memberMapByName.set(k, {
+          id: `mem-${norm.role === "intern" ? "int" : "tech"}-auto-${k.replace(/\s+/g, "-")}`,
+          name: norm.name,
+          role: norm.role,
+          phone: "011-000 0000",
+          expertise: ["Electrical Wiring (AC/DC)", "Roof Mounting & Structural", "Testing & Commissioning (T&C)"],
+          availability: { status: "available" },
+          assignedCrewId: null,
+          notes: "Imported from Arranged Installation wiring crew.",
+        });
+      }
+    }
+  };
+
   // 3. Scan live groups from Arranged Installation if available
   if (Array.isArray(groups) && groups.length > 0) {
     for (const g of groups) {
-      // Supervisors
       const sups = [
         ...(Array.isArray(g.supervisors) ? g.supervisors : []),
         ...(g.supervisor ? [g.supervisor] : []),
       ];
       for (const sup of sups) {
-        if (!sup) continue;
-        const cleanSup = String(sup).replace(/\([^)]*\)/g, " ").trim();
-        if (!cleanSup || /^(none|unassigned|tbd|na|n\/a|-)$/i.test(cleanSup)) continue;
-        const split = cleanSup.split(/[,/&]/);
-        for (const s of split) {
-          const norm = normalizeArrangedName(s, "site_supervisor");
-          if (!norm || CREATED_DUMMY_NAMES.has(norm.name.toLowerCase().trim())) continue;
-          const k = norm.name.toLowerCase().trim();
-          if (!memberMapByName.has(k)) {
-            memberMapByName.set(k, {
-              id: `mem-sup-auto-${k.replace(/\s+/g, "-")}`,
-              name: norm.name,
-              role: norm.role,
-              phone: "012-000 0000",
-              expertise: ["SEDA & Safety Compliance", "Roof Mounting & Structural", "Testing & Commissioning (T&C)"],
-              availability: { status: "available" },
-              assignedCrewId: null,
-              notes: "Imported from Arranged Installation supervisors schedule.",
-            });
-          }
-        }
+        registerSupervisorString(String(sup));
       }
 
-      // Wiring crew
       const wms = Array.isArray(g.wiringMembers) ? g.wiringMembers : [];
       for (const wm of wms) {
-        if (!wm) continue;
-        const cleanWm = String(wm).replace(/\([^)]*\)/g, " ").trim();
-        if (!cleanWm || /^(none|unassigned|tbd|na|n\/a|-)$/i.test(cleanWm)) continue;
-        const split = cleanWm.split(/[,/&]/);
-        for (const m of split) {
-          const norm = normalizeArrangedName(m, "technician");
-          if (!norm || CREATED_DUMMY_NAMES.has(norm.name.toLowerCase().trim())) continue;
-          const k = norm.name.toLowerCase().trim();
-          if (!memberMapByName.has(k)) {
-            memberMapByName.set(k, {
-              id: `mem-tech-auto-${k.replace(/\s+/g, "-")}`,
-              name: norm.name,
-              role: norm.role,
-              phone: "011-000 0000",
-              expertise: ["Electrical Wiring (AC/DC)", "Testing & Commissioning (T&C)"],
-              availability: { status: "available" },
-              assignedCrewId: null,
-              notes: "Imported from Arranged Installation wiring crew.",
-            });
-          }
-        }
+        registerCrewMemberString(String(wm));
       }
+    }
+  }
+
+  // 4. Scan Propose to Install teamCrews if available
+  if (proposeTeamCrews) {
+    for (const pCrew of Object.values(proposeTeamCrews)) {
+      if (!pCrew) continue;
+      if (pCrew.siteSupervisor) registerSupervisorString(pCrew.siteSupervisor);
+      if (pCrew.membersText) registerCrewMemberString(pCrew.membersText);
     }
   }
 
@@ -1196,6 +1231,7 @@ export function ProjectTeamScheduleView({
   onSaveJob,
   todayIso = new Date().toISOString().slice(0, 10),
   readOnly = false,
+  proposeTeamCrews,
 }: ProjectTeamScheduleViewProps) {
   // Members state following Arranged Installation roster
   const [members, setMembers] = useState<ProjectTeamMember[]>(() => {
@@ -1203,25 +1239,26 @@ export function ProjectTeamScheduleView({
       try {
         const saved =
           window.localStorage.getItem(PROJECT_MEMBERS_STORAGE_KEY) ||
+          window.localStorage.getItem("installation_project_team_members_v6") ||
           window.localStorage.getItem("installation_project_team_members_v4") ||
           window.localStorage.getItem("installation_project_team_members");
         if (saved) {
           const parsed = JSON.parse(saved) as ProjectTeamMember[];
           if (Array.isArray(parsed) && parsed.length > 0) {
-            return syncArrangedMembers(parsed, groups);
+            return syncArrangedMembers(parsed, groups, proposeTeamCrews);
           }
         }
       } catch {
         // fallback
       }
     }
-    return syncArrangedMembers(DEFAULT_MEMBERS, groups);
+    return syncArrangedMembers(DEFAULT_MEMBERS, groups, proposeTeamCrews);
   });
 
-  // Auto-sync members from Arranged Installation schedule (supervisors and wiring members)
+  // Auto-sync members from Arranged Installation schedule and Propose to Install
   useEffect(() => {
-    setMembers((prevMembers) => syncArrangedMembers(prevMembers, groups));
-  }, [groups]);
+    setMembers((prevMembers) => syncArrangedMembers(prevMembers, groups, proposeTeamCrews));
+  }, [groups, proposeTeamCrews]);
 
   // Week-by-week crews state: Record<weekStartIso, InstallationCrew[]>
   const [weeklyCrews, setWeeklyCrews] = useState<Record<string, InstallationCrew[]>>(() => {
@@ -1230,21 +1267,9 @@ export function ProjectTeamScheduleView({
         const savedWeekly = window.localStorage.getItem(PROJECT_WEEKLY_CREWS_KEY);
         if (savedWeekly) {
           const parsed = JSON.parse(savedWeekly) as Record<string, InstallationCrew[]>;
-          const currentWeekStart = weekBounds(todayIso)?.start || todayIso;
-          const cleaned: Record<string, InstallationCrew[]> = {};
-          for (const [wKey, cList] of Object.entries(parsed)) {
-            if (wKey >= currentWeekStart) {
-              const hasOldDummyData = cList.some(
-                (c) =>
-                  c.supervisorId === "mem-sup-1" ||
-                  (c.technicianIds && (c.technicianIds.includes("mem-tech-jamar") || c.technicianIds.includes("mem-tech-sharry")))
-              );
-              cleaned[wKey] = hasOldDummyData ? DEFAULT_CREWS : cList;
-            } else {
-              cleaned[wKey] = cList;
-            }
+          if (parsed && typeof parsed === "object") {
+            return parsed;
           }
-          return cleaned;
         }
       } catch {
         // fallback
@@ -1253,26 +1278,37 @@ export function ProjectTeamScheduleView({
     return {};
   });
 
-  // Arranged Installation weeks extraction matching Arranged Installation in Installation Schedule
+  // The week being worked, by the same rule as Arranged Installation: from
+  // Saturday the coming Monday's week counts as current. Project Team opens
+  // on it; later weeks are the ones Propose to Install is still planning.
+  const currentWorkWeek = weekBounds(addDays(todayIso, 2))?.start || todayIso;
+
+  // Arranged Installation & Propose to Install weeks starting from October 2026
   const arrangedWeeks = useMemo(() => {
     const weeks = new Set<string>();
     for (const group of groups || []) {
-      if (group.installationDate) {
+      if (group.installationDate && group.installationDate >= MIN_TEAM_GROUPING_DATE) {
         const start = weekBounds(group.installationDate)?.start;
-        if (start) weeks.add(start);
+        if (start && start >= MIN_TEAM_GROUPING_WEEK) {
+          weeks.add(start);
+        }
       }
     }
     const currentWeekStart = weekBounds(todayIso)?.start;
-    if (currentWeekStart) {
+    if (currentWeekStart && currentWeekStart >= MIN_TEAM_GROUPING_WEEK) {
       weeks.add(currentWeekStart);
     }
+    if (currentWorkWeek >= MIN_TEAM_GROUPING_WEEK) {
+      weeks.add(currentWorkWeek);
+      weeks.add(addDays(currentWorkWeek, 7));
+    }
     return Array.from(weeks).sort();
-  }, [groups, todayIso]);
+  }, [groups, todayIso, currentWorkWeek]);
 
   const latestArrangedWeek = useMemo(() => {
     let latest = "";
     for (const group of groups || []) {
-      if (group.installationDate) {
+      if (group.installationDate && group.installationDate >= MIN_TEAM_GROUPING_DATE) {
         const start = weekBounds(group.installationDate)?.start;
         if (start && start > latest) {
           latest = start;
@@ -1283,11 +1319,11 @@ export function ProjectTeamScheduleView({
   }, [groups, arrangedWeeks]);
 
   const [selectedWeek, setSelectedWeek] = useState<string | null>(null);
-  const activeWeek = selectedWeek ?? latestArrangedWeek ?? (weekBounds(todayIso)?.start || todayIso);
+  const activeWeek = selectedWeek ?? currentWorkWeek;
 
   const allNavWeeks = useMemo(() => {
     const set = new Set(arrangedWeeks);
-    if (activeWeek) {
+    if (activeWeek && activeWeek >= MIN_TEAM_GROUPING_WEEK) {
       set.add(activeWeek);
     }
     return Array.from(set).sort();
@@ -1300,7 +1336,10 @@ export function ProjectTeamScheduleView({
       if (idx > 0) {
         setSelectedWeek(allNavWeeks[idx - 1]);
       } else {
-        setSelectedWeek(addDays(activeWeek, -7));
+        const prev = addDays(activeWeek, -7);
+        if (prev >= MIN_TEAM_GROUPING_WEEK) {
+          setSelectedWeek(prev);
+        }
       }
     });
   };
@@ -1317,31 +1356,274 @@ export function ProjectTeamScheduleView({
     });
   };
 
-  // Active crews for the selected week
-  const currentWeekCrews = useMemo(() => {
-    const currentWeekStart = weekBounds(todayIso)?.start || todayIso;
-    const isCurrentOrFuture = !activeWeek || activeWeek >= currentWeekStart;
-
-    if (isCurrentOrFuture) {
-      const saved = weeklyCrews[activeWeek];
-      if (saved && saved.length > 0) {
-        const hasOldDummyData = saved.some(
-          (c) =>
-            c.supervisorId === "mem-sup-1" ||
-            (c.technicianIds && (c.technicianIds.includes("mem-tech-jamar") || c.technicianIds.includes("mem-tech-sharry")))
-        );
-        if (!hasOldDummyData) {
-          return saved;
-        }
-      }
+  // Derive crews for the selected week from Arranged Installation & Propose to Install (starting from Oct 2026)
+  const derivedWeekCrews = useMemo((): InstallationCrew[] => {
+    if (!activeWeek || activeWeek < MIN_TEAM_GROUPING_WEEK) {
       return DEFAULT_CREWS;
     }
 
-    if (weeklyCrews[activeWeek] && weeklyCrews[activeWeek].length > 0) {
-      return weeklyCrews[activeWeek];
+    type HeaderBlock = {
+      key: string;
+      teamLabel: string;
+      teamNum: number | null;
+      sectionIndex: number | undefined;
+      firstDate: string;
+      lastDate: string;
+      installationTeam: string;
+      wiringTeam: string;
+      supervisors: string[];
+      wiringMembers: string[];
+      cars: string[];
+      groupIds: string[];
+    };
+
+    const blockMap = new Map<string, HeaderBlock>();
+    const weekGroups = (groups || []).filter(
+      (g: any) => g.installationDate && weekBounds(g.installationDate)?.start === activeWeek
+    );
+
+    for (const g of weekGroups) {
+      const rawTeamLabel = String(g.teamLabel || g.name || g.installationTeam || "Team").trim();
+      const tm = rawTeamLabel.match(/\bteam\s*(\d+)\b/i) || rawTeamLabel.match(/^(\d+)$/);
+      const teamNum = tm ? Number(tm[1]) : null;
+      const instTeam =
+        g.installationTeam && !isPlaceholder(g.installationTeam) ? String(g.installationTeam).trim() : "";
+      const wirTeam =
+        g.wiringTeam && !isPlaceholder(g.wiringTeam) ? String(g.wiringTeam).trim() : "";
+      const sups: string[] = Array.from(
+        new Set<string>(
+          [
+            ...(Array.isArray(g.supervisors) ? g.supervisors : []),
+            ...(g.supervisor ? [g.supervisor] : []),
+          ]
+            .map((s: any) => String(s).trim())
+            .filter((s: string) => Boolean(s) && !isPlaceholder(s))
+        )
+      );
+      const mems: string[] = Array.from(
+        new Set<string>(
+          (Array.isArray(g.wiringMembers) ? g.wiringMembers : [])
+            .map((s: any) => String(s).trim())
+            .filter((s: string) => Boolean(s) && !isPlaceholder(s))
+        )
+      );
+      const carsList: string[] = Array.from(
+        new Set<string>(
+          (Array.isArray(g.cars) ? g.cars : [])
+            .map((s: any) => String(s).trim())
+            .filter((s: string) => Boolean(s) && !isPlaceholder(s))
+        )
+      );
+      const secIdx =
+        g.sectionIndex !== undefined && g.sectionIndex !== null ? Number(g.sectionIndex) : undefined;
+      const secKey = secIdx !== undefined ? String(secIdx) : "";
+      const sig = [
+        rawTeamLabel.toLowerCase(),
+        secKey,
+        instTeam,
+        wirTeam,
+        sups.join(", "),
+        mems.join(", "),
+        carsList.join(", "),
+      ].join("|");
+
+      const existing = blockMap.get(sig);
+      if (existing) {
+        if (!existing.groupIds.includes(g.id)) existing.groupIds.push(g.id);
+        if (g.installationDate < existing.firstDate) existing.firstDate = g.installationDate;
+        if (g.installationDate > existing.lastDate) existing.lastDate = g.installationDate;
+      } else {
+        blockMap.set(sig, {
+          key: sig,
+          teamLabel: rawTeamLabel,
+          teamNum,
+          sectionIndex: secIdx,
+          firstDate: g.installationDate,
+          lastDate: g.installationDate,
+          installationTeam: instTeam,
+          wiringTeam: wirTeam,
+          supervisors: sups,
+          wiringMembers: mems,
+          cars: carsList,
+          groupIds: [g.id],
+        });
+      }
     }
-    return DEFAULT_CREWS;
-  }, [weeklyCrews, activeWeek, todayIso]);
+
+    const blocks = Array.from(blockMap.values());
+
+    // Merge Propose to Install (proposeTeamCrews) for current & future planning weeks
+    if (activeWeek >= currentWorkWeek && proposeTeamCrews) {
+      for (const tNum of [1, 2, 3, 4]) {
+        const pCrew = proposeTeamCrews[tNum];
+        const matchingBlocks = blocks.filter((b) => b.teamNum === tNum);
+        const pInst = pCrew?.installationTeam && !isPlaceholder(pCrew.installationTeam) ? pCrew.installationTeam.trim() : "";
+        const pWir = pCrew?.wiringTeam && !isPlaceholder(pCrew.wiringTeam) ? pCrew.wiringTeam.trim() : "";
+        const pSup = pCrew?.siteSupervisor && !isPlaceholder(pCrew.siteSupervisor) ? pCrew.siteSupervisor.trim() : "";
+        const pMem = pCrew?.membersText && !isPlaceholder(pCrew.membersText) ? pCrew.membersText.trim() : "";
+        const pCar = pCrew?.car && !isPlaceholder(pCrew.car) ? pCrew.car.trim() : "";
+
+        if (matchingBlocks.length > 0) {
+          for (const b of matchingBlocks) {
+            if (pInst && (!b.installationTeam || activeWeek > currentWorkWeek)) b.installationTeam = pInst;
+            if (pWir && (!b.wiringTeam || activeWeek > currentWorkWeek)) b.wiringTeam = pWir;
+            if (pSup && (b.supervisors.length === 0 || activeWeek > currentWorkWeek)) {
+              b.supervisors = pSup.split(/[,/]/).map((s) => s.trim()).filter(Boolean);
+            }
+            if (pMem && (b.wiringMembers.length === 0 || activeWeek > currentWorkWeek)) {
+              b.wiringMembers = [pMem];
+            }
+            if (pCar && (b.cars.length === 0 || activeWeek > currentWorkWeek)) {
+              b.cars = pCar.split(/[,/]/).map((s) => s.trim()).filter(Boolean);
+            }
+          }
+        } else if (pInst || pWir || pSup || pMem || pCar || blocks.length === 0) {
+          blocks.push({
+            key: `propose-team-${tNum}`,
+            teamLabel: `Team ${tNum}`,
+            teamNum: tNum,
+            sectionIndex: tNum,
+            firstDate: activeWeek,
+            lastDate: activeWeek,
+            installationTeam: pInst,
+            wiringTeam: pWir,
+            supervisors: pSup ? pSup.split(/[,/]/).map((s) => s.trim()).filter(Boolean) : [],
+            wiringMembers: pMem ? [pMem] : [],
+            cars: pCar ? pCar.split(/[,/]/).map((s) => s.trim()).filter(Boolean) : [],
+            groupIds: [],
+          });
+        }
+      }
+    }
+
+    if (blocks.length === 0) {
+      return DEFAULT_CREWS;
+    }
+
+    blocks.sort((a, b) => {
+      const aNum = a.teamNum ?? 999;
+      const bNum = b.teamNum ?? 999;
+      if (aNum !== bNum) return aNum - bNum;
+      const labelCmp = a.teamLabel.localeCompare(b.teamLabel);
+      if (labelCmp !== 0) return labelCmp;
+      if (a.firstDate !== b.firstDate) return a.firstDate.localeCompare(b.firstDate);
+      return (a.sectionIndex ?? 9999) - (b.sectionIndex ?? 9999);
+    });
+
+    // Count blocks per teamLabel to annotate multi-header teams (e.g. Team 1's 4 groups, Team 3's 3 groups)
+    const countByTeam = new Map<string, number>();
+    for (const b of blocks) {
+      const k = b.teamLabel.toLowerCase();
+      countByTeam.set(k, (countByTeam.get(k) || 0) + 1);
+    }
+    const indexByTeam = new Map<string, number>();
+
+    return blocks.map((b, idx) => {
+      const k = b.teamLabel.toLowerCase();
+      const totalForTeam = countByTeam.get(k) || 1;
+      const curIdx = (indexByTeam.get(k) || 0) + 1;
+      indexByTeam.set(k, curIdx);
+
+      // Resolve supervisorId from supervisors
+      let supervisorId: string | null = null;
+      for (const supStr of b.supervisors) {
+        const tokens = supStr.split(/[,/&]/).map((s) => s.trim()).filter(Boolean);
+        for (const tok of tokens) {
+          const norm = normalizeArrangedName(tok, "site_supervisor");
+          const targetName = (norm?.name || tok).toLowerCase().trim();
+          const matchedSup =
+            members.find((m) => m.role === "site_supervisor" && m.name.toLowerCase().trim() === targetName) ||
+            members.find((m) => m.name.toLowerCase().trim() === targetName);
+          if (matchedSup) {
+            supervisorId = matchedSup.id;
+            break;
+          }
+        }
+        if (supervisorId) break;
+      }
+
+      // Resolve technicianIds and internIds from wiringMembers
+      const technicianIds: string[] = [];
+      const internIds: string[] = [];
+      for (const wmStr of b.wiringMembers) {
+        const tokens = wmStr.split(/[,/&]/).map((s) => s.trim()).filter(Boolean);
+        for (const tok of tokens) {
+          const norm = normalizeArrangedName(tok, "technician");
+          if (!norm) continue;
+          const targetName = norm.name.toLowerCase().trim();
+          const matchedMem = members.find((m) => m.name.toLowerCase().trim() === targetName);
+          if (matchedMem) {
+            if (matchedMem.role === "intern" || norm.role === "intern") {
+              if (!internIds.includes(matchedMem.id)) internIds.push(matchedMem.id);
+            } else {
+              if (!technicianIds.includes(matchedMem.id)) technicianIds.push(matchedMem.id);
+            }
+          }
+        }
+      }
+
+      const baseLocation = /kluang/i.test(b.teamLabel)
+        ? "Kluang"
+        : /\bjb\b|johor/i.test(b.teamLabel)
+        ? "Johor Bahru"
+        : b.teamNum === 2
+        ? "Kluang"
+        : "Johor Bahru";
+
+      let multiHeaderSubtitle = "";
+      if (totalForTeam > 1) {
+        const fmtDay = (d: string) => {
+          const dt = new Date(`${d}T00:00:00`);
+          return Number.isNaN(dt.getTime()) ? d : DAY_MONTH.format(dt);
+        };
+        const dateSpan =
+          b.firstDate && b.lastDate
+            ? b.firstDate === b.lastDate
+              ? fmtDay(b.firstDate)
+              : `${fmtDay(b.firstDate)} – ${fmtDay(b.lastDate)}`
+            : "";
+        multiHeaderSubtitle = `Group ${curIdx} of ${totalForTeam}${dateSpan ? ` · ${dateSpan}` : ""}`;
+      }
+
+      return {
+        id: `crew-${activeWeek}-${b.sectionIndex ?? idx}-${b.teamLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${idx}`,
+        name: b.teamLabel,
+        supervisorId,
+        technicianIds,
+        internIds,
+        baseLocation,
+        vehicle: b.cars.join(", "),
+        targetDate: multiHeaderSubtitle || undefined,
+        notes: "",
+        installationTeam: b.installationTeam,
+        wiringTeam: b.wiringTeam,
+        supervisorsText: b.supervisors.join(", "),
+        membersText: b.wiringMembers.join(", "),
+        sectionIndex: b.sectionIndex,
+        groupIds: b.groupIds,
+      };
+    });
+  }, [activeWeek, groups, proposeTeamCrews, currentWorkWeek, members]);
+
+  // Active crews for the selected week (merging any user edits over derivedWeekCrews)
+  const currentWeekCrews = useMemo(() => {
+    const saved = weeklyCrews[activeWeek];
+    if (!saved || saved.length === 0) {
+      return derivedWeekCrews;
+    }
+    const savedById = new Map(saved.map((c) => [c.id, c]));
+    const merged = derivedWeekCrews.map((derived) => {
+      const override = savedById.get(derived.id);
+      return override ? { ...derived, ...override } : derived;
+    });
+    const derivedIds = new Set(derivedWeekCrews.map((d) => d.id));
+    for (const s of saved) {
+      if (!derivedIds.has(s.id) && !/^crew-[1-4]$/.test(s.id)) {
+        merged.push(s);
+      }
+    }
+    return merged;
+  }, [weeklyCrews, activeWeek, derivedWeekCrews]);
 
   function updateCurrentWeekCrews(nextCrews: InstallationCrew[]) {
     setWeeklyCrews((prev) => ({
@@ -1744,28 +2026,35 @@ export function ProjectTeamScheduleView({
   // Bi-directional sync with Arranged Installation groups
   function syncCrewToGroups(crew: InstallationCrew, field: string, value: string) {
     if (!onGroupsChange || !groups || !Array.isArray(groups)) return;
-    const raw = `${crew.name || ""}`;
-    const m = raw.match(/\bteam\s*(\d+)\b/i) || (crew.name || "").match(/\b(\d+)\b/);
-    const teamNum = m ? Number(m[1]) : null;
 
-    const targetGroupIds = new Set<string>();
-    for (const g of groups) {
-      if (!g.installationDate) continue;
-      const start = weekBounds(g.installationDate)?.start;
-      if (start !== activeWeek) continue;
+    const targetGroupIds = new Set<string>(crew.groupIds && crew.groupIds.length > 0 ? crew.groupIds : []);
 
-      if (teamNum !== null) {
-        const gRaw = `${g.teamLabel || ""} ${g.name || ""} ${g.installationTeam || ""} ${g.wiringTeam || ""}`;
-        const gm = gRaw.match(/\bteam\s*(\d+)\b/i) || (g.teamLabel || "").match(/\b(\d+)\b/);
-        if (gm && Number(gm[1]) === teamNum) {
-          targetGroupIds.add(g.id);
+    if (targetGroupIds.size === 0) {
+      const raw = `${crew.name || ""}`;
+      const m = raw.match(/\bteam\s*(\d+)\b/i) || (crew.name || "").match(/\b(\d+)\b/);
+      const teamNum = m ? Number(m[1]) : null;
+
+      for (const g of groups) {
+        if (!g.installationDate) continue;
+        const start = weekBounds(g.installationDate)?.start;
+        if (start !== activeWeek) continue;
+        if (crew.sectionIndex !== undefined && g.sectionIndex !== undefined && g.sectionIndex !== crew.sectionIndex) {
           continue;
         }
-      }
-      if (g.name && g.name.toLowerCase().trim() === crew.name.toLowerCase().trim()) {
-        targetGroupIds.add(g.id);
-      } else if (g.teamLabel && g.teamLabel.toLowerCase().trim() === crew.name.toLowerCase().trim()) {
-        targetGroupIds.add(g.id);
+
+        if (teamNum !== null) {
+          const gRaw = `${g.teamLabel || ""} ${g.name || ""} ${g.installationTeam || ""} ${g.wiringTeam || ""}`;
+          const gm = gRaw.match(/\bteam\s*(\d+)\b/i) || (g.teamLabel || "").match(/\b(\d+)\b/);
+          if (gm && Number(gm[1]) === teamNum) {
+            targetGroupIds.add(g.id);
+            continue;
+          }
+        }
+        if (g.name && g.name.toLowerCase().trim() === crew.name.toLowerCase().trim()) {
+          targetGroupIds.add(g.id);
+        } else if (g.teamLabel && g.teamLabel.toLowerCase().trim() === crew.name.toLowerCase().trim()) {
+          targetGroupIds.add(g.id);
+        }
       }
     }
 
@@ -1785,7 +2074,7 @@ export function ProjectTeamScheduleView({
           return { ...g, supervisors: parsed };
         }
         if (field === "membersText") {
-          const parsed = value ? value.split(/[,/]/).map((s) => s.trim()).filter(Boolean) : [];
+          const parsed = value ? [value.trim()] : [];
           return { ...g, wiringMembers: parsed };
         }
         if (field === "vehicle" || field === "car") {
@@ -1798,6 +2087,28 @@ export function ProjectTeamScheduleView({
   }
 
   function getCrewFieldValues(crew: InstallationCrew) {
+    if (
+      crew.installationTeam !== undefined ||
+      crew.wiringTeam !== undefined ||
+      crew.supervisorsText !== undefined ||
+      crew.membersText !== undefined
+    ) {
+      return {
+        installationTeam: crew.installationTeam ?? "",
+        wiringTeam: crew.wiringTeam ?? "",
+        siteSupervisor:
+          crew.supervisorsText ??
+          (crew.supervisorId ? memberMap.get(crew.supervisorId)?.name ?? "" : ""),
+        membersText:
+          crew.membersText ??
+          [...crew.technicianIds, ...crew.internIds]
+            .map((id) => memberMap.get(id)?.name)
+            .filter(Boolean)
+            .join(", "),
+        car: crew.vehicle ?? "",
+      };
+    }
+
     const raw = `${crew.name || ""}`;
     const m = raw.match(/\bteam\s*(\d+)\b/i) || (crew.name || "").match(/\b(\d+)\b/);
     const teamNum = m ? Number(m[1]) : null;
@@ -1817,15 +2128,20 @@ export function ProjectTeamScheduleView({
       );
     });
 
+    const proposeCrew =
+      teamNum !== null && activeWeek >= currentWorkWeek ? proposeTeamCrews?.[teamNum] : undefined;
+    const fromPropose = (value: string | undefined) =>
+      value && !isPlaceholder(value) ? value.trim() : "";
+
     const blockInstallTeam =
-      crew.installationTeam ||
       matchingGroups.map((g: any) => g.installationTeam).find((t: any) => t && !isPlaceholder(t)) ||
-      (teamNum !== null ? `Team ${teamNum}` : crew.name);
+      fromPropose(proposeCrew?.installationTeam) ||
+      "";
 
     const blockWiringTeam =
-      crew.wiringTeam ||
       matchingGroups.map((g: any) => g.wiringTeam).find((t: any) => t && !isPlaceholder(t)) ||
-      (teamNum !== null ? `Wiring Team ${teamNum}` : "");
+      fromPropose(proposeCrew?.wiringTeam) ||
+      "";
 
     const blockSupervisors = Array.from(
       new Set(
@@ -1836,16 +2152,13 @@ export function ProjectTeamScheduleView({
       ),
     );
     const defaultSupervisor =
-      crew.supervisorsText ??
-      (blockSupervisors.length > 0
+      blockSupervisors.length > 0
         ? blockSupervisors.join(", ")
-        : crew.supervisorId
-        ? memberMap.get(crew.supervisorId)?.name ?? ""
-        : "");
+        : fromPropose(proposeCrew?.siteSupervisor) ||
+          (crew.supervisorId ? memberMap.get(crew.supervisorId)?.name ?? "" : "");
 
     const defaultMembers =
-      crew.membersText ??
-      (matchingGroups.length > 0 && matchingGroups.some((g: any) => g.wiringMembers?.length)
+      matchingGroups.length > 0 && matchingGroups.some((g: any) => g.wiringMembers?.length)
         ? Array.from(
             new Set(
               matchingGroups
@@ -1854,10 +2167,11 @@ export function ProjectTeamScheduleView({
                 .filter(Boolean),
             ),
           ).join(", ")
-        : crew.technicianIds.map((id) => memberMap.get(id)?.name).filter(Boolean).join(", "));
+        : fromPropose(proposeCrew?.membersText) ||
+          crew.technicianIds.map((id) => memberMap.get(id)?.name).filter(Boolean).join(", ");
 
     const defaultCars =
-      crew.vehicle ??
+      crew.vehicle ||
       Array.from(
         new Set(
           matchingGroups
@@ -1865,7 +2179,8 @@ export function ProjectTeamScheduleView({
             .map((s: any) => s.trim())
             .filter(Boolean),
         ),
-      ).join(", ");
+      ).join(", ") ||
+      fromPropose(proposeCrew?.car);
 
     return {
       installationTeam: blockInstallTeam,
@@ -1884,30 +2199,36 @@ export function ProjectTeamScheduleView({
       else if (field === "wiringTeam") updated.wiringTeam = value;
       else if (field === "siteSupervisor") {
         updated.supervisorsText = value;
-        const firstSupName = value.split(/[,/]/)[0]?.trim().toLowerCase();
-        if (firstSupName) {
-          const found = members.find(
-            (m) => m.role === "site_supervisor" && m.name.toLowerCase() === firstSupName
-          );
+        const firstSupRaw = value.split(/[,/&]/)[0]?.trim();
+        if (firstSupRaw) {
+          const norm = normalizeArrangedName(firstSupRaw, "site_supervisor");
+          const targetName = (norm?.name || firstSupRaw).toLowerCase().trim();
+          const found =
+            members.find((m) => m.role === "site_supervisor" && m.name.toLowerCase().trim() === targetName) ||
+            members.find((m) => m.name.toLowerCase().trim() === targetName);
           if (found) updated.supervisorId = found.id;
         } else if (!value.trim()) {
           updated.supervisorId = null;
         }
       } else if (field === "membersText") {
         updated.membersText = value;
-        const names = value.split(/[,/]/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+        const rawTokens = value.split(/[,/&]/).map((s) => s.trim()).filter(Boolean);
         const matchedTechIds: string[] = [];
-        for (const name of names) {
-          const found = members.find(
-            (m) => (m.role === "technician" || m.role === "intern") && m.name.toLowerCase() === name
-          );
-          if (found && !matchedTechIds.includes(found.id)) {
-            matchedTechIds.push(found.id);
+        const matchedInternIds: string[] = [];
+        for (const rawTok of rawTokens) {
+          const norm = normalizeArrangedName(rawTok, "technician");
+          const targetName = (norm?.name || rawTok).toLowerCase().trim();
+          const found = members.find((m) => m.name.toLowerCase().trim() === targetName);
+          if (found) {
+            if (found.role === "intern" || norm?.role === "intern") {
+              if (!matchedInternIds.includes(found.id)) matchedInternIds.push(found.id);
+            } else {
+              if (!matchedTechIds.includes(found.id)) matchedTechIds.push(found.id);
+            }
           }
         }
-        if (matchedTechIds.length > 0) {
-          updated.technicianIds = matchedTechIds;
-        }
+        updated.technicianIds = matchedTechIds;
+        updated.internIds = matchedInternIds;
       } else if (field === "vehicle" || field === "car") {
         updated.vehicle = value;
       }
@@ -2041,17 +2362,27 @@ export function ProjectTeamScheduleView({
   // Skill analysis per crew for the current week
   function getCrewSkillCoverage(crew: InstallationCrew) {
     const assignedMembers: ProjectTeamMember[] = [];
+    const seenIds = new Set<string>();
     if (crew.supervisorId) {
       const sup = memberMap.get(crew.supervisorId);
-      if (sup) assignedMembers.push(sup);
+      if (sup && !seenIds.has(sup.id)) {
+        seenIds.add(sup.id);
+        assignedMembers.push(sup);
+      }
     }
     for (const tid of crew.technicianIds) {
       const tech = memberMap.get(tid);
-      if (tech) assignedMembers.push(tech);
+      if (tech && !seenIds.has(tech.id)) {
+        seenIds.add(tech.id);
+        assignedMembers.push(tech);
+      }
     }
     for (const iid of crew.internIds) {
       const intern = memberMap.get(iid);
-      if (intern) assignedMembers.push(intern);
+      if (intern && !seenIds.has(intern.id)) {
+        seenIds.add(intern.id);
+        assignedMembers.push(intern);
+      }
     }
 
     const allSkills = new Set<string>();
@@ -2409,10 +2740,25 @@ export function ProjectTeamScheduleView({
       {/* TAB 1: TEAM GROUPING */}
       {visitedTabs.has("crews") && (
         <div style={{ display: activeTab === "crews" ? "flex" : "none", flexDirection: "column", gap: "18px" }}>
-          {/* Registered Cars Datalist for inline vehicle assignment */}
+          {/* Datalists for inline team header assignment */}
           <datalist id="registered-crew-cars">
-            {cars.map((c) => (
-              <option key={c.id} value={`${c.model} (${c.plateNumber})`} />
+            {carOptions.map((opt) => (
+              <option key={opt} value={opt} />
+            ))}
+          </datalist>
+          <datalist id="crew-install-teams-datalist">
+            {installationTeamNames.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+          <datalist id="crew-wiring-teams-datalist">
+            {wiringTeamNames.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+          <datalist id="crew-supervisors-datalist">
+            {supervisorNames.map((name) => (
+              <option key={name} value={name} />
             ))}
           </datalist>
 
@@ -2569,6 +2915,26 @@ export function ProjectTeamScheduleView({
               const coverage = getCrewSkillCoverage(crew);
               const supervisor = crew.supervisorId ? memberMap.get(crew.supervisorId) : null;
               const teamColor = getTeamColor(crew.name);
+              const fieldVals = getCrewFieldValues(crew);
+              const draft = crewDrafts[crew.id] || {};
+              const displayInstallTeam = draft.installationTeam ?? fieldVals.installationTeam;
+              const displayWiringTeam = draft.wiringTeam ?? fieldVals.wiringTeam;
+              const displaySupervisor = draft.siteSupervisor ?? fieldVals.siteSupervisor;
+              const displayMembers = draft.membersText ?? fieldVals.membersText;
+              const displayCar = draft.car ?? fieldVals.car;
+
+              const setDraftField = (
+                field: "installationTeam" | "wiringTeam" | "siteSupervisor" | "membersText" | "car",
+                val: string
+              ) => {
+                setCrewDrafts((prev) => ({
+                  ...prev,
+                  [crew.id]: {
+                    ...(prev[crew.id] || {}),
+                    [field]: val,
+                  },
+                }));
+              };
 
               return (
                 <div
@@ -2595,165 +2961,377 @@ export function ProjectTeamScheduleView({
                       borderRadius: coverage.hasUnavailableMember ? "10px 10px 0 0" : "11px 11px 0 0",
                       borderBottom: `1px solid ${teamColor.border}`,
                       display: "flex",
-                      alignItems: "flex-start",
-                      justifyContent: "space-between",
+                      flexDirection: "column",
                       gap: "10px",
                     }}
                   >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                        <input
-                          type="text"
-                          className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
-                          value={crew.name}
-                          onChange={(e) => handleInlineUpdateCrew(crew.id, "name", e.target.value)}
-                          placeholder="Team Name"
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        justifyContent: "space-between",
+                        gap: "10px",
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                          <input
+                            type="text"
+                            className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
+                            value={crew.name}
+                            onChange={(e) => handleInlineUpdateCrew(crew.id, "name", e.target.value)}
+                            placeholder="Team Name"
+                            style={{
+                              fontWeight: 800,
+                              fontSize: "0.95rem",
+                              letterSpacing: "0.2px",
+                              padding: "3px 6px",
+                              width: "auto",
+                              maxWidth: "150px",
+                              color: teamColor.text,
+                            }}
+                            title="Click to edit team name"
+                          />
+                          {crew.targetDate && (
+                            <span
+                              style={{
+                                background: teamColor.isLight ? "rgba(0, 0, 0, 0.12)" : "rgba(255, 255, 255, 0.2)",
+                                color: teamColor.text,
+                                padding: "2px 8px",
+                                borderRadius: "12px",
+                                fontSize: "0.71rem",
+                                fontWeight: 700,
+                              }}
+                            >
+                              {crew.targetDate}
+                            </span>
+                          )}
+                          {coverage.hasUnavailableMember ? (
+                            <span
+                              style={{
+                                background: "#fee2e2",
+                                color: "#b91c1c",
+                                padding: "2px 8px",
+                                borderRadius: "12px",
+                                fontSize: "0.72rem",
+                                fontWeight: 700,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                              }}
+                            >
+                              <AlertCircle size={12} />
+                              Unavailable Cover Needed
+                            </span>
+                          ) : coverage.totalCount === 0 && !displayInstallTeam && !displayWiringTeam ? (
+                            <span
+                              style={{
+                                background: "rgba(255, 255, 255, 0.92)",
+                                color: "#334155",
+                                padding: "2px 8px",
+                                borderRadius: "12px",
+                                fontSize: "0.72rem",
+                                fontWeight: 700,
+                              }}
+                            >
+                              Empty Team
+                            </span>
+                          ) : coverage.isFullyCovered ? (
+                            <span
+                              style={{
+                                background: "#dcfce7",
+                                color: "#15803d",
+                                padding: "2px 8px",
+                                borderRadius: "12px",
+                                fontSize: "0.72rem",
+                                fontWeight: 700,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                              }}
+                            >
+                              <CheckCircle2 size={12} />
+                              Ready & Balanced
+                            </span>
+                          ) : (
+                            <span
+                              style={{
+                                background: "rgba(255, 255, 255, 0.92)",
+                                color: "#1e293b",
+                                padding: "2px 8px",
+                                borderRadius: "12px",
+                                fontSize: "0.72rem",
+                                fontWeight: 700,
+                              }}
+                            >
+                              {displayInstallTeam || "Scheduled"}
+                            </span>
+                          )}
+                        </div>
+
+                        <div
                           style={{
-                            fontWeight: 800,
-                            fontSize: "0.95rem",
-                            letterSpacing: "0.2px",
-                            padding: "3px 6px",
-                            width: "auto",
-                            maxWidth: "140px",
-                            color: teamColor.text,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
+                            fontSize: "0.78rem",
+                            color: teamColor.subText,
+                            marginTop: "4px",
+                            flexWrap: "wrap",
                           }}
-                          title="Click to edit team name"
-                        />
-                        {coverage.hasUnavailableMember ? (
-                          <span
-                            style={{
-                              background: "#fee2e2",
-                              color: "#b91c1c",
-                              padding: "2px 8px",
-                              borderRadius: "12px",
-                              fontSize: "0.72rem",
-                              fontWeight: 700,
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "4px",
-                            }}
-                          >
-                            <AlertCircle size={12} />
-                            Unavailable Cover Needed
-                          </span>
-                        ) : coverage.totalCount === 0 ? (
-                          <span
-                            style={{
-                              background: "rgba(255, 255, 255, 0.92)",
-                              color: "#334155",
-                              padding: "2px 8px",
-                              borderRadius: "12px",
-                              fontSize: "0.72rem",
-                              fontWeight: 700,
-                            }}
-                          >
-                            Empty Team
-                          </span>
-                        ) : coverage.isFullyCovered ? (
-                          <span
-                            style={{
-                              background: "#dcfce7",
-                              color: "#15803d",
-                              padding: "2px 8px",
-                              borderRadius: "12px",
-                              fontSize: "0.72rem",
-                              fontWeight: 700,
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "4px",
-                            }}
-                          >
-                            <CheckCircle2 size={12} />
-                            Ready & Balanced
-                          </span>
-                        ) : (
-                          <span
-                            style={{
-                              background: "#fef3c7",
-                              color: "#b45309",
-                              padding: "2px 8px",
-                              borderRadius: "12px",
-                              fontSize: "0.72rem",
-                              fontWeight: 700,
-                            }}
-                          >
-                            Missing Skills
-                          </span>
-                        )}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
+                            <MapPin size={13} style={{ color: teamColor.subText, flexShrink: 0 }} />
+                            <input
+                              type="text"
+                              className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
+                              value={crew.baseLocation}
+                              onChange={(e) => handleInlineUpdateCrew(crew.id, "baseLocation", e.target.value)}
+                              placeholder="Base Location"
+                              style={{
+                                fontSize: "0.78rem",
+                                fontWeight: 600,
+                                color: teamColor.text,
+                                padding: "2px 6px",
+                                width: "110px",
+                              }}
+                              title="Click to edit base location"
+                            />
+                          </div>
+                        </div>
                       </div>
 
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "8px",
-                          fontSize: "0.78rem",
-                          color: teamColor.subText,
-                          marginTop: "4px",
-                          flexWrap: "wrap",
-                        }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
-                          <MapPin size={13} style={{ color: teamColor.subText, flexShrink: 0 }} />
-                          <input
-                            type="text"
-                            className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
-                            value={crew.baseLocation}
-                            onChange={(e) => handleInlineUpdateCrew(crew.id, "baseLocation", e.target.value)}
-                            placeholder="Base Location"
-                            style={{
-                              fontSize: "0.78rem",
-                              fontWeight: 600,
-                              color: teamColor.text,
-                              padding: "2px 6px",
-                              width: "110px",
-                            }}
-                            title="Click to edit base location"
-                          />
-                        </div>
-
-                        <span style={{ color: teamColor.subText, opacity: 0.7 }}>·</span>
-
-                        <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
-                          <Car size={13} style={{ color: teamColor.subText, flexShrink: 0 }} />
-                          <input
-                            type="text"
-                            className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
-                            list="registered-crew-cars"
-                            value={crew.vehicle || ""}
-                            onChange={(e) => handleInlineUpdateCrew(crew.id, "vehicle", e.target.value)}
-                            placeholder="Assign car / vehicle..."
-                            style={{
-                              fontSize: "0.78rem",
-                              fontWeight: 600,
-                              color: teamColor.text,
-                              padding: "2px 6px",
-                              width: "180px",
-                            }}
-                            title="Click to edit assigned car"
-                          />
-                        </div>
+                      <div style={{ display: "flex", gap: "4px" }}>
+                        <button
+                          onClick={() => handleDeleteCrew(crew.id)}
+                          title="Delete Crew"
+                          style={{
+                            background: teamColor.isLight ? "rgba(0, 0, 0, 0.08)" : "rgba(255, 255, 255, 0.16)",
+                            border: "none",
+                            color: teamColor.text,
+                            cursor: "pointer",
+                            padding: "5px",
+                            borderRadius: "6px",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >
+                          <Trash2 size={15} />
+                        </button>
                       </div>
                     </div>
 
-                    <div style={{ display: "flex", gap: "4px" }}>
-                      <button
-                        onClick={() => handleDeleteCrew(crew.id)}
-                        title="Delete Crew"
-                        style={{
-                          background: teamColor.isLight ? "rgba(0, 0, 0, 0.08)" : "rgba(255, 255, 255, 0.16)",
-                          border: "none",
-                          color: teamColor.text,
-                          cursor: "pointer",
-                          padding: "5px",
-                          borderRadius: "6px",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                        }}
-                      >
-                        <Trash2 size={15} />
-                      </button>
+                    {/* Team Header Details from Propose to Install & Arranged Installation */}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                        gap: "8px",
+                        paddingTop: "8px",
+                        borderTop: teamColor.isLight
+                          ? "1px solid rgba(0, 0, 0, 0.12)"
+                          : "1px solid rgba(255, 255, 255, 0.22)",
+                      }}
+                    >
+                      <div>
+                        <div
+                          style={{
+                            fontSize: "0.66rem",
+                            fontWeight: 700,
+                            textTransform: "uppercase",
+                            letterSpacing: "0.4px",
+                            color: teamColor.subText,
+                            marginBottom: "2px",
+                          }}
+                        >
+                          Installation Team
+                        </div>
+                        <input
+                          type="text"
+                          list="crew-install-teams-datalist"
+                          className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
+                          value={displayInstallTeam}
+                          readOnly={readOnly}
+                          onChange={(e) => setDraftField("installationTeam", e.target.value)}
+                          onBlur={(e) => handleCommitCrewField(crew, "installationTeam", e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          }}
+                          placeholder="Assign installation team..."
+                          style={{
+                            width: "100%",
+                            fontSize: "0.78rem",
+                            fontWeight: 700,
+                            color: teamColor.text,
+                            padding: "4px 7px",
+                            background: teamColor.isLight ? "rgba(255, 255, 255, 0.45)" : "rgba(0, 0, 0, 0.18)",
+                            borderRadius: "6px",
+                            border: teamColor.isLight
+                              ? "1px solid rgba(0, 0, 0, 0.15)"
+                              : "1px solid rgba(255, 255, 255, 0.25)",
+                          }}
+                        />
+                      </div>
+
+                      <div>
+                        <div
+                          style={{
+                            fontSize: "0.66rem",
+                            fontWeight: 700,
+                            textTransform: "uppercase",
+                            letterSpacing: "0.4px",
+                            color: teamColor.subText,
+                            marginBottom: "2px",
+                          }}
+                        >
+                          Wiring Team
+                        </div>
+                        <input
+                          type="text"
+                          list="crew-wiring-teams-datalist"
+                          className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
+                          value={displayWiringTeam}
+                          readOnly={readOnly}
+                          onChange={(e) => setDraftField("wiringTeam", e.target.value)}
+                          onBlur={(e) => handleCommitCrewField(crew, "wiringTeam", e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          }}
+                          placeholder="Assign wiring team..."
+                          style={{
+                            width: "100%",
+                            fontSize: "0.78rem",
+                            fontWeight: 700,
+                            color: teamColor.text,
+                            padding: "4px 7px",
+                            background: teamColor.isLight ? "rgba(255, 255, 255, 0.45)" : "rgba(0, 0, 0, 0.18)",
+                            borderRadius: "6px",
+                            border: teamColor.isLight
+                              ? "1px solid rgba(0, 0, 0, 0.15)"
+                              : "1px solid rgba(255, 255, 255, 0.25)",
+                          }}
+                        />
+                      </div>
+
+                      <div>
+                        <div
+                          style={{
+                            fontSize: "0.66rem",
+                            fontWeight: 700,
+                            textTransform: "uppercase",
+                            letterSpacing: "0.4px",
+                            color: teamColor.subText,
+                            marginBottom: "2px",
+                          }}
+                        >
+                          Site Supervisor
+                        </div>
+                        <input
+                          type="text"
+                          list="crew-supervisors-datalist"
+                          className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
+                          value={displaySupervisor}
+                          readOnly={readOnly}
+                          onChange={(e) => setDraftField("siteSupervisor", e.target.value)}
+                          onBlur={(e) => handleCommitCrewField(crew, "siteSupervisor", e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          }}
+                          placeholder="Assign site supervisor..."
+                          style={{
+                            width: "100%",
+                            fontSize: "0.78rem",
+                            fontWeight: 700,
+                            color: teamColor.text,
+                            padding: "4px 7px",
+                            background: teamColor.isLight ? "rgba(255, 255, 255, 0.45)" : "rgba(0, 0, 0, 0.18)",
+                            borderRadius: "6px",
+                            border: teamColor.isLight
+                              ? "1px solid rgba(0, 0, 0, 0.15)"
+                              : "1px solid rgba(255, 255, 255, 0.25)",
+                          }}
+                        />
+                      </div>
+
+                      <div>
+                        <div
+                          style={{
+                            fontSize: "0.66rem",
+                            fontWeight: 700,
+                            textTransform: "uppercase",
+                            letterSpacing: "0.4px",
+                            color: teamColor.subText,
+                            marginBottom: "2px",
+                          }}
+                        >
+                          Car
+                        </div>
+                        <input
+                          type="text"
+                          list="registered-crew-cars"
+                          className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
+                          value={displayCar}
+                          readOnly={readOnly}
+                          onChange={(e) => setDraftField("car", e.target.value)}
+                          onBlur={(e) => handleCommitCrewField(crew, "car", e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          }}
+                          placeholder="Assign car / vehicle..."
+                          style={{
+                            width: "100%",
+                            fontSize: "0.78rem",
+                            fontWeight: 700,
+                            color: teamColor.text,
+                            padding: "4px 7px",
+                            background: teamColor.isLight ? "rgba(255, 255, 255, 0.45)" : "rgba(0, 0, 0, 0.18)",
+                            borderRadius: "6px",
+                            border: teamColor.isLight
+                              ? "1px solid rgba(0, 0, 0, 0.15)"
+                              : "1px solid rgba(255, 255, 255, 0.25)",
+                          }}
+                        />
+                      </div>
+
+                      <div style={{ gridColumn: "1 / -1" }}>
+                        <div
+                          style={{
+                            fontSize: "0.66rem",
+                            fontWeight: 700,
+                            textTransform: "uppercase",
+                            letterSpacing: "0.4px",
+                            color: teamColor.subText,
+                            marginBottom: "2px",
+                          }}
+                        >
+                          Team Member
+                        </div>
+                        <input
+                          type="text"
+                          className={`crew-header-input${teamColor.isLight ? " is-light" : ""}`}
+                          value={displayMembers}
+                          readOnly={readOnly}
+                          onChange={(e) => setDraftField("membersText", e.target.value)}
+                          onBlur={(e) => handleCommitCrewField(crew, "membersText", e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          }}
+                          placeholder="Team members (e.g. Jamar, Faiz, Shahir)..."
+                          style={{
+                            width: "100%",
+                            fontSize: "0.78rem",
+                            fontWeight: 700,
+                            color: teamColor.text,
+                            padding: "4px 7px",
+                            background: teamColor.isLight ? "rgba(255, 255, 255, 0.45)" : "rgba(0, 0, 0, 0.18)",
+                            borderRadius: "6px",
+                            border: teamColor.isLight
+                              ? "1px solid rgba(0, 0, 0, 0.15)"
+                              : "1px solid rgba(255, 255, 255, 0.25)",
+                          }}
+                        />
+                      </div>
                     </div>
                   </div>
 
