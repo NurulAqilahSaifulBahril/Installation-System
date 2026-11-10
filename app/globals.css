@@ -9885,13 +9885,11 @@ tr.schedule-band.rti-team-warehouse .rti-total-pcs-tag {
    Only Admins can edit; Staff can browse, filter, search, and open links.
    ========================================================================== */
 
-.is-staff-readonly .sync-google-sheet-header-btn,
 .is-staff-readonly .create-delivery-run-btn,
 .is-staff-readonly .add-team-row-btn,
 .is-staff-readonly .team-planning-add-customer-toggle,
 .is-staff-readonly .workspace .rti-rate,
 .is-staff-readonly .workspace button[title*="Add"],
-.is-staff-readonly .sync-google-sheet-btn,
 .is-staff-readonly .workspace .rti-row-remove-btn,
 .is-staff-readonly .workspace .rti-team-delete-btn,
 .is-staff-readonly .workspace .rti-run-delete-btn,

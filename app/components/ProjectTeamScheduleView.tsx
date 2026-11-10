@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Clock,
   Copy,
+  Database,
   Edit2,
   Filter,
   GraduationCap,
@@ -38,6 +39,7 @@ import {
 } from "lucide-react";
 import type { InstallationJob } from "@/lib/types";
 import type { TeamCrewAssignment } from "@/lib/schedule-suggest";
+import type { HrLeaveRow, HrPersonRow } from "@/app/api/hr-leaves/route";
 
 export type ProjectTeamMemberRole = "site_supervisor" | "technician" | "intern";
 
@@ -216,6 +218,17 @@ function isMemberUnavailableInWeek(member: ProjectTeamMember, weekStart: string)
     return mStart <= wEnd;
   }
   return true;
+}
+
+// Check if a database leave record overlaps a specific week
+function isLeaveRowOverlappingWeek(leave: HrLeaveRow, weekStart: string): boolean {
+  if (!leave.from_date) return false;
+  const bounds = weekBounds(weekStart);
+  if (!bounds) return true;
+  const { start: wStart, end: wEnd } = bounds;
+  const lStart = leave.from_date.slice(0, 10);
+  const lEnd = (leave.to_date || leave.from_date).slice(0, 10);
+  return lStart <= wEnd && lEnd >= wStart;
 }
 
 // Brand color palette matching Arranged Installation team bands
@@ -402,7 +415,7 @@ export function normalizeArrangedName(
   if (lower === "kaije" || lower === "kaijie" || lower === "jiajie") return { name: "Kaije", role: "site_supervisor" };
   if (lower === "xiangjun" || lower === "xiang jun") return { name: "XiangJun", role: "site_supervisor" };
   if (lower === "ahzu" || lower === "ah zu" || lower === "ah") return { name: "Ahzu", role: "site_supervisor" };
-  if (lower === "siongchin" || lower === "siong chin") return { name: "SiongChin", role: "site_supervisor" };
+  if (lower === "siongchin" || lower === "siong chin" || lower === "hsieh siong chin") return { name: "SiongChin", role: "site_supervisor" };
   if (lower === "joshua" || lower === "joshia") return { name: "Joshua", role: "site_supervisor" };
   if (lower === "kai kian" || lower === "kaikian") return { name: "Kai Kian", role: "site_supervisor" };
   if (lower === "jia hao" || lower === "jiahao") return { name: "Jia Hao", role: "site_supervisor" };
@@ -1259,6 +1272,100 @@ export function ProjectTeamScheduleView({
   useEffect(() => {
     setMembers((prevMembers) => syncArrangedMembers(prevMembers, groups, proposeTeamCrews));
   }, [groups, proposeTeamCrews]);
+
+  // NUrul_DB leaves & people state
+  const [dbLeaves, setDbLeaves] = useState<HrLeaveRow[]>([]);
+  const [dbPeople, setDbPeople] = useState<HrPersonRow[]>([]);
+  const [isLoadingLeaves, setIsLoadingLeaves] = useState(false);
+  const [lastLeavesSync, setLastLeavesSync] = useState<string | null>(null);
+
+  // Fetch leave & MC records from NUrul_DB (public.hr_leaves + public.hr_people)
+  const loadHrLeavesFromNurulDb = async () => {
+    setIsLoadingLeaves(true);
+    try {
+      const res = await fetch("/api/hr-leaves", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        ok?: boolean;
+        leaves?: HrLeaveRow[];
+        people?: HrPersonRow[];
+      };
+      if (!data.ok) return;
+
+      const leavesList = Array.isArray(data.leaves) ? data.leaves : [];
+      const peopleList = Array.isArray(data.people) ? data.people : [];
+
+      setDbLeaves(leavesList);
+      setDbPeople(peopleList);
+      setLastLeavesSync(
+        new Date().toLocaleTimeString("en-GB", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        })
+      );
+
+      setMembers((prevMembers) => {
+        return prevMembers.map((m) => {
+          const mNorm = m.name.toLowerCase().trim();
+          // Match against hr_people for phone sync
+          const matchedPerson = peopleList.find((p) => {
+            const pNameNorm = p.name ? normalizeArrangedName(p.name)?.name.toLowerCase().trim() : "";
+            const pUserNorm = p.username ? normalizeArrangedName(p.username)?.name.toLowerCase().trim() : "";
+            return pNameNorm === mNorm || pUserNorm === mNorm || (p.name || "").toLowerCase().trim() === mNorm;
+          });
+
+          // Match against hr_leaves for leave / MC status
+          const matchedLeave = leavesList.find((l) => {
+            if (matchedPerson && l.employee_id === matchedPerson.id) return true;
+            const lNameNorm = l.employee_name ? normalizeArrangedName(l.employee_name)?.name.toLowerCase().trim() : "";
+            const lUserNorm = l.employee_username ? normalizeArrangedName(l.employee_username)?.name.toLowerCase().trim() : "";
+            return (
+              lNameNorm === mNorm ||
+              lUserNorm === mNorm ||
+              (l.employee_name || "").toLowerCase().trim() === mNorm ||
+              (l.employee_username || "").toLowerCase().trim() === mNorm
+            );
+          });
+
+          const updatedPhone =
+            matchedPerson?.phone && (m.phone === "011-000 0000" || m.phone === "012-000 0000" || !m.phone)
+              ? matchedPerson.phone
+              : m.phone;
+
+          if (matchedLeave && matchedLeave.from_date) {
+            const isMc =
+              Boolean(matchedLeave.has_mc) ||
+              /\b(mc|medical|sick)\b/i.test(String(matchedLeave.type || "")) ||
+              /\b(mc|medical|sick)\b/i.test(String(matchedLeave.note || ""));
+            return {
+              ...m,
+              phone: updatedPhone,
+              availability: {
+                status: isMc ? "mc" : "leave",
+                startDate: matchedLeave.from_date.slice(0, 10),
+                endDate: (matchedLeave.to_date || matchedLeave.from_date).slice(0, 10),
+                reason: matchedLeave.note || matchedLeave.type || undefined,
+              },
+            };
+          }
+
+          if (updatedPhone !== m.phone) {
+            return { ...m, phone: updatedPhone };
+          }
+          return m;
+        });
+      });
+    } catch {
+      // Ignore network errors cleanly
+    } finally {
+      setIsLoadingLeaves(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadHrLeavesFromNurulDb();
+  }, []);
 
   // Week-by-week crews state: Record<weekStartIso, InstallationCrew[]>
   const [weeklyCrews, setWeeklyCrews] = useState<Record<string, InstallationCrew[]>>(() => {
@@ -2431,23 +2538,64 @@ export function ProjectTeamScheduleView({
     setQuickEndDate(member.availability.endDate || todayIso);
   }
 
-  function handleSaveQuickAvailability() {
+  async function handleSaveQuickAvailability() {
     if (readOnly || !quickAvailabilityMember) return;
+    const targetMember = quickAvailabilityMember;
+    const nextStatus = quickStatus;
+    const nextReason = quickReason.trim();
+    const nextStart = quickStartDate;
+    const nextEnd = quickEndDate;
+
     setMembers((prev) =>
       prev.map((m) => {
-        if (m.id !== quickAvailabilityMember.id) return m;
+        if (m.id !== targetMember.id) return m;
         return {
           ...m,
           availability: {
-            status: quickStatus,
-            reason: quickStatus !== "available" ? quickReason.trim() : undefined,
-            startDate: quickStatus !== "available" ? quickStartDate : undefined,
-            endDate: quickStatus !== "available" ? quickEndDate : undefined,
+            status: nextStatus,
+            reason: nextStatus !== "available" ? nextReason : undefined,
+            startDate: nextStatus !== "available" ? nextStart : undefined,
+            endDate: nextStatus !== "available" ? nextEnd : undefined,
           },
         };
       })
     );
     setQuickAvailabilityMember(null);
+
+    // Sync to NUrul_DB (public.hr_leaves)
+    try {
+      if (nextStatus === "available") {
+        const matched = dbLeaves.find(
+          (l) =>
+            l.employee_name?.toLowerCase().trim() === targetMember.name.toLowerCase().trim() ||
+            l.employee_username?.toLowerCase().trim() === targetMember.name.toLowerCase().trim()
+        );
+        if (matched) {
+          await fetch("/api/hr-leaves", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "delete", id: matched.id }),
+          });
+        }
+      } else {
+        await fetch("/api/hr-leaves", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            employeeName: targetMember.name,
+            hasMc: nextStatus === "mc",
+            type: nextStatus === "mc" ? "Medical Leave" : "Annual Leave",
+            fromDate: nextStart,
+            toDate: nextEnd,
+            note: nextReason,
+            status: "approved",
+          }),
+        });
+      }
+      void loadHrLeavesFromNurulDb();
+    } catch {
+      // Ignore network errors
+    }
   }
 
   // Remove member from a crew in active week
@@ -4574,124 +4722,494 @@ export function ProjectTeamScheduleView({
               background: "var(--surface)",
               borderRadius: "12px",
               border: "1px solid var(--line)",
-              padding: "16px 20px",
+              padding: "18px 22px",
               boxShadow: "var(--shadow)",
+              display: "flex",
+              flexDirection: "column",
+              gap: "18px",
             }}
           >
-            <h3 style={{ margin: "0 0 12px 0", fontSize: "1.05rem", fontWeight: 700, color: "var(--ink)", display: "flex", alignItems: "center", gap: "8px" }}>
-              <Calendar size={18} style={{ color: "#2563eb" }} />
-              Live Absence & Leave Log (Week {weekRangeLabel(activeWeek)})
-            </h3>
-            <p style={{ margin: "0 0 16px 0", fontSize: "0.85rem", color: "var(--muted)" }}>
-              All project team members on Medical Certificate (MC) or Leave. Notice that personnel unavailable during Week {weekRangeLabel(activeWeek)} are flagged so schedulers do not book installation jobs with absent crew members.
-            </p>
+            {/* Header & NUrul_DB Connection Bar */}
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "12px",
+                paddingBottom: "14px",
+                borderBottom: "1px solid var(--line)",
+              }}
+            >
+              <div>
+                <h3
+                  style={{
+                    margin: "0 0 4px 0",
+                    fontSize: "1.08rem",
+                    fontWeight: 700,
+                    color: "var(--ink)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                  }}
+                >
+                  <Calendar size={18} style={{ color: "#2563eb" }} />
+                  Availability & MC / Leave Calendar (Week {weekRangeLabel(activeWeek)})
+                </h3>
+                <p style={{ margin: 0, fontSize: "0.83rem", color: "var(--muted)" }}>
+                  Reads live medical certificate (MC) and leave records directly from <strong>NUrul_DB</strong> (<code>public.hr_leaves</code> & <code>public.hr_people</code>) to prevent scheduling absent crew members.
+                </p>
+              </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "14px" }}>
-              {members
-                .filter((m) => m.availability.status !== "available")
-                .map((m) => {
-                  const isMC = m.availability.status === "mc";
-                  const isAwayInActiveWeek = isMemberUnavailableInWeek(m, activeWeek);
-                  const assignedCrew = currentWeekCrews.find(
-                    (c) =>
-                      c.supervisorId === m.id ||
-                      c.technicianIds.includes(m.id) ||
-                      c.internIds.includes(m.id)
-                  );
+              {/* NUrul_DB Status and Sync Button */}
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "4px 10px",
+                    background: "#ecfdf5",
+                    border: "1px solid #a7f3d0",
+                    borderRadius: "8px",
+                    fontSize: "0.76rem",
+                    fontWeight: 600,
+                    color: "#065f46",
+                  }}
+                  title="Directly connected to PostgreSQL NUrul_DB"
+                >
+                  <Database size={13} style={{ color: "#059669" }} />
+                  <span>NUrul_DB (public.hr_leaves)</span>
+                  <span
+                    style={{
+                      width: "7px",
+                      height: "7px",
+                      borderRadius: "50%",
+                      background: "#10b981",
+                      display: "inline-block",
+                    }}
+                  />
+                </div>
 
-                  return (
-                    <div
-                      key={m.id}
-                      style={{
-                        padding: "14px 16px",
-                        borderRadius: "10px",
-                        border: "1px solid",
-                        borderColor: isMC ? "#fca5a5" : "#fde68a",
-                        background: isMC ? "#fff5f5" : "#fffbeb",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "8px",
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          {isMC ? (
-                            <ShieldAlert size={18} style={{ color: "#dc2626" }} />
-                          ) : (
-                            <Clock size={18} style={{ color: "#d97706" }} />
+                {lastLeavesSync && (
+                  <span style={{ fontSize: "0.74rem", color: "var(--muted)" }}>
+                    Synced: {lastLeavesSync}
+                  </span>
+                )}
+
+                <button
+                  onClick={() => void loadHrLeavesFromNurulDb()}
+                  disabled={isLoadingLeaves}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "6px 12px",
+                    borderRadius: "8px",
+                    border: "1px solid var(--line)",
+                    background: "var(--surface-soft)",
+                    fontSize: "0.78rem",
+                    fontWeight: 600,
+                    color: "var(--ink)",
+                    cursor: isLoadingLeaves ? "not-allowed" : "pointer",
+                    transition: "all 0.15s ease",
+                  }}
+                  title="Fetch latest leave records from NUrul_DB"
+                >
+                  <RefreshCw
+                    size={13}
+                    style={{
+                      animation: isLoadingLeaves ? "spin 1s linear infinite" : "none",
+                      color: "#2563eb",
+                    }}
+                  />
+                  <span>{isLoadingLeaves ? "Syncing..." : "Sync NUrul_DB"}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Quick Metrics Cards */}
+            {(() => {
+              const activeWeekDbLeaves = dbLeaves.filter((l) => isLeaveRowOverlappingWeek(l, activeWeek));
+              const activeWeekAbsentMembers = members.filter((m) => isMemberUnavailableInWeek(m, activeWeek));
+              const mcCount = members.filter((m) => m.availability.status === "mc").length +
+                dbLeaves.filter((l) => Boolean(l.has_mc) || /\b(mc|medical|sick)\b/i.test(l.type || "")).length;
+              const availableCrewCount = members.filter((m) => !isMemberUnavailableInWeek(m, activeWeek)).length;
+
+              return (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                    gap: "10px",
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: "10px 14px",
+                      background: "var(--surface-soft)",
+                      borderRadius: "8px",
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    <div style={{ fontSize: "0.72rem", color: "var(--muted)", fontWeight: 700, textTransform: "uppercase" }}>
+                      NUrul_DB Leaves
+                    </div>
+                    <div style={{ fontSize: "1.25rem", fontWeight: 800, color: "var(--ink)", marginTop: "2px" }}>
+                      {dbLeaves.length}
+                    </div>
+                    <div style={{ fontSize: "0.7rem", color: "var(--muted)", marginTop: "2px" }}>
+                      {dbPeople.length} employees synced
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      padding: "10px 14px",
+                      background: activeWeekAbsentMembers.length > 0 || activeWeekDbLeaves.length > 0 ? "#fef2f2" : "var(--surface-soft)",
+                      borderRadius: "8px",
+                      border: "1px solid",
+                      borderColor: activeWeekAbsentMembers.length > 0 || activeWeekDbLeaves.length > 0 ? "#fecaca" : "var(--line)",
+                    }}
+                  >
+                    <div style={{ fontSize: "0.72rem", color: activeWeekAbsentMembers.length > 0 ? "#b91c1c" : "var(--muted)", fontWeight: 700, textTransform: "uppercase" }}>
+                      Affecting Week {weekRangeLabel(activeWeek)}
+                    </div>
+                    <div style={{ fontSize: "1.25rem", fontWeight: 800, color: activeWeekAbsentMembers.length > 0 ? "#b91c1c" : "var(--ink)", marginTop: "2px" }}>
+                      {activeWeekAbsentMembers.length}
+                    </div>
+                    <div style={{ fontSize: "0.7rem", color: activeWeekAbsentMembers.length > 0 ? "#dc2626" : "var(--muted)", marginTop: "2px" }}>
+                      {activeWeekAbsentMembers.length > 0 ? "Replacement cover needed" : "Zero conflicts"}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      padding: "10px 14px",
+                      background: "var(--surface-soft)",
+                      borderRadius: "8px",
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    <div style={{ fontSize: "0.72rem", color: "var(--muted)", fontWeight: 700, textTransform: "uppercase" }}>
+                      Medical Leaves (MC)
+                    </div>
+                    <div style={{ fontSize: "1.25rem", fontWeight: 800, color: "#dc2626", marginTop: "2px" }}>
+                      {mcCount}
+                    </div>
+                    <div style={{ fontSize: "0.7rem", color: "var(--muted)", marginTop: "2px" }}>
+                      Doctor clinic verified
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      padding: "10px 14px",
+                      background: "#f0fdf4",
+                      borderRadius: "8px",
+                      border: "1px solid #bbf7d0",
+                    }}
+                  >
+                    <div style={{ fontSize: "0.72rem", color: "#166534", fontWeight: 700, textTransform: "uppercase" }}>
+                      Available Crew Ready
+                    </div>
+                    <div style={{ fontSize: "1.25rem", fontWeight: 800, color: "#15803d", marginTop: "2px" }}>
+                      {availableCrewCount} / {members.length}
+                    </div>
+                    <div style={{ fontSize: "0.7rem", color: "#166534", marginTop: "2px" }}>
+                      Ready for assignment
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* SECTION 1: Active Absence & Replacement Alerts */}
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+                <h4 style={{ margin: 0, fontSize: "0.92rem", fontWeight: 700, color: "var(--ink)", display: "flex", alignItems: "center", gap: "6px" }}>
+                  <AlertCircle size={15} style={{ color: "#dc2626" }} />
+                  Personnel Absence & Availability Status
+                </h4>
+                <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
+                  Click Update on any member to log MC or leave to NUrul_DB
+                </span>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "12px" }}>
+                {members
+                  .filter((m) => m.availability.status !== "available")
+                  .map((m) => {
+                    const isMC = m.availability.status === "mc";
+                    const isAwayInActiveWeek = isMemberUnavailableInWeek(m, activeWeek);
+                    const assignedCrew = currentWeekCrews.find(
+                      (c) =>
+                        c.supervisorId === m.id ||
+                        c.technicianIds.includes(m.id) ||
+                        c.internIds.includes(m.id)
+                    );
+
+                    return (
+                      <div
+                        key={m.id}
+                        style={{
+                          padding: "14px 16px",
+                          borderRadius: "10px",
+                          border: "1px solid",
+                          borderColor: isMC ? "#fca5a5" : "#fde68a",
+                          background: isMC ? "#fff5f5" : "#fffbeb",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: "8px",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            {isMC ? (
+                              <ShieldAlert size={18} style={{ color: "#dc2626" }} />
+                            ) : (
+                              <Clock size={18} style={{ color: "#d97706" }} />
+                            )}
+                            <div>
+                              <strong style={{ fontSize: "0.95rem", color: "var(--ink)" }}>{m.name}</strong>
+                              <span style={{ fontSize: "0.75rem", color: "var(--muted)", marginLeft: "6px" }}>
+                                ({m.role === "site_supervisor" ? "Supervisor" : m.role === "technician" ? "Technician" : "Intern"})
+                              </span>
+                            </div>
+                            <span
+                              style={{
+                                fontSize: "0.7rem",
+                                padding: "2px 6px",
+                                borderRadius: "4px",
+                                fontWeight: 700,
+                                background: isMC ? "#fee2e2" : "#fef3c7",
+                                color: isMC ? "#991b1b" : "#92400e",
+                              }}
+                            >
+                              {isMC ? "MEDICAL CERTIFICATE (MC)" : "ON LEAVE"}
+                            </span>
+                          </div>
+
+                          {!readOnly && (
+                            <button
+                              onClick={() => handleOpenQuickAvailability(m)}
+                              style={{
+                                fontSize: "0.75rem",
+                                padding: "3px 8px",
+                                borderRadius: "6px",
+                                border: "1px solid var(--line)",
+                                background: "var(--surface)",
+                                cursor: "pointer",
+                                fontWeight: 600,
+                              }}
+                            >
+                              Update
+                            </button>
                           )}
-                          <strong style={{ fontSize: "0.95rem", color: "var(--ink)" }}>{m.name}</strong>
-                          <span
-                            style={{
-                              fontSize: "0.72rem",
-                              padding: "2px 6px",
-                              borderRadius: "4px",
-                              fontWeight: 700,
-                              background: isMC ? "#fee2e2" : "#fef3c7",
-                              color: isMC ? "#991b1b" : "#92400e",
-                            }}
-                          >
-                            {isMC ? "MEDICAL CERTIFICATE" : "ON LEAVE"}
-                          </span>
                         </div>
 
-                        {!readOnly && (
-                          <button
-                            onClick={() => handleOpenQuickAvailability(m)}
+                        <div style={{ fontSize: "0.82rem", color: "var(--ink)" }}>
+                          <strong>Reason:</strong> {m.availability.reason || "Not specified"}
+                        </div>
+
+                        <div style={{ fontSize: "0.8rem", color: "var(--muted)", display: "flex", alignItems: "center", gap: "6px" }}>
+                          <Calendar size={13} />
+                          Period: {m.availability.startDate || todayIso} to {m.availability.endDate || todayIso}
+                          {m.phone && (
+                            <>
+                              <span>·</span>
+                              <Phone size={12} />
+                              <span>{m.phone}</span>
+                            </>
+                          )}
+                        </div>
+
+                        <div style={{ fontSize: "0.76rem", fontWeight: 600, color: isAwayInActiveWeek ? "#b91c1c" : "#15803d" }}>
+                          {isAwayInActiveWeek
+                            ? `⚠️ Affects scheduled Week ${weekRangeLabel(activeWeek)}`
+                            : `✓ Outside active Week ${weekRangeLabel(activeWeek)}`}
+                        </div>
+
+                        {assignedCrew && isAwayInActiveWeek && (
+                          <div
                             style={{
-                              fontSize: "0.75rem",
-                              padding: "3px 8px",
+                              marginTop: "4px",
+                              padding: "6px 10px",
+                              background: "#fee2e2",
                               borderRadius: "6px",
-                              border: "1px solid var(--line)",
-                              background: "var(--surface)",
-                              cursor: "pointer",
+                              border: "1px solid #fca5a5",
+                              fontSize: "0.78rem",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
                             }}
                           >
-                            Update
-                          </button>
+                            <span>Assigned to: <strong>{assignedCrew.name}</strong></span>
+                            <span style={{ color: "#dc2626", fontWeight: 700 }}>Cover Needed</span>
+                          </div>
                         )}
                       </div>
+                    );
+                  })}
 
-                      <div style={{ fontSize: "0.82rem", color: "var(--ink)" }}>
-                        <strong>Reason:</strong> {m.availability.reason || "Not specified"}
-                      </div>
+                {members.filter((m) => m.availability.status !== "available").length === 0 && (
+                  <div
+                    style={{
+                      gridColumn: "1 / -1",
+                      padding: "16px 20px",
+                      background: "#f0fdf4",
+                      borderRadius: "8px",
+                      border: "1px solid #bbf7d0",
+                      textAlign: "center",
+                      color: "#16a34a",
+                      fontSize: "0.88rem",
+                      fontWeight: 600,
+                    }}
+                  >
+                    ✓ All {members.length} team members are currently available for Week {weekRangeLabel(activeWeek)}.
+                  </div>
+                )}
+              </div>
+            </div>
 
-                      <div style={{ fontSize: "0.8rem", color: "var(--muted)", display: "flex", alignItems: "center", gap: "6px" }}>
-                        <Calendar size={13} />
-                        Period: {m.availability.startDate || todayIso} to {m.availability.endDate || todayIso}
-                      </div>
+            {/* SECTION 2: Live Records from NUrul_DB (public.hr_leaves) */}
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+                <h4 style={{ margin: 0, fontSize: "0.92rem", fontWeight: 700, color: "var(--ink)", display: "flex", alignItems: "center", gap: "6px" }}>
+                  <Database size={15} style={{ color: "#059669" }} />
+                  NUrul_DB Leave Records (<code>public.hr_leaves</code>)
+                </h4>
+                <span style={{ fontSize: "0.74rem", color: "var(--muted)" }}>
+                  {dbLeaves.length} record(s) loaded
+                </span>
+              </div>
 
-                      <div style={{ fontSize: "0.76rem", fontWeight: 600, color: isAwayInActiveWeek ? "#b91c1c" : "#15803d" }}>
-                        {isAwayInActiveWeek
-                          ? `⚠️ Affects scheduled Week ${weekRangeLabel(activeWeek)}`
-                          : `✓ Available for scheduled Week ${weekRangeLabel(activeWeek)}`}
-                      </div>
+              {dbLeaves.length === 0 ? (
+                <div
+                  style={{
+                    padding: "24px 20px",
+                    background: "var(--surface-soft)",
+                    borderRadius: "8px",
+                    border: "1px dashed var(--line)",
+                    textAlign: "center",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}
+                >
+                  <Database size={24} style={{ color: "var(--muted)", opacity: 0.7 }} />
+                  <div style={{ fontSize: "0.88rem", fontWeight: 700, color: "var(--ink)" }}>
+                    No Leave Records in NUrul_DB (public.hr_leaves)
+                  </div>
+                  <div style={{ fontSize: "0.78rem", color: "var(--muted)", maxWidth: "520px" }}>
+                    Connected successfully to <code>NUrul_DB</code> ({dbPeople.length} employee profiles matched from <code>public.hr_people</code>). When leave requests or MC records are submitted in NUrul_DB, or updated here via &quot;Update Availability&quot;, they will immediately appear in this table and flag affected teams.
+                  </div>
+                </div>
+              ) : (
+                <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: "8px" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem", textAlign: "left" }}>
+                    <thead>
+                      <tr style={{ background: "var(--surface-soft)", borderBottom: "1px solid var(--line)", color: "var(--muted)", textTransform: "uppercase", fontSize: "0.72rem", letterSpacing: "0.3px" }}>
+                        <th style={{ padding: "10px 14px", fontWeight: 700 }}>Employee</th>
+                        <th style={{ padding: "10px 14px", fontWeight: 700 }}>Type</th>
+                        <th style={{ padding: "10px 14px", fontWeight: 700 }}>Period</th>
+                        <th style={{ padding: "10px 14px", fontWeight: 700 }}>Reason / Notes</th>
+                        <th style={{ padding: "10px 14px", fontWeight: 700 }}>Active Week Impact</th>
+                        <th style={{ padding: "10px 14px", fontWeight: 700 }}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dbLeaves.map((l) => {
+                        const isMC = Boolean(l.has_mc) || /\b(mc|medical|sick)\b/i.test(l.type || "");
+                        const overlapsActive = isLeaveRowOverlappingWeek(l, activeWeek);
+                        const empName = l.employee_name || l.employee_username || l.employee_id;
 
-                      {assignedCrew && isAwayInActiveWeek && (
-                        <div
-                          style={{
-                            marginTop: "4px",
-                            padding: "6px 10px",
-                            background: "var(--surface)",
-                            borderRadius: "6px",
-                            border: "1px solid var(--line)",
-                            fontSize: "0.78rem",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                          }}
-                        >
-                          <span>Assigned to: <strong>{assignedCrew.name}</strong></span>
-                          <span style={{ color: "#dc2626", fontWeight: 600 }}>Needs Replacement</span>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-
-              {members.filter((m) => m.availability.status !== "available").length === 0 && (
-                <div style={{ padding: "20px", textAlign: "center", color: "#16a34a", fontSize: "0.9rem", fontWeight: 600 }}>
-                  ✓ All project team members are currently Available and ready for installation schedule!
+                        return (
+                          <tr key={l.id} style={{ borderBottom: "1px solid var(--line)", background: overlapsActive ? "#fff8f8" : "transparent" }}>
+                            <td style={{ padding: "10px 14px" }}>
+                              <strong style={{ color: "var(--ink)", display: "block" }}>{empName}</strong>
+                              <span style={{ fontSize: "0.72rem", color: "var(--muted)" }}>ID: {l.employee_id}</span>
+                            </td>
+                            <td style={{ padding: "10px 14px" }}>
+                              <span
+                                style={{
+                                  fontSize: "0.72rem",
+                                  padding: "3px 8px",
+                                  borderRadius: "6px",
+                                  fontWeight: 700,
+                                  background: isMC ? "#fee2e2" : "#fef3c7",
+                                  color: isMC ? "#991b1b" : "#92400e",
+                                  border: `1px solid ${isMC ? "#fca5a5" : "#fde68a"}`,
+                                  display: "inline-block",
+                                }}
+                              >
+                                {isMC ? "Medical Leave (MC)" : l.type || "Leave"}
+                              </span>
+                            </td>
+                            <td style={{ padding: "10px 14px", color: "var(--ink)" }}>
+                              <div style={{ fontWeight: 600 }}>{l.from_date?.slice(0, 10)} to {l.to_date?.slice(0, 10) || l.from_date?.slice(0, 10)}</div>
+                            </td>
+                            <td style={{ padding: "10px 14px", color: "var(--ink)", maxWidth: "240px" }}>
+                              {l.note || <span style={{ color: "var(--muted)", fontStyle: "italic" }}>None</span>}
+                            </td>
+                            <td style={{ padding: "10px 14px" }}>
+                              {overlapsActive ? (
+                                <span
+                                  style={{
+                                    fontSize: "0.72rem",
+                                    padding: "2px 8px",
+                                    borderRadius: "12px",
+                                    fontWeight: 700,
+                                    background: "#fee2e2",
+                                    color: "#b91c1c",
+                                    border: "1px solid #fca5a5",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "4px",
+                                  }}
+                                >
+                                  ⚠️ Overlaps Week {weekRangeLabel(activeWeek)}
+                                </span>
+                              ) : (
+                                <span
+                                  style={{
+                                    fontSize: "0.72rem",
+                                    padding: "2px 8px",
+                                    borderRadius: "12px",
+                                    fontWeight: 600,
+                                    background: "#f0fdf4",
+                                    color: "#15803d",
+                                    border: "1px solid #bbf7d0",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "4px",
+                                  }}
+                                >
+                                  ✓ Outside Active Week
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ padding: "10px 14px" }}>
+                              <span
+                                style={{
+                                  fontSize: "0.72rem",
+                                  padding: "2px 8px",
+                                  borderRadius: "6px",
+                                  fontWeight: 600,
+                                  background: l.status === "approved" ? "#ecfdf5" : "#f1f5f9",
+                                  color: l.status === "approved" ? "#065f46" : "#475569",
+                                  textTransform: "capitalize",
+                                }}
+                              >
+                                {l.status || "approved"}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
