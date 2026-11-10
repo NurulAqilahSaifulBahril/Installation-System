@@ -1721,7 +1721,30 @@ export default function ReadyToInstallSchedule({
               if (entry.groupId) weekGroupIds.add(entry.groupId);
             });
           });
-          const weekBookedGroup = groups.find((g) => weekGroupIds.has(g.id));
+          const groupById = new Map(groups.map((g) => [g.id, g]));
+          const crewSigOf = (g?: ScheduleGroup | null) =>
+            g
+              ? [
+                  (g.installationTeam || "").trim(),
+                  (g.wiringTeam || "").trim(),
+                  (g.supervisors || []).map((s) => s.trim()).filter(Boolean).join(", "),
+                  (g.wiringMembers || []).map((s) => s.trim()).filter(Boolean).join(", "),
+                  (g.cars || []).map((s) => s.trim()).filter(Boolean).join(", "),
+                ].join("|")
+              : "";
+          const orderedWeekBookedGroups: ScheduleGroup[] = [];
+          team.days.forEach((day) => {
+            day.entries.forEach((entry) => {
+              if (entry.groupId) {
+                const grp = groupById.get(entry.groupId);
+                if (grp && !orderedWeekBookedGroups.some((x) => x.id === grp.id)) {
+                  orderedWeekBookedGroups.push(grp);
+                }
+              }
+            });
+          });
+          const weekBookedGroup = orderedWeekBookedGroups[0] ?? groups.find((g) => weekGroupIds.has(g.id));
+          let lastRenderedCrewSig = crewSigOf(weekBookedGroup);
           const draftCrew = scheduleDraft.teamCrews?.[team.team];
           const displayInstallTeam = draftCrew?.installationTeam ?? weekBookedGroup?.installationTeam ?? "";
           const displayWiringTeam = draftCrew?.wiringTeam ?? weekBookedGroup?.wiringTeam ?? "";
@@ -1729,6 +1752,16 @@ export default function ReadyToInstallSchedule({
             draftCrew?.siteSupervisor ??
             (weekBookedGroup?.supervisors && weekBookedGroup.supervisors.length > 0
               ? weekBookedGroup.supervisors.join(", ")
+              : "");
+          const displayMembers =
+            draftCrew?.membersText ??
+            (weekBookedGroup?.wiringMembers && weekBookedGroup.wiringMembers.length > 0
+              ? weekBookedGroup.wiringMembers.join(", ")
+              : "");
+          const displayCar =
+            draftCrew?.car ??
+            (weekBookedGroup?.cars && weekBookedGroup.cars.length > 0
+              ? weekBookedGroup.cars.join(", ")
               : "");
           return (
             <div className={`table-wrap rti-team rti-team-${team.team}`} key={`${currentWeekStart}-${team.team}`}>
@@ -1869,13 +1902,13 @@ export default function ReadyToInstallSchedule({
 
                           <div className="rti-crew-col">
                             <label className="rti-crew-label" htmlFor={`crew-mem-${currentWeekStart}-${team.team}`}>
-                              Team member
+                              Team Member
                             </label>
                             <input
                               id={`crew-mem-${currentWeekStart}-${team.team}`}
                               type="text"
                               className="rti-crew-input"
-                              value={scheduleDraft.teamCrews?.[team.team]?.membersText ?? ""}
+                              value={displayMembers}
                               placeholder="e.g. Ali, Ah Hock, Kumar..."
                               onChange={(e) => updateCrewField(team.team, "membersText", e.target.value)}
                               onBlur={(e) => handleCrewBlur(team.team, "membersText", e.target.value)}
@@ -1894,7 +1927,7 @@ export default function ReadyToInstallSchedule({
                               type="text"
                               list={`cars-list-${team.team}`}
                               className="rti-crew-input"
-                              value={scheduleDraft.teamCrews?.[team.team]?.car ?? ""}
+                              value={displayCar}
                               placeholder="e.g. Van, Hilux..."
                               onChange={(e) => updateCrewField(team.team, "car", e.target.value)}
                               onBlur={(e) => handleCrewBlur(team.team, "car", e.target.value)}
@@ -2078,12 +2111,89 @@ export default function ReadyToInstallSchedule({
                     const job = jobById.get(entry.jobId);
                     if (!job || job.customerAvailabilityStatus === "complete") return null;
                     if (hasSearchQuery && !jobMatchesQuery(job)) return null;
+                    const entryGroup = entry.groupId ? groupById.get(entry.groupId) : undefined;
+                    const entryCrewSig = entryGroup ? crewSigOf(entryGroup) : lastRenderedCrewSig;
+                    const showSubCrewBand = Boolean(entryGroup && entryCrewSig !== lastRenderedCrewSig);
+                    if (entryGroup) {
+                      lastRenderedCrewSig = entryCrewSig;
+                    }
                     const candidate = candidateById.get(job.id);
                     const isBooked = entry.source === "booked";
                     const dropHere = panel?.kind === "drop" && panel.jobId === job.id ? panel : null;
                     const focused = focusJobId === job.id;
                     return (
                       <Fragment key={key}>
+                        {showSubCrewBand && entryGroup && (
+                          <tr className="rti-team-band rti-team-band-main">
+                            <th colSpan={COLUMN_COUNT}>
+                              <div className="rti-team-header-main">
+                                <div className="rti-team-title-wrap">
+                                  <span className="rti-team-name">Team {team.team}</span>
+                                  <span className="rti-team-base">{REGION_LABEL[TEAM_REGION[team.team]]}</span>
+                                </div>
+                                <div className="rti-crew-grid">
+                                  <div className="rti-crew-col">
+                                    <label className="rti-crew-label">Installation Team</label>
+                                    <input
+                                      type="text"
+                                      className="rti-crew-input"
+                                      value={entryGroup.installationTeam || displayInstallTeam || "—"}
+                                      readOnly
+                                    />
+                                  </div>
+                                  <div className="rti-crew-col">
+                                    <label className="rti-crew-label">Wiring Team</label>
+                                    <input
+                                      type="text"
+                                      className="rti-crew-input"
+                                      value={entryGroup.wiringTeam || displayWiringTeam || "—"}
+                                      readOnly
+                                    />
+                                  </div>
+                                  <div className="rti-crew-col">
+                                    <label className="rti-crew-label">Site Supervisor</label>
+                                    <input
+                                      type="text"
+                                      className="rti-crew-input"
+                                      value={
+                                        entryGroup.supervisors && entryGroup.supervisors.length > 0
+                                          ? entryGroup.supervisors.join(", ")
+                                          : displaySupervisor || "—"
+                                      }
+                                      readOnly
+                                    />
+                                  </div>
+                                  <div className="rti-crew-col">
+                                    <label className="rti-crew-label">Team Member</label>
+                                    <input
+                                      type="text"
+                                      className="rti-crew-input"
+                                      value={
+                                        entryGroup.wiringMembers && entryGroup.wiringMembers.length > 0
+                                          ? entryGroup.wiringMembers.join(", ")
+                                          : "—"
+                                      }
+                                      readOnly
+                                    />
+                                  </div>
+                                  <div className="rti-crew-col">
+                                    <label className="rti-crew-label">Car</label>
+                                    <input
+                                      type="text"
+                                      className="rti-crew-input"
+                                      value={
+                                        entryGroup.cars && entryGroup.cars.length > 0
+                                          ? entryGroup.cars.join(", ")
+                                          : "—"
+                                      }
+                                      readOnly
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            </th>
+                          </tr>
+                        )}
                         <tr
                           id={`rti-row-${job.id}`}
                           className={`rti-row is-${entry.source}${focused ? " is-focused" : ""}`}

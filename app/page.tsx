@@ -6588,7 +6588,10 @@ function InstallationGroupsView({
       activeArrangedWeek &&
       activeArrangedWeek !== "all";
 
-    return groups
+    const groupOrderById = new Map<string, number>();
+    groups.forEach((g, idx) => groupOrderById.set(g.id, idx));
+
+    const filteredRows = groups
       .filter((group) => {
         if (!group.installationDate) return false;
         // Future weeks stay off Arranged Installation, All Weeks and searches
@@ -6614,12 +6617,18 @@ function InstallationGroupsView({
           group,
           job: jobId ? (jobById.get(jobId) ?? null) : null,
           jobId,
-          // What a heading band covers: one crew, working one week.
-          // Grouped strictly by week and team label so all customers and supervisors
-          // for the same week and team stay together in one unified table section.
+          // What a heading band covers: one crew sub-group within a week and team.
+          // When a team splits into sub-crews with distinct installationTeam,
+          // wiringTeam, supervisors, wiringMembers, or cars (e.g. Van JXW783 vs
+          // Myvi vs All), each sub-crew gets its own header band.
           blockKey: [
             weekBounds(group.installationDate)?.start ?? "",
             (group.teamLabel ?? "").trim(),
+            (group.installationTeam ?? "").trim(),
+            (group.wiringTeam ?? "").trim(),
+            (group.supervisors ?? []).map((s) => s.trim()).filter(Boolean).join(","),
+            (group.wiringMembers ?? []).map((s) => s.trim()).filter(Boolean).join(","),
+            (group.cars ?? []).map((s) => s.trim()).filter(Boolean).join(","),
           ].join("|"),
         })),
       )
@@ -6659,51 +6668,68 @@ function InstallationGroupsView({
         if (!activeArrangedWeek) return true;
         const rowWeekStart = weekBounds(row.group.installationDate)?.start ?? "";
         return rowWeekStart === activeArrangedWeek;
-      })
-      // Crew first, date within it: every row a given crew works sits together
-      // in the order they go out, which is how the schedule sheet itself is
-      // laid out. Rows with no team label sort last within their week rather
-      // than first, so a blank does not head a week's block.
-      .sort((a, b) => {
-        const label = (row: typeof a) => row.group.teamLabel?.trim() ?? "";
-        const unlabelled = (row: typeof a) => (label(row) ? 0 : 1);
-        // Rows added in this session sit at the very top, newest first, so a
-        // team you just added is in front of you rather than sorted away into
-        // the middle of the table while you are still filling it in. They take
-        // their natural place on the next load.
-        const pinned = (row: typeof a) => {
-          const at = newRowGroupIds.indexOf(row.group.id);
-          return at === -1 ? Number.MAX_SAFE_INTEGER : at;
-        };
-        // A pinned week band and everything under it float above the rest,
-        // keeping the week being worked on in view. Rows added this session
-        // still come first — those are mid-edit and need to be reachable.
-        const pinnedWeek = (row: typeof a) =>
-          pinnedWeekKeys.has(row.blockKey) ? 0 : 1;
-        const weekStart = (row: typeof a) =>
-          weekBounds(row.group.installationDate)?.start ?? "";
-        return (
-          pinned(a) - pinned(b) ||
-          pinnedWeek(a) - pinnedWeek(b) ||
-          // Week is the outer grouping, exactly as the schedule sheet lays it
-          // out: one week bar, every team's block underneath it. So the whole
-          // of the current week sits at the top of the table, whichever team
-          // each block belongs to, and older weeks follow. Newest first, so
-          // b before a.
-          weekStart(b).localeCompare(weekStart(a)) ||
-          // Inside the week, not above it. A blank still sorts last among its own week.
-          unlabelled(a) - unlabelled(b) ||
-          // Numeric-aware so "Team 10" follows "Team 9" instead of "Team 1".
-          label(a).localeCompare(label(b), undefined, { numeric: true }) ||
-          // Days inside a week still read forwards, Monday to Saturday,
-          // because that is the order the crew works them.
-          a.group.installationDate.localeCompare(b.group.installationDate) ||
-          (a.job?.preferredInstallationTime || groupStartTime(a.group.id) || "99:99").localeCompare(
-            b.job?.preferredInstallationTime || groupStartTime(b.group.id) || "99:99",
-          ) ||
-          (a.job?.customerName ?? "").localeCompare(b.job?.customerName ?? "")
-        );
       });
+
+    const blockMinDate = new Map<string, string>();
+    const blockFirstOrder = new Map<string, number>();
+    for (const row of filteredRows) {
+      const curMin = blockMinDate.get(row.blockKey);
+      if (!curMin || row.group.installationDate < curMin) {
+        blockMinDate.set(row.blockKey, row.group.installationDate);
+      }
+      const gOrd = groupOrderById.get(row.group.id) ?? Number.MAX_SAFE_INTEGER;
+      const curOrd = blockFirstOrder.get(row.blockKey);
+      if (curOrd === undefined || gOrd < curOrd) {
+        blockFirstOrder.set(row.blockKey, gOrd);
+      }
+    }
+
+    return filteredRows.sort((a, b) => {
+      const label = (row: typeof a) => row.group.teamLabel?.trim() ?? "";
+      const unlabelled = (row: typeof a) => (label(row) ? 0 : 1);
+      // Rows added in this session sit at the very top, newest first, so a
+      // team you just added is in front of you rather than sorted away into
+      // the middle of the table while you are still filling it in. They take
+      // their natural place on the next load.
+      const pinned = (row: typeof a) => {
+        const at = newRowGroupIds.indexOf(row.group.id);
+        return at === -1 ? Number.MAX_SAFE_INTEGER : at;
+      };
+      // A pinned week band and everything under it float above the rest,
+      // keeping the week being worked on in view. Rows added this session
+      // still come first — those are mid-edit and need to be reachable.
+      const pinnedWeek = (row: typeof a) =>
+        pinnedWeekKeys.has(row.blockKey) ? 0 : 1;
+      const weekStart = (row: typeof a) =>
+        weekBounds(row.group.installationDate)?.start ?? "";
+      return (
+        pinned(a) - pinned(b) ||
+        pinnedWeek(a) - pinnedWeek(b) ||
+        // Week is the outer grouping, exactly as the schedule sheet lays it
+        // out: one week bar, every team's block underneath it. So the whole
+        // of the current week sits at the top of the table, whichever team
+        // each block belongs to, and older weeks follow. Newest first, so
+        // b before a.
+        weekStart(b).localeCompare(weekStart(a)) ||
+        // Inside the week, not above it. A blank still sorts last among its own week.
+        unlabelled(a) - unlabelled(b) ||
+        // Numeric-aware so "Team 10" follows "Team 9" instead of "Team 1".
+        label(a).localeCompare(label(b), undefined, { numeric: true }) ||
+        // Keep each crew sub-block together in chronological/sheet order
+        (blockMinDate.get(a.blockKey) ?? "").localeCompare(
+          blockMinDate.get(b.blockKey) ?? "",
+        ) ||
+        (blockFirstOrder.get(a.blockKey) ?? 0) -
+          (blockFirstOrder.get(b.blockKey) ?? 0) ||
+        // Days inside a sub-block still read forwards, Monday to Saturday,
+        // because that is the order the crew works them.
+        a.group.installationDate.localeCompare(b.group.installationDate) ||
+        (a.job?.preferredInstallationTime || groupStartTime(a.group.id) || "99:99").localeCompare(
+          b.job?.preferredInstallationTime || groupStartTime(b.group.id) || "99:99",
+        ) ||
+        (a.job?.customerName ?? "").localeCompare(b.job?.customerName ?? "")
+      );
+    });
   }, [
     groups,
     jobById,

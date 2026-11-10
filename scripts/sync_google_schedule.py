@@ -245,6 +245,94 @@ def parse_slot_date(slot_text, default_year='2026', current_week=''):
 
     return None
 
+def parse_crew_subheader(a_text, section_all_members, section_all_cars):
+    if not a_text:
+        return None
+    s = a_text.strip()
+    if not s:
+        return None
+
+    # 1. "All" means combine all members and cars seen in this team section
+    if s.lower() == 'all':
+        return {
+            'isAll': True,
+            'members': list(section_all_members),
+            'cars': list(section_all_cars),
+            'supervisor': None,
+        }
+
+    def clean_member(name):
+        w = name.strip()
+        if not w:
+            return ''
+        if w.islower():
+            return w.title()
+        return w
+
+    # 2. "<Car> (<Members>)" e.g. "Van JXW783 (Jamar, Faiz, shahir)" or "Myvi (Hakimin, Amien, Imam)"
+    m_car_mem = re.match(r'^((?:Van|Myvi|Avanza|Hilux|Alza|Lorry)\b[^(]*)\(([^)]+)\)\s*$', s, re.I)
+    if m_car_mem:
+        car = m_car_mem.group(1).strip()
+        members = [clean_member(x) for x in m_car_mem.group(2).split(',') if clean_member(x)]
+        for mem in members:
+            if mem not in section_all_members:
+                section_all_members.append(mem)
+        if car and car not in section_all_cars:
+            section_all_cars.append(car)
+        return {
+            'isAll': False,
+            'members': members,
+            'cars': [car] if car else [],
+            'supervisor': None,
+        }
+
+    # 3. Labeled or multi-line subheaders (Site supervisor: ..., Team/Technician: ..., Car: ...)
+    lines = [l.strip() for l in s.split('\n') if l.strip()]
+    sup = None
+    members = []
+    cars = []
+    matched_any = False
+
+    for line in lines:
+        m_sup = re.match(r'^site\s*supervisor\s*:\s*(.+)$', line, re.I)
+        if m_sup:
+            sup = m_sup.group(1).strip()
+            matched_any = True
+            continue
+        m_team = re.match(r'^(?:team|technician)\s*:\s*(.+)$', line, re.I)
+        if m_team:
+            members.extend([clean_member(x) for x in m_team.group(1).split(',') if clean_member(x)])
+            matched_any = True
+            continue
+        m_car = re.match(r'^car\s*:\s*(.+)$', line, re.I)
+        if m_car:
+            cars.extend([x.strip() for x in m_car.group(1).split(',') if x.strip()])
+            matched_any = True
+            continue
+        if re.match(r'^(?:Van|Myvi|Avanza|Hilux|Alza|Lorry)\b', line, re.I) and not re.search(r'\b(mon|tue|wed|thu|fri|sat|sun)\b', line, re.I):
+            cars.extend([x.strip() for x in line.split(',') if x.strip()])
+            matched_any = True
+            continue
+        if ',' in line and not re.search(r'\d', line) and not re.search(r'\b(mon|tue|wed|thu|fri|sat|sun|note|holiday|available|waiting)\b', line, re.I):
+            members.extend([clean_member(x) for x in line.split(',') if clean_member(x)])
+            matched_any = True
+
+    if matched_any:
+        for mem in members:
+            if mem not in section_all_members:
+                section_all_members.append(mem)
+        for car in cars:
+            if car not in section_all_cars:
+                section_all_cars.append(car)
+        return {
+            'isAll': False,
+            'members': members,
+            'cars': cars,
+            'supervisor': sup,
+        }
+
+    return None
+
 def parse_customer_cell(cell_text):
     if not cell_text:
         return None
@@ -563,6 +651,10 @@ def sync_schedule():
     current_install = ''
     current_wiring = ''
     current_supervisor = ''
+    current_members = []
+    current_cars = []
+    section_all_members = []
+    section_all_cars = []
 
     parsed_items = []
     seen_team_date_count = {}
@@ -573,23 +665,35 @@ def sync_schedule():
         week_match = re.search(r'INSTALLATION\s*~\s*Week\s*:\s*(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*[~\-]\s*(\d{1,2}\/\d{1,2}\/\d{4})', row_text, re.I)
         if week_match:
             current_week = week_match.group(0)
+            current_members = []
+            current_cars = []
+            section_all_members = []
+            section_all_cars = []
             continue
 
         a = r['cells'].get(f"A{r['row']}", '')
         b = r['cells'].get(f"B{r['row']}", '')
         c = r['cells'].get(f"C{r['row']}", '')
         d = r['cells'].get(f"D{r['row']}", '')
+        e_val = r['cells'].get(f"E{r['row']}", '')
         f_val = r['cells'].get(f"F{r['row']}", '')
         g = r['cells'].get(f"G{r['row']}", '')
         i_val = r['cells'].get(f"I{r['row']}", '')
         j = r['cells'].get(f"J{r['row']}", '')
         k = r['cells'].get(f"K{r['row']}", '')
 
-        if re.search(r'Team\s*\d+', a, re.I):
+        if re.search(r'^Team\s*\d+', (a or '').strip(), re.I):
             current_team = a.strip()
-            current_install = re.sub(r'Install:\s*', '', b or '', flags=re.I).strip()
-            current_wiring = re.sub(r'Wiring:\s*', '', c or '', flags=re.I).strip()
-            current_supervisor = (f_val or '').strip()
+            current_install = re.sub(r'Install(?:\s*&\s*Wiring)?\s*:\s*', '', b or '', flags=re.I).strip()
+            current_wiring = re.sub(r'Wiring\s*:\s*', '', c or '', flags=re.I).strip()
+            sup_cand = (f_val or '').strip()
+            if not sup_cand and e_val and not re.search(r'site\s*supervisor', e_val, re.I):
+                sup_cand = e_val.strip()
+            current_supervisor = re.sub(r'^site\s*supervisor\s*:\s*', '', sup_cand, flags=re.I).strip()
+            current_members = []
+            current_cars = []
+            section_all_members = []
+            section_all_cars = []
             continue
 
         if not current_week:
@@ -599,6 +703,14 @@ def sync_schedule():
         default_yr = m_yr.group(1) if m_yr else '2026'
 
         slot_info = parse_slot_date(a, default_year=default_yr, current_week=current_week)
+        if not slot_info and a and not b:
+            sub_crew = parse_crew_subheader(a, section_all_members, section_all_cars)
+            if sub_crew:
+                current_members = list(sub_crew.get('members') or [])
+                current_cars = list(sub_crew.get('cars') or [])
+                if sub_crew.get('supervisor'):
+                    current_supervisor = sub_crew['supervisor']
+                continue
         if not slot_info or not b:
             continue
 
@@ -771,6 +883,8 @@ def sync_schedule():
             'installTeam': current_install,
             'wiringTeam': current_wiring,
             'supervisor': current_supervisor,
+            'wiringMembers': list(current_members),
+            'cars': list(current_cars),
             'slot': slot_info,
             'customer': cust_info,
             'jobId': job_id,
@@ -854,6 +968,11 @@ def sync_schedule():
             group_id = f"{group_id}-{n}"
         used_group_ids.add(group_id)
 
+        sup_list = [
+            s.strip()
+            for s in re.split(r'[,/]', item['supervisor'] or '')
+            if s.strip()
+        ]
         grp = {
             'id': group_id,
             'name': f"{team} · {cust['cleanName']}",
@@ -863,10 +982,10 @@ def sync_schedule():
             'jobIds': [job_id],
             'installationTeam': item['installTeam'] or '',
             'wiringTeam': item['wiringTeam'] or '',
-            'supervisors': [item['supervisor']] if item['supervisor'] else [],
+            'supervisors': sup_list,
             'teamLabel': team,
-            'wiringMembers': [],
-            'cars': [],
+            'wiringMembers': item.get('wiringMembers') or [],
+            'cars': item.get('cars') or [],
             'remark': cust['remarks'],
         }
         new_groups.append(grp)
