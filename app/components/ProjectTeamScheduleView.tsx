@@ -4843,7 +4843,7 @@ export function ProjectTeamScheduleView({
               gap: "18px",
             }}
           >
-            {/* Header & NUrul_DB Connection Bar */}
+            {/* Header */}
             <div
               style={{
                 display: "flex",
@@ -4871,46 +4871,8 @@ export function ProjectTeamScheduleView({
                   Availability & MC / Leave Calendar (Week {weekRangeLabel(activeWeek)})
                 </h3>
                 <p style={{ margin: 0, fontSize: "0.83rem", color: "var(--muted)" }}>
-                  Reads live medical certificate (MC) and leave records directly from <strong>NUrul_DB</strong> (<code>public.hr_leaves</code> & <code>public.hr_people</code>) to prevent scheduling absent crew members.
+                  Live absence, medical certificates (MC), and approved leave records for installation crew scheduling.
                 </p>
-              </div>
-
-              {/* NUrul_DB Live Connection Status */}
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-                <div
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    padding: "4px 10px",
-                    background: "#ecfdf5",
-                    border: "1px solid #a7f3d0",
-                    borderRadius: "8px",
-                    fontSize: "0.76rem",
-                    fontWeight: 600,
-                    color: "#065f46",
-                  }}
-                  title="Leave & MC data is continuously synchronized live from NUrul_DB"
-                >
-                  <Database size={13} style={{ color: "#059669" }} />
-                  <span>NUrul_DB Live Synced</span>
-                  <span
-                    style={{
-                      width: "7px",
-                      height: "7px",
-                      borderRadius: "50%",
-                      background: "#10b981",
-                      display: "inline-block",
-                      boxShadow: "0 0 0 2px rgba(16, 185, 129, 0.25)",
-                    }}
-                  />
-                </div>
-
-                {lastLeavesSync && (
-                  <span style={{ fontSize: "0.74rem", color: "var(--muted)" }}>
-                    Auto-updated: {lastLeavesSync}
-                  </span>
-                )}
               </div>
             </div>
 
@@ -4999,9 +4961,6 @@ export function ProjectTeamScheduleView({
                     <AlertCircle size={15} style={{ color: "#dc2626" }} />
                     Personnel Absence & Availability Status
                   </h4>
-                  <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
-                    Review, approve (✓), or reject (✕) leave requests to update NUrul_DB and crew availability.
-                  </span>
                 </div>
 
                 {/* Filter Pills: All / Pending / Approved / Rejected */}
