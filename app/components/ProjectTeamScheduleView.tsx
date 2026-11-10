@@ -1363,8 +1363,25 @@ export function ProjectTeamScheduleView({
     }
   };
 
+  // Continuous auto-sync of leave and MC records from NUrul_DB
   useEffect(() => {
     void loadHrLeavesFromNurulDb();
+
+    // Auto-refresh when browser window gains focus
+    const handleFocus = () => {
+      void loadHrLeavesFromNurulDb();
+    };
+    window.addEventListener("focus", handleFocus);
+
+    // Background interval auto-sync every 30 seconds
+    const interval = setInterval(() => {
+      void loadHrLeavesFromNurulDb();
+    }, 30000);
+
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      clearInterval(interval);
+    };
   }, []);
 
   // Week-by-week crews state: Record<weekStartIso, InstallationCrew[]>
@@ -1749,6 +1766,13 @@ export function ProjectTeamScheduleView({
       setActiveTab(tab);
     });
   };
+
+  // Always auto-refresh leave records from NUrul_DB when switching to the availability tab
+  useEffect(() => {
+    if (activeTab === "availability") {
+      void loadHrLeavesFromNurulDb();
+    }
+  }, [activeTab]);
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchDropdownOpen, setIsSearchDropdownOpen] = useState(false);
   const searchContainerRef = useRef<HTMLDivElement>(null);
@@ -4761,7 +4785,7 @@ export function ProjectTeamScheduleView({
                 </p>
               </div>
 
-              {/* NUrul_DB Status and Sync Button */}
+              {/* NUrul_DB Live Connection Status */}
               <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
                 <div
                   style={{
@@ -4776,10 +4800,10 @@ export function ProjectTeamScheduleView({
                     fontWeight: 600,
                     color: "#065f46",
                   }}
-                  title="Directly connected to PostgreSQL NUrul_DB"
+                  title="Leave & MC data is continuously synchronized live from NUrul_DB"
                 >
                   <Database size={13} style={{ color: "#059669" }} />
-                  <span>NUrul_DB (public.hr_leaves)</span>
+                  <span>NUrul_DB Live Synced</span>
                   <span
                     style={{
                       width: "7px",
@@ -4787,44 +4811,16 @@ export function ProjectTeamScheduleView({
                       borderRadius: "50%",
                       background: "#10b981",
                       display: "inline-block",
+                      boxShadow: "0 0 0 2px rgba(16, 185, 129, 0.25)",
                     }}
                   />
                 </div>
 
                 {lastLeavesSync && (
                   <span style={{ fontSize: "0.74rem", color: "var(--muted)" }}>
-                    Synced: {lastLeavesSync}
+                    Auto-updated: {lastLeavesSync}
                   </span>
                 )}
-
-                <button
-                  onClick={() => void loadHrLeavesFromNurulDb()}
-                  disabled={isLoadingLeaves}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    padding: "6px 12px",
-                    borderRadius: "8px",
-                    border: "1px solid var(--line)",
-                    background: "var(--surface-soft)",
-                    fontSize: "0.78rem",
-                    fontWeight: 600,
-                    color: "var(--ink)",
-                    cursor: isLoadingLeaves ? "not-allowed" : "pointer",
-                    transition: "all 0.15s ease",
-                  }}
-                  title="Fetch latest leave records from NUrul_DB"
-                >
-                  <RefreshCw
-                    size={13}
-                    style={{
-                      animation: isLoadingLeaves ? "spin 1s linear infinite" : "none",
-                      color: "#2563eb",
-                    }}
-                  />
-                  <span>{isLoadingLeaves ? "Syncing..." : "Sync NUrul_DB"}</span>
-                </button>
               </div>
             </div>
 
