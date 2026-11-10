@@ -430,7 +430,7 @@ export function normalizeArrangedName(
   if (lower === "intern" || lower === "intern x1" || lower === "intern 1") return null;
 
   // Known Arranged Installation technicians
-  if (lower === "jamar") return { name: "Jamar", role: "technician" };
+  if (lower === "jamar" || lower.startsWith("jamar") || lower.includes("jamaridzuan")) return { name: "Jamar", role: "technician" };
   if (lower === "amien") return { name: "Amien", role: "technician" };
   if (lower === "sharry") return { name: "Sharry", role: "technician" };
   if (lower === "aqim") return { name: "Aqim", role: "technician" };
@@ -1309,13 +1309,23 @@ export function ProjectTeamScheduleView({
       );
 
       setMembers((prevMembers) => {
-        return prevMembers.map((m) => {
+        const matchedLeaveIds = new Set<string>();
+
+        const updated = prevMembers.map((m) => {
           const mNorm = m.name.toLowerCase().trim();
           // Match against hr_people for phone sync
           const matchedPerson = peopleList.find((p) => {
             const pNameNorm = p.name ? normalizeArrangedName(p.name)?.name.toLowerCase().trim() : "";
             const pUserNorm = p.username ? normalizeArrangedName(p.username)?.name.toLowerCase().trim() : "";
-            return pNameNorm === mNorm || pUserNorm === mNorm || (p.name || "").toLowerCase().trim() === mNorm;
+            const rawPName = (p.name || "").toLowerCase().trim();
+            const rawPUser = (p.username || "").toLowerCase().trim();
+            return (
+              pNameNorm === mNorm ||
+              pUserNorm === mNorm ||
+              rawPName === mNorm ||
+              rawPUser === mNorm ||
+              (mNorm.length >= 3 && (rawPName.includes(mNorm) || rawPUser.includes(mNorm)))
+            );
           });
 
           // Match against hr_leaves for leave / MC status
@@ -1323,11 +1333,15 @@ export function ProjectTeamScheduleView({
             if (matchedPerson && l.employee_id === matchedPerson.id) return true;
             const lNameNorm = l.employee_name ? normalizeArrangedName(l.employee_name)?.name.toLowerCase().trim() : "";
             const lUserNorm = l.employee_username ? normalizeArrangedName(l.employee_username)?.name.toLowerCase().trim() : "";
+            const rawLName = (l.employee_name || "").toLowerCase().trim();
+            const rawLUser = (l.employee_username || "").toLowerCase().trim();
             return (
               lNameNorm === mNorm ||
               lUserNorm === mNorm ||
-              (l.employee_name || "").toLowerCase().trim() === mNorm ||
-              (l.employee_username || "").toLowerCase().trim() === mNorm
+              rawLName === mNorm ||
+              rawLUser === mNorm ||
+              (mNorm.length >= 3 && (rawLName.includes(mNorm) || rawLUser.includes(mNorm))) ||
+              (rawLName.length >= 3 && mNorm.includes(rawLName))
             );
           });
 
@@ -1337,6 +1351,7 @@ export function ProjectTeamScheduleView({
               : m.phone;
 
           if (matchedLeave && matchedLeave.from_date) {
+            matchedLeaveIds.add(matchedLeave.id);
             const isMc =
               Boolean(matchedLeave.has_mc) ||
               /\b(mc|medical|sick)\b/i.test(String(matchedLeave.type || "")) ||
@@ -1344,11 +1359,12 @@ export function ProjectTeamScheduleView({
             const rawStatus = (matchedLeave.status || "approved").toLowerCase();
             const approval: "approved" | "rejected" | "pending" =
               rawStatus === "rejected" ? "rejected" : rawStatus === "pending" ? "pending" : "approved";
+            const leaveStatus: MemberAvailabilityStatus = isMc ? "mc" : "leave";
             return {
               ...m,
               phone: updatedPhone,
               availability: {
-                status: isMc ? "mc" : "leave",
+                status: leaveStatus,
                 startDate: matchedLeave.from_date.slice(0, 10),
                 endDate: (matchedLeave.to_date || matchedLeave.from_date).slice(0, 10),
                 reason: matchedLeave.note || matchedLeave.type || undefined,
@@ -1363,6 +1379,41 @@ export function ProjectTeamScheduleView({
           }
           return m;
         });
+
+        // Ensure any leave from NUrul_DB that didn't match existing members is added as a team member entry
+        for (const l of leavesList) {
+          if (!l.id || matchedLeaveIds.has(l.id)) continue;
+          matchedLeaveIds.add(l.id);
+          const isMc =
+            Boolean(l.has_mc) ||
+            /\b(mc|medical|sick)\b/i.test(String(l.type || "")) ||
+            /\b(mc|medical|sick)\b/i.test(String(l.note || ""));
+          const rawStatus = (l.status || "approved").toLowerCase();
+          const approval: "approved" | "rejected" | "pending" =
+            rawStatus === "rejected" ? "rejected" : rawStatus === "pending" ? "pending" : "approved";
+          const dispName = l.employee_name || l.employee_username || `Employee ${l.employee_id}`;
+          const role: ProjectTeamMemberRole =
+            l.staff_role === "site_supervisor" ? "site_supervisor" : l.staff_role === "intern" ? "intern" : "technician";
+
+          const leaveStatus: MemberAvailabilityStatus = isMc ? "mc" : "leave";
+          updated.push({
+            id: `mem-db-${l.employee_id || l.id}`,
+            name: dispName,
+            role,
+            phone: l.employee_phone || "",
+            expertise: [],
+            availability: {
+              status: leaveStatus,
+              startDate: (l.from_date || todayIso).slice(0, 10),
+              endDate: (l.to_date || l.from_date || todayIso).slice(0, 10),
+              reason: l.note || l.type || undefined,
+              leaveId: l.id,
+              approvalStatus: approval,
+            },
+          });
+        }
+
+        return updated;
       });
     } catch {
       // Ignore network errors cleanly
@@ -2633,11 +2684,34 @@ export function ProjectTeamScheduleView({
   }
 
   // Approve leave record in NUrul_DB
-  async function handleApproveLeave(member: ProjectTeamMember) {
+  async function handleApproveLeave(item: ProjectTeamMember | {
+    id: string;
+    leaveId?: string;
+    memberId?: string;
+    member?: ProjectTeamMember;
+    employeeName: string;
+    role?: string;
+    phone?: string;
+    isMc?: boolean;
+    startDate?: string;
+    endDate?: string;
+    reason?: string;
+  }) {
     if (readOnly) return;
+    const isMemberObj = "role" in item && "expertise" in item;
+    const memberId = isMemberObj ? (item as ProjectTeamMember).id : item.member?.id || item.memberId;
+    const leaveId = isMemberObj ? (item as ProjectTeamMember).availability.leaveId : item.leaveId || item.id;
+    const empName = isMemberObj ? (item as ProjectTeamMember).name : item.employeeName;
+    const startDate = isMemberObj ? (item as ProjectTeamMember).availability.startDate : item.startDate;
+    const endDate = isMemberObj ? (item as ProjectTeamMember).availability.endDate : item.endDate;
+    const reason = isMemberObj ? (item as ProjectTeamMember).availability.reason : item.reason;
+    const isMc = isMemberObj ? (item as ProjectTeamMember).availability.status === "mc" : Boolean(item.isMc);
+
     setMembers((prev) =>
       prev.map((m) =>
-        m.id === member.id
+        (memberId && m.id === memberId) ||
+        (leaveId && m.availability.leaveId === leaveId) ||
+        m.name.toLowerCase().trim() === empName.toLowerCase().trim()
           ? {
               ...m,
               availability: {
@@ -2649,21 +2723,30 @@ export function ProjectTeamScheduleView({
       )
     );
 
+    setDbLeaves((prev) =>
+      prev.map((l) =>
+        (leaveId && l.id === leaveId) ||
+        (l.employee_name && l.employee_name.toLowerCase().trim() === empName.toLowerCase().trim())
+          ? { ...l, status: "approved" }
+          : l
+      )
+    );
+
     try {
       await fetch("/api/hr-leaves", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "approve",
-          id: member.availability.leaveId,
-          employeeName: member.name,
-          employeeId: member.id,
+          id: leaveId,
+          employeeName: empName,
+          employeeId: memberId,
           status: "approved",
-          fromDate: member.availability.startDate,
-          toDate: member.availability.endDate,
-          type: member.availability.status === "mc" ? "Medical Leave" : "Annual Leave",
-          note: member.availability.reason,
-          hasMc: member.availability.status === "mc",
+          fromDate: startDate,
+          toDate: endDate,
+          type: isMc ? "Medical Leave" : "Annual Leave",
+          note: reason,
+          hasMc: isMc,
         }),
       });
       void loadHrLeavesFromNurulDb();
@@ -2673,11 +2756,34 @@ export function ProjectTeamScheduleView({
   }
 
   // Reject leave record in NUrul_DB
-  async function handleRejectLeave(member: ProjectTeamMember) {
+  async function handleRejectLeave(item: ProjectTeamMember | {
+    id: string;
+    leaveId?: string;
+    memberId?: string;
+    member?: ProjectTeamMember;
+    employeeName: string;
+    role?: string;
+    phone?: string;
+    isMc?: boolean;
+    startDate?: string;
+    endDate?: string;
+    reason?: string;
+  }) {
     if (readOnly) return;
+    const isMemberObj = "role" in item && "expertise" in item;
+    const memberId = isMemberObj ? (item as ProjectTeamMember).id : item.member?.id || item.memberId;
+    const leaveId = isMemberObj ? (item as ProjectTeamMember).availability.leaveId : item.leaveId || item.id;
+    const empName = isMemberObj ? (item as ProjectTeamMember).name : item.employeeName;
+    const startDate = isMemberObj ? (item as ProjectTeamMember).availability.startDate : item.startDate;
+    const endDate = isMemberObj ? (item as ProjectTeamMember).availability.endDate : item.endDate;
+    const reason = isMemberObj ? (item as ProjectTeamMember).availability.reason : item.reason;
+    const isMc = isMemberObj ? (item as ProjectTeamMember).availability.status === "mc" : Boolean(item.isMc);
+
     setMembers((prev) =>
       prev.map((m) =>
-        m.id === member.id
+        (memberId && m.id === memberId) ||
+        (leaveId && m.availability.leaveId === leaveId) ||
+        m.name.toLowerCase().trim() === empName.toLowerCase().trim()
           ? {
               ...m,
               availability: {
@@ -2689,21 +2795,30 @@ export function ProjectTeamScheduleView({
       )
     );
 
+    setDbLeaves((prev) =>
+      prev.map((l) =>
+        (leaveId && l.id === leaveId) ||
+        (l.employee_name && l.employee_name.toLowerCase().trim() === empName.toLowerCase().trim())
+          ? { ...l, status: "rejected" }
+          : l
+      )
+    );
+
     try {
       await fetch("/api/hr-leaves", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "reject",
-          id: member.availability.leaveId,
-          employeeName: member.name,
-          employeeId: member.id,
+          id: leaveId,
+          employeeName: empName,
+          employeeId: memberId,
           status: "rejected",
-          fromDate: member.availability.startDate,
-          toDate: member.availability.endDate,
-          type: member.availability.status === "mc" ? "Medical Leave" : "Annual Leave",
-          note: member.availability.reason,
-          hasMc: member.availability.status === "mc",
+          fromDate: startDate,
+          toDate: endDate,
+          type: isMc ? "Medical Leave" : "Annual Leave",
+          note: reason,
+          hasMc: isMc,
         }),
       });
       void loadHrLeavesFromNurulDb();
@@ -4876,110 +4991,257 @@ export function ProjectTeamScheduleView({
               </div>
             </div>
 
-            {/* Quick Metrics Cards */}
+            {/* Quick Metrics Cards & Unified Leave Table */}
             {(() => {
-              const activeWeekDbLeaves = dbLeaves.filter((l) => isLeaveRowOverlappingWeek(l, activeWeek));
-              const activeWeekAbsentMembers = members.filter((m) => isMemberUnavailableInWeek(m, activeWeek));
-              const mcCount = members.filter((m) => m.availability.status === "mc").length +
-                dbLeaves.filter((l) => Boolean(l.has_mc) || /\b(mc|medical|sick)\b/i.test(l.type || "")).length;
+              // Construct unified leave records from NUrul_DB (dbLeaves) + local member overrides
+              const unifiedLeaveItems: Array<{
+                id: string;
+                leaveId?: string;
+                memberId?: string;
+                member?: ProjectTeamMember;
+                employeeName: string;
+                role: string;
+                phone: string;
+                isMc: boolean;
+                typeLabel: string;
+                startDate: string;
+                endDate: string;
+                durationDays: number;
+                reason: string;
+                approvalStatus: "pending" | "approved" | "rejected";
+                isAwayInActiveWeek: boolean;
+                assignedCrew?: InstallationCrew;
+              }> = [];
+
+              const seenLeaveIds = new Set<string>();
+              const seenMemberNames = new Set<string>();
+
+              // 1. Process dbLeaves from NUrul_DB
+              for (const l of dbLeaves) {
+                if (!l.id || seenLeaveIds.has(l.id)) continue;
+                seenLeaveIds.add(l.id);
+
+                const rawEmpName = (l.employee_name || l.employee_username || "").trim();
+                const lNorm = rawEmpName ? normalizeArrangedName(rawEmpName)?.name.toLowerCase().trim() : "";
+                const rawLName = rawEmpName.toLowerCase();
+
+                const matchedMember = members.find((m) => {
+                  if (m.availability.leaveId === l.id) return true;
+                  const mNorm = m.name.toLowerCase().trim();
+                  return (
+                    mNorm === rawLName ||
+                    (lNorm && mNorm === lNorm) ||
+                    (mNorm.length >= 3 && rawLName.includes(mNorm)) ||
+                    (rawLName.length >= 3 && mNorm.includes(rawLName))
+                  );
+                });
+
+                if (matchedMember) {
+                  seenMemberNames.add(matchedMember.name.toLowerCase().trim());
+                }
+                if (rawEmpName) {
+                  seenMemberNames.add(rawEmpName.toLowerCase().trim());
+                }
+
+                const isMc =
+                  Boolean(l.has_mc) ||
+                  /\b(mc|medical|sick)\b/i.test(String(l.type || "")) ||
+                  /\b(mc|medical|sick)\b/i.test(String(l.note || ""));
+                const rawStatus = (l.status || matchedMember?.availability.approvalStatus || "approved").toLowerCase();
+                const approvalStatus: "pending" | "approved" | "rejected" =
+                  rawStatus === "rejected" ? "rejected" : rawStatus === "pending" ? "pending" : "approved";
+
+                const startDate = (l.from_date || matchedMember?.availability.startDate || todayIso).slice(0, 10);
+                const endDate = (l.to_date || l.from_date || matchedMember?.availability.endDate || startDate).slice(0, 10);
+                const startObj = new Date(startDate);
+                const endObj = new Date(endDate);
+                const durationDays = !isNaN(startObj.getTime()) && !isNaN(endObj.getTime())
+                  ? Math.max(1, Math.round((endObj.getTime() - startObj.getTime()) / 86400000) + 1)
+                  : 1;
+
+                const empName = matchedMember?.name || l.employee_name || l.employee_username || `Employee ${l.employee_id}`;
+                const role = matchedMember?.role
+                  ? (matchedMember.role === "site_supervisor" ? "Supervisor" : matchedMember.role === "technician" ? "Technician" : "Intern")
+                  : (l.staff_role ? (l.staff_role === "site_supervisor" ? "Supervisor" : l.staff_role === "intern" ? "Intern" : "Technician") : "Technician");
+                const phone = matchedMember?.phone || l.employee_phone || "";
+                const reason = l.note || l.type || matchedMember?.availability.reason || (isMc ? "Medical Certificate (MC)" : "Leave");
+
+                const isAwayInActiveWeek = isLeaveRowOverlappingWeek(l, activeWeek);
+                const assignedCrew = matchedMember
+                  ? currentWeekCrews.find(
+                      (c) =>
+                        c.supervisorId === matchedMember.id ||
+                        c.technicianIds.includes(matchedMember.id) ||
+                        c.internIds.includes(matchedMember.id)
+                    )
+                  : undefined;
+
+                unifiedLeaveItems.push({
+                  id: l.id,
+                  leaveId: l.id,
+                  memberId: matchedMember?.id,
+                  member: matchedMember,
+                  employeeName: empName,
+                  role,
+                  phone,
+                  isMc,
+                  typeLabel: isMc ? "Medical Certificate (MC)" : (l.type || "Annual Leave"),
+                  startDate,
+                  endDate,
+                  durationDays,
+                  reason,
+                  approvalStatus,
+                  isAwayInActiveWeek,
+                  assignedCrew,
+                });
+              }
+
+              // 2. Add local member absences not in dbLeaves
+              for (const m of members) {
+                if (m.availability.status === "available") continue;
+                const mName = m.name.toLowerCase().trim();
+                if (seenMemberNames.has(mName)) continue;
+                if (m.availability.leaveId && seenLeaveIds.has(m.availability.leaveId)) continue;
+
+                const isMc = m.availability.status === "mc";
+                const approvalStatus = m.availability.approvalStatus || "approved";
+                const startDate = (m.availability.startDate || todayIso).slice(0, 10);
+                const endDate = (m.availability.endDate || startDate).slice(0, 10);
+                const startObj = new Date(startDate);
+                const endObj = new Date(endDate);
+                const durationDays = !isNaN(startObj.getTime()) && !isNaN(endObj.getTime())
+                  ? Math.max(1, Math.round((endObj.getTime() - startObj.getTime()) / 86400000) + 1)
+                  : 1;
+
+                const isAwayInActiveWeek = isMemberUnavailableInWeek(m, activeWeek);
+                const assignedCrew = currentWeekCrews.find(
+                  (c) =>
+                    c.supervisorId === m.id ||
+                    c.technicianIds.includes(m.id) ||
+                    c.internIds.includes(m.id)
+                );
+
+                unifiedLeaveItems.push({
+                  id: m.availability.leaveId || `mem-${m.id}`,
+                  leaveId: m.availability.leaveId,
+                  memberId: m.id,
+                  member: m,
+                  employeeName: m.name,
+                  role: m.role === "site_supervisor" ? "Supervisor" : m.role === "technician" ? "Technician" : "Intern",
+                  phone: m.phone || "",
+                  isMc,
+                  typeLabel: isMc ? "Medical Certificate (MC)" : "Annual Leave",
+                  startDate,
+                  endDate,
+                  durationDays,
+                  reason: m.availability.reason || (isMc ? "Medical Certificate (MC)" : "On Leave"),
+                  approvalStatus,
+                  isAwayInActiveWeek,
+                  assignedCrew,
+                });
+              }
+
+              // Filter records according to leaveApprovalFilter
+              const filteredRecords = unifiedLeaveItems.filter((rec) => {
+                if (leaveApprovalFilter === "pending") return rec.approvalStatus === "pending";
+                if (leaveApprovalFilter === "approved") return rec.approvalStatus === "approved";
+                if (leaveApprovalFilter === "rejected") return rec.approvalStatus === "rejected";
+                return true;
+              });
+
+              // Metric calculations
+              const affectingActiveWeekCount = unifiedLeaveItems.filter((r) => r.isAwayInActiveWeek && r.approvalStatus !== "rejected").length;
+              const mcCount = unifiedLeaveItems.filter((r) => r.isMc).length;
+              const pendingCount = unifiedLeaveItems.filter((r) => r.approvalStatus === "pending").length;
+              const approvedCount = unifiedLeaveItems.filter((r) => r.approvalStatus === "approved").length;
+              const rejectedCount = unifiedLeaveItems.filter((r) => r.approvalStatus === "rejected").length;
               const availableCrewCount = members.filter((m) => !isMemberUnavailableInWeek(m, activeWeek)).length;
 
               return (
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-                    gap: "10px",
-                  }}
-                >
+                <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                  {/* Top Metric Cards */}
                   <div
                     style={{
-                      padding: "10px 14px",
-                      background: activeWeekAbsentMembers.length > 0 || activeWeekDbLeaves.length > 0 ? "#fef2f2" : "var(--surface-soft)",
-                      borderRadius: "8px",
-                      border: "1px solid",
-                      borderColor: activeWeekAbsentMembers.length > 0 || activeWeekDbLeaves.length > 0 ? "#fecaca" : "var(--line)",
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                      gap: "10px",
                     }}
                   >
-                    <div style={{ fontSize: "0.72rem", color: activeWeekAbsentMembers.length > 0 ? "#b91c1c" : "var(--muted)", fontWeight: 700, textTransform: "uppercase" }}>
-                      Affecting Week {weekRangeLabel(activeWeek)}
+                    <div
+                      style={{
+                        padding: "10px 14px",
+                        background: affectingActiveWeekCount > 0 ? "#fef2f2" : "var(--surface-soft)",
+                        borderRadius: "8px",
+                        border: "1px solid",
+                        borderColor: affectingActiveWeekCount > 0 ? "#fecaca" : "var(--line)",
+                      }}
+                    >
+                      <div style={{ fontSize: "0.72rem", color: affectingActiveWeekCount > 0 ? "#b91c1c" : "var(--muted)", fontWeight: 700, textTransform: "uppercase" }}>
+                        Affecting Week {weekRangeLabel(activeWeek)}
+                      </div>
+                      <div style={{ fontSize: "1.25rem", fontWeight: 800, color: affectingActiveWeekCount > 0 ? "#b91c1c" : "var(--ink)", marginTop: "2px" }}>
+                        {affectingActiveWeekCount}
+                      </div>
+                      <div style={{ fontSize: "0.7rem", color: affectingActiveWeekCount > 0 ? "#dc2626" : "var(--muted)", marginTop: "2px" }}>
+                        {affectingActiveWeekCount > 0 ? "Replacement cover needed" : "Zero conflicts"}
+                      </div>
                     </div>
-                    <div style={{ fontSize: "1.25rem", fontWeight: 800, color: activeWeekAbsentMembers.length > 0 ? "#b91c1c" : "var(--ink)", marginTop: "2px" }}>
-                      {activeWeekAbsentMembers.length}
+
+                    <div
+                      style={{
+                        padding: "10px 14px",
+                        background: mcCount > 0 ? "#fff5f5" : "var(--surface-soft)",
+                        borderRadius: "8px",
+                        border: "1px solid",
+                        borderColor: mcCount > 0 ? "#fca5a5" : "var(--line)",
+                      }}
+                    >
+                      <div style={{ fontSize: "0.72rem", color: mcCount > 0 ? "#991b1b" : "var(--muted)", fontWeight: 700, textTransform: "uppercase" }}>
+                        Medical Leaves (MC)
+                      </div>
+                      <div style={{ fontSize: "1.25rem", fontWeight: 800, color: "#dc2626", marginTop: "2px" }}>
+                        {mcCount}
+                      </div>
+                      <div style={{ fontSize: "0.7rem", color: mcCount > 0 ? "#b91c1c" : "var(--muted)", marginTop: "2px" }}>
+                        Clinic / Doctor verified
+                      </div>
                     </div>
-                    <div style={{ fontSize: "0.7rem", color: activeWeekAbsentMembers.length > 0 ? "#dc2626" : "var(--muted)", marginTop: "2px" }}>
-                      {activeWeekAbsentMembers.length > 0 ? "Replacement cover needed" : "Zero conflicts"}
+
+                    <div
+                      style={{
+                        padding: "10px 14px",
+                        background: "#f0fdf4",
+                        borderRadius: "8px",
+                        border: "1px solid #bbf7d0",
+                      }}
+                    >
+                      <div style={{ fontSize: "0.72rem", color: "#166534", fontWeight: 700, textTransform: "uppercase" }}>
+                        Available Crew Ready
+                      </div>
+                      <div style={{ fontSize: "1.25rem", fontWeight: 800, color: "#15803d", marginTop: "2px" }}>
+                        {availableCrewCount} / {members.length}
+                      </div>
+                      <div style={{ fontSize: "0.7rem", color: "#166534", marginTop: "2px" }}>
+                        Ready for installation assignment
+                      </div>
                     </div>
                   </div>
 
-                  <div
-                    style={{
-                      padding: "10px 14px",
-                      background: "var(--surface-soft)",
-                      borderRadius: "8px",
-                      border: "1px solid var(--line)",
-                    }}
-                  >
-                    <div style={{ fontSize: "0.72rem", color: "var(--muted)", fontWeight: 700, textTransform: "uppercase" }}>
-                      Medical Leaves (MC)
-                    </div>
-                    <div style={{ fontSize: "1.25rem", fontWeight: 800, color: "#dc2626", marginTop: "2px" }}>
-                      {mcCount}
-                    </div>
-                    <div style={{ fontSize: "0.7rem", color: "var(--muted)", marginTop: "2px" }}>
-                      Doctor clinic verified
-                    </div>
-                  </div>
+                  {/* Section Title & Filter Pills */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px", marginTop: "4px" }}>
+                    <h4 style={{ margin: 0, fontSize: "0.95rem", fontWeight: 700, color: "var(--ink)", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <AlertCircle size={16} style={{ color: "#dc2626" }} />
+                      Personnel Absence & Medical Leave Records
+                    </h4>
 
-                  <div
-                    style={{
-                      padding: "10px 14px",
-                      background: "#f0fdf4",
-                      borderRadius: "8px",
-                      border: "1px solid #bbf7d0",
-                    }}
-                  >
-                    <div style={{ fontSize: "0.72rem", color: "#166534", fontWeight: 700, textTransform: "uppercase" }}>
-                      Available Crew Ready
-                    </div>
-                    <div style={{ fontSize: "1.25rem", fontWeight: 800, color: "#15803d", marginTop: "2px" }}>
-                      {availableCrewCount} / {members.length}
-                    </div>
-                    <div style={{ fontSize: "0.7rem", color: "#166534", marginTop: "2px" }}>
-                      Ready for assignment
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* SECTION 1: Active Absence & Replacement Alerts */}
-            <div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px", flexWrap: "wrap", gap: "8px" }}>
-                <div>
-                  <h4 style={{ margin: 0, fontSize: "0.92rem", fontWeight: 700, color: "var(--ink)", display: "flex", alignItems: "center", gap: "6px" }}>
-                    <AlertCircle size={15} style={{ color: "#dc2626" }} />
-                    Personnel Absence & Availability Status
-                  </h4>
-                </div>
-
-                {/* Filter Pills: All / Pending / Approved / Rejected */}
-                {(() => {
-                  const allAbsent = members.filter((m) => m.availability.status !== "available");
-                  const pendingCount = allAbsent.filter((m) => (m.availability.approvalStatus || "approved") === "pending").length;
-                  const approvedCount = allAbsent.filter((m) => (m.availability.approvalStatus || "approved") === "approved").length;
-                  const rejectedCount = allAbsent.filter((m) => m.availability.approvalStatus === "rejected").length;
-
-                  if (allAbsent.length === 0) return null;
-
-                  return (
+                    {/* Filter Pills */}
                     <div style={{ display: "flex", alignItems: "center", gap: "4px", background: "var(--surface-soft)", padding: "3px", borderRadius: "8px", border: "1px solid var(--line)" }}>
                       <button
                         onClick={() => setLeaveApprovalFilter("all")}
                         style={{
                           fontSize: "0.74rem",
                           fontWeight: leaveApprovalFilter === "all" ? 700 : 500,
-                          padding: "3px 8px",
+                          padding: "3px 9px",
                           borderRadius: "6px",
                           border: "none",
                           background: leaveApprovalFilter === "all" ? "var(--surface)" : "transparent",
@@ -4988,14 +5250,14 @@ export function ProjectTeamScheduleView({
                           boxShadow: leaveApprovalFilter === "all" ? "0 1px 2px rgba(0,0,0,0.06)" : "none",
                         }}
                       >
-                        All ({allAbsent.length})
+                        All ({unifiedLeaveItems.length})
                       </button>
                       <button
                         onClick={() => setLeaveApprovalFilter("pending")}
                         style={{
                           fontSize: "0.74rem",
                           fontWeight: leaveApprovalFilter === "pending" ? 700 : 500,
-                          padding: "3px 8px",
+                          padding: "3px 9px",
                           borderRadius: "6px",
                           border: "none",
                           background: leaveApprovalFilter === "pending" ? "var(--surface)" : "transparent",
@@ -5011,7 +5273,7 @@ export function ProjectTeamScheduleView({
                         style={{
                           fontSize: "0.74rem",
                           fontWeight: leaveApprovalFilter === "approved" ? 700 : 500,
-                          padding: "3px 8px",
+                          padding: "3px 9px",
                           borderRadius: "6px",
                           border: "none",
                           background: leaveApprovalFilter === "approved" ? "var(--surface)" : "transparent",
@@ -5027,7 +5289,7 @@ export function ProjectTeamScheduleView({
                         style={{
                           fontSize: "0.74rem",
                           fontWeight: leaveApprovalFilter === "rejected" ? 700 : 500,
-                          padding: "3px 8px",
+                          padding: "3px 9px",
                           borderRadius: "6px",
                           border: "none",
                           background: leaveApprovalFilter === "rejected" ? "var(--surface)" : "transparent",
@@ -5039,268 +5301,348 @@ export function ProjectTeamScheduleView({
                         Rejected ({rejectedCount})
                       </button>
                     </div>
-                  );
-                })()}
-              </div>
+                  </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: "12px" }}>
-                {members
-                  .filter((m) => {
-                    if (m.availability.status === "available") return false;
-                    const status = m.availability.approvalStatus || "approved";
-                    if (leaveApprovalFilter === "pending") return status === "pending";
-                    if (leaveApprovalFilter === "approved") return status === "approved";
-                    if (leaveApprovalFilter === "rejected") return status === "rejected";
-                    return true;
-                  })
-                  .map((m) => {
-                    const isMC = m.availability.status === "mc";
-                    const approvalStatus = m.availability.approvalStatus || "approved";
-                    const isApproved = approvalStatus === "approved";
-                    const isRejected = approvalStatus === "rejected";
-                    const isPending = approvalStatus === "pending";
-                    const isAwayInActiveWeek = isMemberUnavailableInWeek(m, activeWeek);
-                    const assignedCrew = currentWeekCrews.find(
-                      (c) =>
-                        c.supervisorId === m.id ||
-                        c.technicianIds.includes(m.id) ||
-                        c.internIds.includes(m.id)
-                    );
-
-                    return (
-                      <div
-                        key={m.id}
-                        style={{
-                          padding: "14px 16px",
-                          borderRadius: "10px",
-                          border: "1px solid",
-                          borderColor: isRejected ? "#e2e8f0" : isMC ? "#fca5a5" : "#fde68a",
-                          background: isRejected ? "#f8fafc" : isMC ? "#fff5f5" : "#fffbeb",
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: "8px",
-                          opacity: isRejected ? 0.8 : 1,
-                          transition: "all 0.15s ease",
-                        }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                            {isRejected ? (
-                              <X size={18} style={{ color: "#94a3b8" }} />
-                            ) : isMC ? (
-                              <ShieldAlert size={18} style={{ color: "#dc2626" }} />
-                            ) : (
-                              <Clock size={18} style={{ color: "#d97706" }} />
-                            )}
-                            <div>
-                              <strong style={{ fontSize: "0.95rem", color: isRejected ? "#64748b" : "var(--ink)" }}>{m.name}</strong>
-                              <span style={{ fontSize: "0.75rem", color: "var(--muted)", marginLeft: "6px" }}>
-                                ({m.role === "site_supervisor" ? "Supervisor" : m.role === "technician" ? "Technician" : "Intern"})
-                              </span>
-                            </div>
-                            <span
-                              style={{
-                                fontSize: "0.7rem",
-                                padding: "2px 6px",
-                                borderRadius: "4px",
-                                fontWeight: 700,
-                                background: isRejected ? "#f1f5f9" : isMC ? "#fee2e2" : "#fef3c7",
-                                color: isRejected ? "#64748b" : isMC ? "#991b1b" : "#92400e",
-                              }}
-                            >
-                              {isMC ? "MEDICAL CERTIFICATE (MC)" : "ON LEAVE"}
-                            </span>
-
-                            {/* Approval Status Badge */}
-                            {isApproved ? (
-                              <span
-                                style={{
-                                  fontSize: "0.68rem",
-                                  padding: "2px 6px",
-                                  borderRadius: "10px",
-                                  fontWeight: 700,
-                                  background: "#ecfdf5",
-                                  color: "#065f46",
-                                  border: "1px solid #a7f3d0",
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: "3px",
-                                }}
-                              >
-                                <Check size={11} /> Approved
-                              </span>
-                            ) : isRejected ? (
-                              <span
-                                style={{
-                                  fontSize: "0.68rem",
-                                  padding: "2px 6px",
-                                  borderRadius: "10px",
-                                  fontWeight: 700,
-                                  background: "#fef2f2",
-                                  color: "#991b1b",
-                                  border: "1px solid #fecaca",
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: "3px",
-                                }}
-                              >
-                                <X size={11} /> Rejected
-                              </span>
-                            ) : (
-                              <span
-                                style={{
-                                  fontSize: "0.68rem",
-                                  padding: "2px 6px",
-                                  borderRadius: "10px",
-                                  fontWeight: 700,
-                                  background: "#fffbeb",
-                                  color: "#92400e",
-                                  border: "1px solid #fde68a",
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: "3px",
-                                }}
-                              >
-                                ⏳ Pending
-                              </span>
-                            )}
-                          </div>
-
-                          {!readOnly && (
-                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                              {/* Approve '✓' Button */}
-                              <button
-                                onClick={() => void handleApproveLeave(m)}
-                                disabled={isApproved}
-                                title={isApproved ? "Leave is already approved" : "Approve leave request (✓)"}
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: "4px",
-                                  fontSize: "0.75rem",
-                                  fontWeight: 700,
-                                  padding: "4px 9px",
-                                  borderRadius: "6px",
-                                  border: isApproved ? "1px solid #a7f3d0" : "1px solid #059669",
-                                  background: isApproved ? "#f0fdf4" : "#059669",
-                                  color: isApproved ? "#047857" : "#ffffff",
-                                  cursor: isApproved ? "default" : "pointer",
-                                  opacity: isApproved ? 0.75 : 1,
-                                  transition: "all 0.15s ease",
-                                }}
-                              >
-                                <Check size={13} style={{ strokeWidth: 3 }} />
-                                <span>{isApproved ? "Approved" : "Approve"}</span>
-                              </button>
-
-                              {/* Reject 'X' Button */}
-                              <button
-                                onClick={() => void handleRejectLeave(m)}
-                                disabled={isRejected}
-                                title={isRejected ? "Leave is already rejected" : "Reject leave request (X)"}
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: "4px",
-                                  fontSize: "0.75rem",
-                                  fontWeight: 700,
-                                  padding: "4px 9px",
-                                  borderRadius: "6px",
-                                  border: isRejected ? "1px solid #fca5a5" : "1px solid #dc2626",
-                                  background: isRejected ? "#fef2f2" : "#dc2626",
-                                  color: isRejected ? "#b91c1c" : "#ffffff",
-                                  cursor: isRejected ? "default" : "pointer",
-                                  opacity: isRejected ? 0.75 : 1,
-                                  transition: "all 0.15s ease",
-                                }}
-                              >
-                                <X size={13} style={{ strokeWidth: 3 }} />
-                                <span>{isRejected ? "Rejected" : "Reject"}</span>
-                              </button>
-
-                              <button
-                                onClick={() => handleOpenQuickAvailability(m)}
-                                style={{
-                                  fontSize: "0.75rem",
-                                  padding: "4px 8px",
-                                  borderRadius: "6px",
-                                  border: "1px solid var(--line)",
-                                  background: "var(--surface)",
-                                  cursor: "pointer",
-                                  fontWeight: 600,
-                                }}
-                              >
-                                Update
-                              </button>
-                            </div>
-                          )}
-                        </div>
-
-                        <div style={{ fontSize: "0.82rem", color: "var(--ink)" }}>
-                          <strong>Reason:</strong> {m.availability.reason || "Not specified"}
-                        </div>
-
-                        <div style={{ fontSize: "0.8rem", color: "var(--muted)", display: "flex", alignItems: "center", gap: "6px" }}>
-                          <Calendar size={13} />
-                          Period: {m.availability.startDate || todayIso} to {m.availability.endDate || todayIso}
-                          {m.phone && (
-                            <>
-                              <span>·</span>
-                              <Phone size={12} />
-                              <span>{m.phone}</span>
-                            </>
-                          )}
-                        </div>
-
-                        <div style={{ fontSize: "0.76rem", fontWeight: 600, color: isRejected ? "#64748b" : isAwayInActiveWeek ? "#b91c1c" : "#15803d" }}>
-                          {isRejected
-                            ? `✕ Leave request rejected — personnel remains Available for scheduled installation.`
-                            : isAwayInActiveWeek
-                            ? `⚠️ Affects scheduled Week ${weekRangeLabel(activeWeek)}`
-                            : `✓ Outside active Week ${weekRangeLabel(activeWeek)}`}
-                        </div>
-
-                        {assignedCrew && isAwayInActiveWeek && !isRejected && (
-                          <div
-                            style={{
-                              marginTop: "4px",
-                              padding: "6px 10px",
-                              background: "#fee2e2",
-                              borderRadius: "6px",
-                              border: "1px solid #fca5a5",
-                              fontSize: "0.78rem",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                            }}
-                          >
-                            <span>Assigned to: <strong>{assignedCrew.name}</strong></span>
-                            <span style={{ color: "#dc2626", fontWeight: 700 }}>Cover Needed</span>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                {members.filter((m) => m.availability.status !== "available").length === 0 && (
+                  {/* Medical Leave & Absence Table */}
                   <div
                     style={{
-                      gridColumn: "1 / -1",
-                      padding: "16px 20px",
-                      background: "#f0fdf4",
-                      borderRadius: "8px",
-                      border: "1px solid #bbf7d0",
-                      textAlign: "center",
-                      color: "#16a34a",
-                      fontSize: "0.88rem",
-                      fontWeight: 600,
+                      overflowX: "auto",
+                      borderRadius: "10px",
+                      border: "1px solid var(--line)",
+                      background: "var(--surface)",
+                      boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
                     }}
                   >
-                    ✓ All {members.length} team members are currently available for Week {weekRangeLabel(activeWeek)}.
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem", textAlign: "left" }}>
+                      <thead>
+                        <tr
+                          style={{
+                            background: "var(--surface-soft)",
+                            borderBottom: "1px solid var(--line)",
+                            color: "var(--muted)",
+                            fontSize: "0.72rem",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.03em",
+                          }}
+                        >
+                          <th style={{ padding: "10px 14px", fontWeight: 700 }}>Employee</th>
+                          <th style={{ padding: "10px 14px", fontWeight: 700 }}>Type</th>
+                          <th style={{ padding: "10px 14px", fontWeight: 700 }}>Period / Dates</th>
+                          <th style={{ padding: "10px 14px", fontWeight: 700 }}>Reason / Diagnosis</th>
+                          <th style={{ padding: "10px 14px", fontWeight: 700 }}>Active Week Impact</th>
+                          <th style={{ padding: "10px 14px", fontWeight: 700, textAlign: "center" }}>Status</th>
+                          {!readOnly && (
+                            <th style={{ padding: "10px 14px", fontWeight: 700, textAlign: "right" }}>Actions</th>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredRecords.length > 0 ? (
+                          filteredRecords.map((item) => {
+                            const isApproved = item.approvalStatus === "approved";
+                            const isRejected = item.approvalStatus === "rejected";
+                            const isPending = item.approvalStatus === "pending";
+
+                            return (
+                              <tr
+                                key={item.id}
+                                style={{
+                                  borderBottom: "1px solid var(--line)",
+                                  background: isRejected
+                                    ? "#f8fafc"
+                                    : item.isMc
+                                    ? "#fffbfb"
+                                    : "transparent",
+                                  transition: "background 0.15s ease",
+                                }}
+                              >
+                                {/* Employee Info */}
+                                <td style={{ padding: "12px 14px", verticalAlign: "middle" }}>
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                      <strong style={{ fontSize: "0.88rem", color: isRejected ? "#64748b" : "var(--ink)" }}>
+                                        {item.employeeName}
+                                      </strong>
+                                      <span
+                                        style={{
+                                          fontSize: "0.68rem",
+                                          color: "var(--muted)",
+                                          background: "var(--surface-soft)",
+                                          padding: "1px 6px",
+                                          borderRadius: "4px",
+                                          border: "1px solid var(--line)",
+                                          fontWeight: 600,
+                                        }}
+                                      >
+                                        {item.role}
+                                      </span>
+                                    </div>
+                                    {item.phone && (
+                                      <div style={{ fontSize: "0.72rem", color: "var(--muted)", display: "flex", alignItems: "center", gap: "4px" }}>
+                                        <Phone size={11} />
+                                        <span>{item.phone}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+
+                                {/* Type (MC vs Leave) */}
+                                <td style={{ padding: "12px 14px", verticalAlign: "middle" }}>
+                                  {item.isMc ? (
+                                    <span
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: "4px",
+                                        background: isRejected ? "#f1f5f9" : "#fee2e2",
+                                        color: isRejected ? "#64748b" : "#991b1b",
+                                        border: isRejected ? "1px solid #cbd5e1" : "1px solid #fca5a5",
+                                        padding: "3px 8px",
+                                        borderRadius: "6px",
+                                        fontWeight: 700,
+                                        fontSize: "0.73rem",
+                                      }}
+                                    >
+                                      <ShieldAlert size={12} />
+                                      Medical Leave (MC)
+                                    </span>
+                                  ) : (
+                                    <span
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: "4px",
+                                        background: isRejected ? "#f1f5f9" : "#fef3c7",
+                                        color: isRejected ? "#64748b" : "#92400e",
+                                        border: isRejected ? "1px solid #cbd5e1" : "1px solid #fde68a",
+                                        padding: "3px 8px",
+                                        borderRadius: "6px",
+                                        fontWeight: 700,
+                                        fontSize: "0.73rem",
+                                      }}
+                                    >
+                                      <Calendar size={12} />
+                                      {item.typeLabel}
+                                    </span>
+                                  )}
+                                </td>
+
+                                {/* Period / Duration */}
+                                <td style={{ padding: "12px 14px", verticalAlign: "middle", whiteSpace: "nowrap" }}>
+                                  <div style={{ fontWeight: 600, fontSize: "0.82rem", color: isRejected ? "#64748b" : "var(--ink)" }}>
+                                    {item.startDate} {item.endDate !== item.startDate ? `→ ${item.endDate}` : ""}
+                                  </div>
+                                  <div style={{ fontSize: "0.72rem", color: "var(--muted)", marginTop: "2px" }}>
+                                    {item.durationDays} {item.durationDays === 1 ? "day" : "days"}
+                                  </div>
+                                </td>
+
+                                {/* Reason / Note */}
+                                <td style={{ padding: "12px 14px", verticalAlign: "middle" }}>
+                                  <span style={{ fontSize: "0.82rem", color: isRejected ? "#64748b" : "var(--ink)", fontWeight: 500 }}>
+                                    {item.reason}
+                                  </span>
+                                </td>
+
+                                {/* Active Week Impact */}
+                                <td style={{ padding: "12px 14px", verticalAlign: "middle" }}>
+                                  {isRejected ? (
+                                    <span style={{ fontSize: "0.75rem", color: "#64748b" }}>
+                                      ✕ Rejected — Personnel available
+                                    </span>
+                                  ) : item.isAwayInActiveWeek ? (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                                      <span
+                                        style={{
+                                          fontSize: "0.74rem",
+                                          color: "#b91c1c",
+                                          fontWeight: 700,
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: "3px",
+                                        }}
+                                      >
+                                        <AlertCircle size={12} />
+                                        Affects Week {weekRangeLabel(activeWeek)}
+                                      </span>
+                                      {item.assignedCrew && (
+                                        <span style={{ fontSize: "0.7rem", color: "#dc2626" }}>
+                                          Assigned to: <strong>{item.assignedCrew.name}</strong> (Cover needed)
+                                        </span>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <span
+                                      style={{
+                                        fontSize: "0.74rem",
+                                        color: "#16a34a",
+                                        fontWeight: 600,
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: "3px",
+                                      }}
+                                    >
+                                      <Check size={12} />
+                                      Outside active week
+                                    </span>
+                                  )}
+                                </td>
+
+                                {/* Status Badge */}
+                                <td style={{ padding: "12px 14px", verticalAlign: "middle", textAlign: "center" }}>
+                                  {isApproved ? (
+                                    <span
+                                      style={{
+                                        fontSize: "0.72rem",
+                                        padding: "3px 8px",
+                                        borderRadius: "999px",
+                                        fontWeight: 700,
+                                        background: "#ecfdf5",
+                                        color: "#065f46",
+                                        border: "1px solid #a7f3d0",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: "3px",
+                                      }}
+                                    >
+                                      <Check size={11} /> Approved
+                                    </span>
+                                  ) : isRejected ? (
+                                    <span
+                                      style={{
+                                        fontSize: "0.72rem",
+                                        padding: "3px 8px",
+                                        borderRadius: "999px",
+                                        fontWeight: 700,
+                                        background: "#fef2f2",
+                                        color: "#991b1b",
+                                        border: "1px solid #fecaca",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: "3px",
+                                      }}
+                                    >
+                                      <X size={11} /> Rejected
+                                    </span>
+                                  ) : (
+                                    <span
+                                      style={{
+                                        fontSize: "0.72rem",
+                                        padding: "3px 8px",
+                                        borderRadius: "999px",
+                                        fontWeight: 700,
+                                        background: "#fffbeb",
+                                        color: "#92400e",
+                                        border: "1px solid #fde68a",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: "3px",
+                                      }}
+                                    >
+                                      ⏳ Pending
+                                    </span>
+                                  )}
+                                </td>
+
+                                {/* Action Buttons */}
+                                {!readOnly && (
+                                  <td style={{ padding: "12px 14px", verticalAlign: "middle", textAlign: "right" }}>
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                                      {/* Approve button '✓' */}
+                                      <button
+                                        onClick={() => void handleApproveLeave(item)}
+                                        disabled={isApproved}
+                                        title={isApproved ? "Leave is already approved" : "Approve leave request (✓)"}
+                                        style={{
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: "3px",
+                                          fontSize: "0.74rem",
+                                          fontWeight: 700,
+                                          padding: "4px 8px",
+                                          borderRadius: "6px",
+                                          border: isApproved ? "1px solid #a7f3d0" : "1px solid #059669",
+                                          background: isApproved ? "#f0fdf4" : "#059669",
+                                          color: isApproved ? "#047857" : "#ffffff",
+                                          cursor: isApproved ? "default" : "pointer",
+                                          opacity: isApproved ? 0.75 : 1,
+                                          transition: "all 0.15s ease",
+                                        }}
+                                      >
+                                        <Check size={12} style={{ strokeWidth: 3 }} />
+                                        <span>{isApproved ? "Approved" : "Approve"}</span>
+                                      </button>
+
+                                      {/* Reject button 'X' */}
+                                      <button
+                                        onClick={() => void handleRejectLeave(item)}
+                                        disabled={isRejected}
+                                        title={isRejected ? "Leave is already rejected" : "Reject leave request (X)"}
+                                        style={{
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: "3px",
+                                          fontSize: "0.74rem",
+                                          fontWeight: 700,
+                                          padding: "4px 8px",
+                                          borderRadius: "6px",
+                                          border: isRejected ? "1px solid #fca5a5" : "1px solid #dc2626",
+                                          background: isRejected ? "#fef2f2" : "#dc2626",
+                                          color: isRejected ? "#b91c1c" : "#ffffff",
+                                          cursor: isRejected ? "default" : "pointer",
+                                          opacity: isRejected ? 0.75 : 1,
+                                          transition: "all 0.15s ease",
+                                        }}
+                                      >
+                                        <X size={12} style={{ strokeWidth: 3 }} />
+                                        <span>{isRejected ? "Rejected" : "Reject"}</span>
+                                      </button>
+
+                                      {item.member && (
+                                        <button
+                                          onClick={() => handleOpenQuickAvailability(item.member!)}
+                                          style={{
+                                            fontSize: "0.74rem",
+                                            padding: "4px 8px",
+                                            borderRadius: "6px",
+                                            border: "1px solid var(--line)",
+                                            background: "var(--surface)",
+                                            cursor: "pointer",
+                                            fontWeight: 600,
+                                          }}
+                                        >
+                                          Update
+                                        </button>
+                                      )}
+                                    </div>
+                                  </td>
+                                )}
+                              </tr>
+                            );
+                          })
+                        ) : (
+                          <tr>
+                            <td
+                              colSpan={readOnly ? 6 : 7}
+                              style={{
+                                padding: "24px 20px",
+                                textAlign: "center",
+                                color: "#16a34a",
+                                fontSize: "0.88rem",
+                                fontWeight: 600,
+                                background: "#f0fdf4",
+                              }}
+                            >
+                              ✓ No leave or absence records found matching current filter. All {members.length} team members are available.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
-                )}
-              </div>
-            </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
