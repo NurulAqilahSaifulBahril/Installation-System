@@ -45,7 +45,13 @@ export function middleware(request: NextRequest) {
   }
 
   const loginUrl = request.nextUrl.clone();
-  loginUrl.pathname = "/login";
+  // On the public Railway deployment the bare link is shared as the
+  // Inventory Management site, so a signed-out visitor to "/" lands on
+  // /warehouse instead of the admin login. The desktop app and localhost
+  // keep the Scheduling login; /login stays reachable everywhere.
+  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
+  loginUrl.pathname =
+    pathname === "/" && host.endsWith(".up.railway.app") ? "/warehouse" : "/login";
   loginUrl.search = "";
   return withAppId(NextResponse.redirect(loginUrl));
 }
