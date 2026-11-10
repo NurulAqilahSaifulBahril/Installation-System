@@ -199,7 +199,7 @@ def parse_slot_date(slot_text, default_year='2026', current_week=''):
 
     # 4. Try "Mon 16", "Tue 17", "Wed 18", "Thu 19", "Fri 20", etc. resolved against current_week
     if current_week:
-        wm = re.search(r'(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\s*[~\-]\s*(\d{1,2})\/(\d{1,2})\/(\d{2,4})', current_week)
+        wm = re.search(r'(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\s*[~\-]\s*(\d{1,4})\/(\d{1,2})\/(\d{2,4})', current_week)
         if wm:
             d1, m1, y1, d2, m2, y2 = wm.groups()
             y2_full = int(f"20{y2}" if len(y2) == 2 else y2)
@@ -245,7 +245,7 @@ def parse_slot_date(slot_text, default_year='2026', current_week=''):
 
     return None
 
-def parse_crew_subheader(a_text, section_all_members, section_all_cars):
+def parse_crew_subheader(a_text, section_all_members, section_all_cars, c_text=''):
     if not a_text:
         return None
     s = a_text.strip()
@@ -286,7 +286,7 @@ def parse_crew_subheader(a_text, section_all_members, section_all_cars):
             'supervisor': None,
         }
 
-    # 3. Labeled or multi-line subheaders (Site supervisor: ..., Team/Technician: ..., Car: ...)
+    # 3. Labeled or multi-line subheaders (Site supervisor: ..., Team/Team Member/Technician: ..., Car: ...)
     lines = [l.strip() for l in s.split('\n') if l.strip()]
     sup = None
     members = []
@@ -294,19 +294,52 @@ def parse_crew_subheader(a_text, section_all_members, section_all_cars):
     matched_any = False
 
     for line in lines:
+        if re.match(r'^skylift\s*:', line, re.I):
+            matched_any = True
+            continue
         m_sup = re.match(r'^site\s*supervisor\s*:\s*(.+)$', line, re.I)
         if m_sup:
             sup = m_sup.group(1).strip()
             matched_any = True
             continue
-        m_team = re.match(r'^(?:team|technician)\s*:\s*(.+)$', line, re.I)
+        m_team = re.match(r'^(?:team(?:\s*member)?|technician)\s*:\s*(.+)$', line, re.I)
         if m_team:
-            members.extend([clean_member(x) for x in m_team.group(1).split(',') if clean_member(x)])
+            for raw_mem in m_team.group(1).split(','):
+                raw_mem = raw_mem.strip()
+                if not raw_mem:
+                    continue
+                if re.search(r'\(\s*site\s*supervisor\s*\)', raw_mem, re.I):
+                    sup_name = re.sub(r'\(\s*site\s*supervisor\s*\)', '', raw_mem, flags=re.I).strip()
+                    if sup_name:
+                        sup = clean_member(sup_name)
+                cl = clean_member(raw_mem)
+                if cl:
+                    members.append(cl)
             matched_any = True
             continue
         m_car = re.match(r'^car\s*:\s*(.+)$', line, re.I)
         if m_car:
             cars.extend([x.strip() for x in m_car.group(1).split(',') if x.strip()])
+            matched_any = True
+            continue
+        if re.search(r'\bcar\s*:', line, re.I):
+            for seg in line.split(','):
+                seg_clean = re.sub(r'^.*?\bcar\s*:\s*', '', seg.strip(), flags=re.I).strip()
+                if seg_clean:
+                    cars.append(seg_clean)
+            matched_any = True
+            continue
+        m_name_plate = re.match(
+            r'^([A-Za-z][A-Za-z\s]{1,20}?)\s*-\s*([A-Z]{1,3}\s*\d{1,4}(?:\s*[A-Z])?(?:\s*\([^)]+\))?)\s*$',
+            line,
+        )
+        if m_name_plate:
+            mem_name = clean_member(m_name_plate.group(1))
+            car_plate = m_name_plate.group(2).strip()
+            if mem_name:
+                members.append(mem_name)
+            if car_plate:
+                cars.append(car_plate)
             matched_any = True
             continue
         if re.match(r'^(?:Van|Myvi|Avanza|Hilux|Alza|Lorry)\b', line, re.I) and not re.search(r'\b(mon|tue|wed|thu|fri|sat|sun)\b', line, re.I):
@@ -318,6 +351,11 @@ def parse_crew_subheader(a_text, section_all_members, section_all_cars):
             matched_any = True
 
     if matched_any:
+        if c_text and c_text.strip():
+            for extra_car in c_text.split(','):
+                ec = extra_car.strip()
+                if ec and ec not in cars:
+                    cars.append(ec)
         for mem in members:
             if mem not in section_all_members:
                 section_all_members.append(mem)
@@ -349,11 +387,15 @@ def parse_customer_cell(cell_text):
     remarks = []
 
     for l in lines:
-        if l.startswith('-') or l.startswith('•') or l.startswith('*') or l.startswith('➡️') or l.startswith('▶️'):
+        l_stripped = re.sub(r'^[\s\U0001f300-\U0001faff\u2600-\u27bf\ufe0f➡️▶️•*]+', '', l).strip()
+        l_no_brackets = re.sub(r'\[[^\]]*\]|\([^\)]*\)', '', l_stripped).strip(' ,;:-')
+        if not l_no_brackets:
             remarks.append(l)
-        elif re.match(r'^(pre\s*book|request|to schedule|material|wiring on|site supervisor|pending install batt)', l, re.I):
+        elif l.startswith('-') or l.startswith('•') or l.startswith('*') or l.startswith('➡️') or l.startswith('▶️'):
             remarks.append(l)
-        elif re.match(r'^\[.*\]$', l):
+        elif re.match(r'^(pre\s*book|request|to schedule|material|wiring on|site supervisor|pending install batt)', l_stripped, re.I):
+            remarks.append(l)
+        elif re.match(r'^\[.*\]\s*,\s*check\b', l_stripped, re.I):
             remarks.append(l)
         elif not name_line:
             name_line = l
@@ -383,7 +425,8 @@ def parse_customer_cell(cell_text):
     clean_name = re.sub(r'\(ADD ON PANEL[^\)]*\)', '', clean_name, flags=re.I)
     clean_name = re.sub(r'\(TOP UP CASE\)', '', clean_name, flags=re.I)
     clean_name = re.sub(r'^pre\s*book\s*\d*[\/\d]*', '', clean_name, flags=re.I)
-    clean_name = re.sub(r'\[.*?\]', '', clean_name).strip()
+    clean_name = re.sub(r'\[.*?\]', '', clean_name)
+    clean_name = re.sub(r'^[\s\U0001f300-\U0001faff\u2600-\u27bf\ufe0f➡️▶️•*\-,:;]+', '', clean_name).strip()
 
     return {
         'raw': s,
@@ -655,6 +698,8 @@ def sync_schedule():
     current_cars = []
     section_all_members = []
     section_all_cars = []
+    section_counter = 0
+    last_slot_info = None
 
     parsed_items = []
     seen_team_date_count = {}
@@ -662,13 +707,14 @@ def sync_schedule():
 
     for r in sheet_rows:
         row_text = ' '.join(str(v) for v in r['cells'].values())
-        week_match = re.search(r'INSTALLATION\s*~\s*Week\s*:\s*(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*[~\-]\s*(\d{1,2}\/\d{1,2}\/\d{4})', row_text, re.I)
+        week_match = re.search(r'INSTALLATION\s*~\s*Week\s*:\s*(\d{1,4}\/\d{1,2}(?:\/\d{2,4})?)\s*[~\-]\s*(\d{1,4}\/\d{1,2}\/\d{4})', row_text, re.I)
         if week_match:
             current_week = week_match.group(0)
             current_members = []
             current_cars = []
             section_all_members = []
             section_all_cars = []
+            last_slot_info = None
             continue
 
         a = r['cells'].get(f"A{r['row']}", '')
@@ -682,35 +728,54 @@ def sync_schedule():
         j = r['cells'].get(f"J{r['row']}", '')
         k = r['cells'].get(f"K{r['row']}", '')
 
-        if re.search(r'^Team\s*\d+', (a or '').strip(), re.I):
+        if re.search(r'^Team\s*(?:\d+|\b(?:JB|KL|Melaka|Kluang|A|B)\b)', (a or '').strip(), re.I):
             current_team = a.strip()
             current_install = re.sub(r'Install(?:\s*&\s*Wiring)?\s*:\s*', '', b or '', flags=re.I).strip()
             current_wiring = re.sub(r'Wiring\s*:\s*', '', c or '', flags=re.I).strip()
             sup_cand = (f_val or '').strip()
-            if not sup_cand and e_val and not re.search(r'site\s*supervisor', e_val, re.I):
+            if not sup_cand and e_val and not re.search(r'site\s*supervisor\s*:\s*$', e_val.strip(), re.I):
                 sup_cand = e_val.strip()
-            current_supervisor = re.sub(r'^site\s*supervisor\s*:\s*', '', sup_cand, flags=re.I).strip()
+            if not sup_cand and d and re.search(r'site\s*supervisor\s*:\s*\S+', d, re.I):
+                sup_cand = d.strip()
+            current_supervisor = re.sub(r'^.*?site\s*supervisor\s*:\s*', '', sup_cand, flags=re.I).strip()
             current_members = []
             current_cars = []
             section_all_members = []
             section_all_cars = []
+            section_counter += 1
+            last_slot_info = None
             continue
 
         if not current_week:
+            continue
+
+        if a and re.match(r'^leave\b', a.strip(), re.I):
+            last_slot_info = None
+            continue
+
+        if a and not (b or '').strip():
+            sub_crew = parse_crew_subheader(a, section_all_members, section_all_cars, c)
+            if sub_crew:
+                current_members = list(sub_crew.get('members') or [])
+                current_cars = list(sub_crew.get('cars') or [])
+                if sub_crew.get('supervisor'):
+                    current_supervisor = sub_crew['supervisor']
+                section_counter += 1
+            last_slot_info = None
             continue
 
         m_yr = re.search(r'\/(\d{4})', current_week)
         default_yr = m_yr.group(1) if m_yr else '2026'
 
         slot_info = parse_slot_date(a, default_year=default_yr, current_week=current_week)
-        if not slot_info and a and not b:
-            sub_crew = parse_crew_subheader(a, section_all_members, section_all_cars)
-            if sub_crew:
-                current_members = list(sub_crew.get('members') or [])
-                current_cars = list(sub_crew.get('cars') or [])
-                if sub_crew.get('supervisor'):
-                    current_supervisor = sub_crew['supervisor']
-                continue
+        if slot_info:
+            last_slot_info = dict(slot_info)
+        elif not (a or '').strip() and (b or '').strip() and last_slot_info:
+            if not re.match(r'^\d+(\.\d+)?$', (c or '').strip()) and (
+                (c or '').strip() or (d or '').strip() or (f_val or '').strip() or (g or '').strip() or (j or '').strip()
+            ):
+                slot_info = dict(last_slot_info)
+
         if not slot_info or not b:
             continue
 
@@ -885,6 +950,7 @@ def sync_schedule():
             'supervisor': current_supervisor,
             'wiringMembers': list(current_members),
             'cars': list(current_cars),
+            'sectionIndex': section_counter,
             'slot': slot_info,
             'customer': cust_info,
             'jobId': job_id,
@@ -939,8 +1005,11 @@ def sync_schedule():
     existing_removals = list(schedule_draft.get('removals', []))
     team_crews = dict(schedule_draft.get('teamCrews') or {})
 
-    # Clean replacement of Google Sheet arranged groups (prefixed with arr-)
-    kept_groups = [g for g in existing_groups if not g.get('id', '').startswith('arr-')]
+    # Clean replacement of Google Sheet arranged groups (prefixed with arr- or legacy grp-)
+    kept_groups = [
+        g for g in existing_groups
+        if not g.get('id', '').startswith('arr-') and not g.get('id', '').startswith('grp-')
+    ]
 
     new_groups = []
     used_group_ids = set(kept.get('id') for kept in kept_groups)
@@ -986,6 +1055,7 @@ def sync_schedule():
             'teamLabel': team,
             'wiringMembers': item.get('wiringMembers') or [],
             'cars': item.get('cars') or [],
+            'sectionIndex': item.get('sectionIndex'),
             'remark': cust['remarks'],
         }
         new_groups.append(grp)

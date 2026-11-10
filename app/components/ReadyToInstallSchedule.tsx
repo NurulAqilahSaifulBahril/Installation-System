@@ -1725,6 +1725,9 @@ export default function ReadyToInstallSchedule({
           const crewSigOf = (g?: ScheduleGroup | null) =>
             g
               ? [
+                  g.sectionIndex !== undefined && g.sectionIndex !== null
+                    ? String(g.sectionIndex)
+                    : "",
                   (g.installationTeam || "").trim(),
                   (g.wiringTeam || "").trim(),
                   (g.supervisors || []).map((s) => s.trim()).filter(Boolean).join(", "),

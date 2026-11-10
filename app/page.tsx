@@ -178,6 +178,10 @@ type InstallationGroup = {
   wiringMembers?: string[];
   // Vehicles the crew takes out — more than one is normal ("Van + Myvi").
   cars?: string[];
+  // Distinct header section index from the Google Sheet so multiple header
+  // blocks for the same team in the same week stay separate even when crew
+  // fields match.
+  sectionIndex?: number;
   // Retired — see SkyliftBooking and migrateGroupSkylift. Never written to
   // by anything still in the app; only ever read from an older saved group
   // on its way to being folded into remark.
@@ -6624,6 +6628,9 @@ function InstallationGroupsView({
           blockKey: [
             weekBounds(group.installationDate)?.start ?? "",
             (group.teamLabel ?? "").trim(),
+            group.sectionIndex !== undefined && group.sectionIndex !== null
+              ? String(group.sectionIndex)
+              : "",
             (group.installationTeam ?? "").trim(),
             (group.wiringTeam ?? "").trim(),
             (group.supervisors ?? []).map((s) => s.trim()).filter(Boolean).join(","),

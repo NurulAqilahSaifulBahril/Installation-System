@@ -45,6 +45,7 @@ export type ScheduleGroup = {
   teamLabel?: string;
   wiringMembers?: string[];
   cars?: string[];
+  sectionIndex?: number;
 };
 
 export type ScheduleWeekAssignment = {
