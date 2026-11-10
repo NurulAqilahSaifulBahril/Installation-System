@@ -2,8 +2,9 @@ import { NextResponse } from 'next/server';
 import { execFile } from 'child_process';
 import path from 'path';
 import { promisify } from 'util';
-import { AuthError, requireAdmin } from '@/lib/auth';
+import { AuthError, requireUser } from '@/lib/auth';
 import { invalidateJobsCache } from '@/lib/jobs-cache';
+import { invalidateOpsStateCache } from '@/lib/ops-state-cache';
 import { readOpsState } from '@/lib/ops-store';
 
 const execFileAsync = promisify(execFile);
@@ -12,7 +13,7 @@ export const dynamic = 'force-dynamic';
 
 export async function POST() {
   try {
-    await requireAdmin();
+    await requireUser();
   } catch (error) {
     const status = error instanceof AuthError ? error.status : 401;
     return NextResponse.json(
@@ -20,7 +21,7 @@ export async function POST() {
         success: false,
         error:
           status === 403
-            ? 'View-only access: only admins can sync schedule.'
+            ? 'Not allowed to sync schedule.'
             : 'Not signed in.',
       },
       { status },
@@ -42,8 +43,9 @@ export async function POST() {
     console.log('[Schedule Sync API] Output:', stdout);
     if (stderr) console.warn('[Schedule Sync API] Stderr:', stderr);
 
-    // Invalidate memory cache so next /api/jobs load immediately gets fresh synced data
+    // Invalidate memory caches so next /api/jobs and /api/ops-state loads immediately get fresh synced data
     invalidateJobsCache();
+    invalidateOpsStateCache();
 
     // Parse JSON result from script output
     let result = null;

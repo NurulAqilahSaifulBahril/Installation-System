@@ -222,8 +222,16 @@ export function useInstallationQueue({
       if (job && job.customerAvailabilityStatus === "complete") return;
       if (p.weekStart && p.weekStart >= frontWeek) weekSet.add(p.weekStart);
     });
+    booked.forEach((b) => {
+      const job = jobById.get(b.jobId);
+      if (job && job.customerAvailabilityStatus === "complete") return;
+      if (b.date && b.date >= frontWeek) {
+        const ws = weekStartOf(b.date);
+        if (ws >= frontWeek) weekSet.add(ws);
+      }
+    });
     return Array.from(weekSet).sort();
-  }, [frontWeek, secondWeek, effectiveDraft.placements, jobById]);
+  }, [frontWeek, secondWeek, effectiveDraft.placements, booked, jobById]);
 
   const schedules = useMemo(
     () =>

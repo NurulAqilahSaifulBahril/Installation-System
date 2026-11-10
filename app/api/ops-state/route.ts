@@ -2,7 +2,13 @@ import { NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/audit";
 import { AuthError, requireAdmin } from "@/lib/auth";
 import { readOpsState, writeOpsState, type OpsState } from "@/lib/ops-store";
-import { getCached, getInflight, setCached, setInflight } from "@/lib/ops-state-cache";
+import {
+  getCached,
+  getInflight,
+  invalidateOpsStateCache,
+  setCached,
+  setInflight,
+} from "@/lib/ops-state-cache";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +28,11 @@ function describe(error: unknown) {
   return error instanceof Error ? error.message : "Unknown database error.";
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+  if (url.searchParams.get("refresh") === "1") {
+    invalidateOpsStateCache();
+  }
   const cached = getCached();
   if (cached) return NextResponse.json(cached);
 

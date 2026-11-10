@@ -1715,6 +1715,21 @@ export default function ReadyToInstallSchedule({
               day.entries.reduce((sum, entry) => sum + (entry.jobId ? (entry.slot === "full" ? 2 : 1) : 0), 0),
             0,
           );
+          const weekGroupIds = new Set<string>();
+          team.days.forEach((day) => {
+            day.entries.forEach((entry) => {
+              if (entry.groupId) weekGroupIds.add(entry.groupId);
+            });
+          });
+          const weekBookedGroup = groups.find((g) => weekGroupIds.has(g.id));
+          const draftCrew = scheduleDraft.teamCrews?.[team.team];
+          const displayInstallTeam = draftCrew?.installationTeam ?? weekBookedGroup?.installationTeam ?? "";
+          const displayWiringTeam = draftCrew?.wiringTeam ?? weekBookedGroup?.wiringTeam ?? "";
+          const displaySupervisor =
+            draftCrew?.siteSupervisor ??
+            (weekBookedGroup?.supervisors && weekBookedGroup.supervisors.length > 0
+              ? weekBookedGroup.supervisors.join(", ")
+              : "");
           return (
             <div className={`table-wrap rti-team rti-team-${team.team}`} key={`${currentWeekStart}-${team.team}`}>
               <table>
@@ -1758,7 +1773,7 @@ export default function ReadyToInstallSchedule({
                               type="text"
                               list={`install-teams-list-${team.team}`}
                               className="rti-crew-input"
-                              value={scheduleDraft.teamCrews?.[team.team]?.installationTeam ?? ""}
+                              value={displayInstallTeam}
                               placeholder="Assign installation team..."
                               onChange={(e) => updateCrewField(team.team, "installationTeam", e.target.value)}
                               onBlur={(e) => handleCrewBlur(team.team, "installationTeam", e.target.value)}
@@ -1782,7 +1797,7 @@ export default function ReadyToInstallSchedule({
                               type="text"
                               list={`wiring-teams-list-${team.team}`}
                               className="rti-crew-input"
-                              value={scheduleDraft.teamCrews?.[team.team]?.wiringTeam ?? ""}
+                              value={displayWiringTeam}
                               placeholder="Assign wiring team..."
                               onChange={(e) => updateCrewField(team.team, "wiringTeam", e.target.value)}
                               onBlur={(e) => handleCrewBlur(team.team, "wiringTeam", e.target.value)}
@@ -1820,7 +1835,7 @@ export default function ReadyToInstallSchedule({
                                   border: "none",
                                 }}
                                  onClick={() => {
-                                  const current = scheduleDraft.teamCrews?.[team.team]?.siteSupervisor ?? "";
+                                  const current = displaySupervisor;
                                   if (!current) {
                                     const el = document.getElementById(`crew-sup-${currentWeekStart}-${team.team}`) as HTMLInputElement;
                                     el?.focus();
@@ -1837,7 +1852,7 @@ export default function ReadyToInstallSchedule({
                               type="text"
                               list={`supervisors-list-${team.team}`}
                               className="rti-crew-input"
-                              value={scheduleDraft.teamCrews?.[team.team]?.siteSupervisor ?? ""}
+                              value={displaySupervisor}
                               placeholder="e.g. Kaijie, Martin Hing..."
                               onChange={(e) => updateCrewField(team.team, "siteSupervisor", e.target.value)}
                               onBlur={(e) => handleCrewBlur(team.team, "siteSupervisor", e.target.value)}

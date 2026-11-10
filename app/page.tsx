@@ -2028,7 +2028,10 @@ function applyJobUpdates(
         packageName: "",
         packageType: "Residential",
         installationDate: group.installationDate || null,
-        customerAvailabilityStatus: "complete",
+        customerAvailabilityStatus:
+          group.installationDate && group.installationDate >= todayIso
+            ? "not_set"
+            : "complete",
         preferredInstallationDate: group.installationDate || null,
         secondPreferredInstallationDate: null,
         preferredInstallationTime: (typeof update.preferredInstallationTime === "string" && update.preferredInstallationTime) || "09:00",
@@ -3621,7 +3624,7 @@ export default function DashboardPage() {
     // a failure there is the banner already on screen repeating itself, not
     // news. Without it every attempt would re-raise a notice the user had just
     // dismissed.
-    async (seedIfMissing: boolean, silent = false) => {
+    async (seedIfMissing: boolean, silent = false, fresh = false) => {
       const local: SharedOpsState = {
         groups: readLocalJson(GROUPS_STORAGE_KEY, []),
         deliveryRuns: readLocalJson(DELIVERY_RUNS_STORAGE_KEY, []),
@@ -3634,9 +3637,12 @@ export default function DashboardPage() {
         scheduleDraft: readLocalJson(SCHEDULE_DRAFT_STORAGE_KEY, EMPTY_DRAFT),
       };
       try {
-        const response = await fetchWithRetry("/api/ops-state", {
-          cache: "no-store",
-        });
+        const response = await fetchWithRetry(
+          fresh ? "/api/ops-state?refresh=1" : "/api/ops-state",
+          {
+            cache: "no-store",
+          },
+        );
         if (!response.ok) {
           throw new Error(
             await readError(response, "Shared planning data is unavailable."),
@@ -3774,7 +3780,7 @@ export default function DashboardPage() {
       // Refresh is also how someone recovers from an outage, so retry the
       // shared store first. It sets jobUpdatesRef, which the merge below needs.
       if (manual) {
-        await loadSharedState(false);
+        await loadSharedState(false, false, true);
       }
       // cache: "no-store" only defeats the browser cache. The route keeps its
       // own short-lived one, so an explicit "check for new jobs" has to ask for
@@ -3812,7 +3818,6 @@ export default function DashboardPage() {
   }, [loadSharedState]);
 
   const handleSyncGoogleSchedule = useCallback(async () => {
-    if (isReadOnlyRef.current) { setNotice("View-only access: only admins can sync schedule."); return; }
     setSyncingSchedule(true);
     setNotice("Pulling latest schedule from Google Sheet...");
     try {
@@ -5155,6 +5160,7 @@ export default function DashboardPage() {
               onSaveJob={saveJob}
               todayIso={todayIso}
               readOnly={isReadOnly}
+              proposeTeamCrews={scheduleDraft.teamCrews}
             />
           </div>
         )}
@@ -5195,7 +5201,7 @@ export default function DashboardPage() {
                 setPlanningFilter("arranged");
                 handleSelectView("groups");
               }}
-              onSyncGoogleSheet={isReadOnly ? undefined : handleSyncGoogleSchedule}
+              onSyncGoogleSheet={handleSyncGoogleSchedule}
               syncingSheet={syncingSchedule}
               lastScheduleSync={lastScheduleSyncTime}
             />
@@ -5234,7 +5240,7 @@ export default function DashboardPage() {
               workCategoryFilter={workCategoryFilter}
               onWorkCategoryFilterChange={setWorkCategoryFilter}
               onSelectJob={(jobId) => setSelectedId(jobId)}
-              onSyncGoogleSheet={isReadOnly ? undefined : handleSyncGoogleSchedule}
+              onSyncGoogleSheet={handleSyncGoogleSchedule}
               syncingSheet={syncingSchedule}
               lastScheduleSync={lastScheduleSyncTime}
             />
@@ -5718,7 +5724,7 @@ export default function DashboardPage() {
                 onTogglePin={togglePinJob}
                 workCategoryFilter={workCategoryFilter}
                 onWorkCategoryFilterChange={setWorkCategoryFilter}
-                onSyncGoogleSheet={isReadOnly ? undefined : handleSyncGoogleSchedule}
+                onSyncGoogleSheet={handleSyncGoogleSchedule}
                 syncingSheet={syncingSchedule}
                 lastScheduleSync={lastScheduleSyncTime}
               />
