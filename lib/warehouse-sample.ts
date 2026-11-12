@@ -233,20 +233,6 @@ export const ORDER_MODELS: WarehouseModel[] = [
 
 // ── Stock Details page data ────────────────────────────────────────────
 
-export type WarehouseStockSummary = {
-  warehouse: string;
-  panels: number;
-  inverters: number;
-  batteries: number;
-};
-
-export type StockModelTrendPoint = {
-  month: string;
-  panels: number;
-  inverters: number;
-  batteries: number;
-};
-
 export type StockDetailItem = {
   id: string;
   category: "panel" | "inverter" | "battery" | "other";
@@ -258,14 +244,6 @@ export type StockDetailItem = {
   qty: number;
   highlight?: boolean;
 };
-
-// Current stock totals by warehouse. Panel and battery totals are
-// estimates — the source sheet only has a full count for inverters.
-export const WAREHOUSE_STOCK_SUMMARY: WarehouseStockSummary[] = [];
-
-// End-of-month stock levels across all warehouses. Gives a sense
-// of whether inventory is building or depleting.
-export const STOCK_MODEL_TREND: StockModelTrendPoint[] = [];
 
 // ── Stock Balance & Transaction Log ────────────────────────────────────
 
@@ -281,22 +259,22 @@ export type CategoryStockBalance = {
 
 export const WAREHOUSE_BALANCES: Record<"all" | "JB" | "KL", CategoryStockBalance[]> = {
   all: [
-    { id: "inverter", label: "Inverter", onHand: 442, toInstall: 365, available: 77, toBuy: 48 },
     { id: "panel", label: "Panel", onHand: 770, toInstall: 620, available: 150, toBuy: 0 },
+    { id: "inverter", label: "Inverter", onHand: 442, toInstall: 365, available: 77, toBuy: 48 },
     { id: "battery", label: "Battery", onHand: 143, toInstall: 118, available: 25, toBuy: 15 },
     { id: "mounting", label: "Mounting Structure", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
     { id: "electrical", label: "Electrical Accessories", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
   ],
   JB: [
-    { id: "inverter", label: "Inverter", onHand: 245, toInstall: 210, available: 35, toBuy: 30 },
     { id: "panel", label: "Panel", onHand: 450, toInstall: 380, available: 70, toBuy: 0 },
+    { id: "inverter", label: "Inverter", onHand: 245, toInstall: 210, available: 35, toBuy: 30 },
     { id: "battery", label: "Battery", onHand: 95, toInstall: 80, available: 15, toBuy: 10 },
     { id: "mounting", label: "Mounting Structure", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
     { id: "electrical", label: "Electrical Accessories", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
   ],
   KL: [
-    { id: "inverter", label: "Inverter", onHand: 197, toInstall: 155, available: 42, toBuy: 18 },
     { id: "panel", label: "Panel", onHand: 320, toInstall: 240, available: 80, toBuy: 0 },
+    { id: "inverter", label: "Inverter", onHand: 197, toInstall: 155, available: 42, toBuy: 18 },
     { id: "battery", label: "Battery", onHand: 48, toInstall: 38, available: 10, toBuy: 5 },
     { id: "mounting", label: "Mounting Structure", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
     { id: "electrical", label: "Electrical Accessories", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
@@ -377,6 +355,9 @@ export type StockOutScheduleData = {
   // these yet, so they stay empty and show as "—" until a source exists.
   // Source invoice id, used to load the job's drawings on demand.
   jobSourceId?: string;
+  // TNB meter type (Single phase / Three phase) and the inverter model, shown under Customer Details.
+  tnbMeter?: string;
+  inverterModel?: string;
   nemApplicationNo?: string;
   nemStatus?: string;
   nemApplicationDate?: string;
@@ -438,28 +419,7 @@ export const STOCK_DETAIL_ITEMS: StockDetailItem[] = [];
 
 // ── Stock by Customer page data ────────────────────────────────────────
 
-export type CustomerAllocation = {
-  category: "panel" | "inverter" | "battery";
-  model: string;
-  serialCode: string;
-  qty: number;
-};
 
-export type CustomerStock = {
-  id: string;
-  customerName: string;
-  warehouse: "JB" | "KL";
-  allocations: CustomerAllocation[];
-};
-
-// Equipment allocated (reserved or delivered) per customer order.
-// Serial codes are per-unit identifiers assigned at dispatch.
-// Allocations reuse the serial shown for the same model on the Stock Details page.
-function serialFor(model: string): string {
-  return STOCK_DETAIL_ITEMS.find((item) => item.model === model)?.serialCode ?? "";
-}
-
-export const CUSTOMER_STOCK_ALLOCATIONS: CustomerStock[] = [];
 
 export function generateSupplierSerialList(tx: StockTransaction): SupplierSerialUnit[] {
   const invoice = tx.invoice;
@@ -702,6 +662,19 @@ function mountingParts(names: string[]): MountingPart[] {
   return names.map((name) => ({ name, jb: null, kl: null }));
 }
 
+// The electrical accessories the warehouse loads, from the staff's electric item sheet.
+export const ELECTRICAL_GROUPS: { label: string; parts: string[] }[] = [
+  { label: "Breaker", parts: ["2P 32A", "2P 40A", "2P 63A", "3P 32A", "3P 40A", "3P 63A"] },
+  { label: "PV Meter", parts: ["2P PV METER", "4P PV METER"] },
+  { label: "DB Box", parts: ["8.5 WAY", "10.5 WAY", "15~19 WAY"] },
+  { label: "SPD", parts: ["2P SPD", "4P SPD"] },
+  { label: "Ballast", parts: ["1*2 Landscape", "1*3 Landscape", "1*2 Portrait", "1*3 Portrait"] },
+  { label: "EV Charger", parts: ["EV Wallbox 11kW", "EV Wallbox 7kW"] },
+  { label: "Battery", parts: ["SAJ EK60-B3-16LV Battery", "ATS"] },
+  { label: "Selco Meter", parts: ["SINGLE PHASE 80A", "THREE PHASE 100A", "THREE PHASE 250A"] },
+  { label: "EV Charger Breaker", parts: ["SINGLE PHASE 40A RCBO", "THREE PHASE 40A RCBO"] },
+];
+
 export const MOUNTING_SYSTEMS: MountingSystem[] = [
   {
     id: "mibet",
@@ -724,10 +697,6 @@ export const MOUNTING_SYSTEMS: MountingSystem[] = [
         ]),
       },
       { label: "Clamp", parts: mountingParts(["Mid clamp", "Earthing clip", "End clamp", "Bolt & nut"]) },
-      {
-        label: "Ballast system",
-        parts: mountingParts(["3 panels portrait", "2 panels portrait", "3 panels landscape", "2 panels landscape"]),
-      },
     ],
   },
   {

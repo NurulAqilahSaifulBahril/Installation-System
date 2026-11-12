@@ -87,15 +87,13 @@ export function estimateMounting(input: MountingEstimateInput): MountingEstimate
 
   if (input.roof === "flat") {
     if (input.system === "winstar") {
-      notes.push("WINSTAR has no ballast system in its list; enter the flat-roof parts by hand.");
+      notes.push("Flat-roof parts are not in the list; enter them by hand.");
       return { parts, notes };
     }
-    // No staff data for flat roofs: ballast frames carrying 3 panels, adjusted by hand.
-    parts[input.orientation === "landscape" ? "3 panels landscape" : "3 panels portrait"] = Math.ceil(panels / 3);
     parts["Mid clamp"] = mid;
     parts["End clamp"] = end;
     parts["Earthing clip"] = mid;
-    notes.push("Flat roof: no staff data yet. Frames are suggested as 3-panel units; adjust if the drawing differs.");
+    notes.push("Flat roof: no staff data yet. Only the clamps are suggested; enter the rest by hand.");
     return { parts, notes };
   }
 

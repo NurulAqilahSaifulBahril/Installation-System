@@ -711,11 +711,11 @@ button.typeCard {
 }
 
 .tab:hover {
-  color: var(--ink);
+  color: #1e3a8a;
 }
 
 .tabActive {
-  background: #0f172a;
+  background: #1e3a8a;
   color: #ffffff;
   font-weight: 600;
 }
@@ -1872,7 +1872,10 @@ button.typeCard {
 
 .txSummaryRow {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* However many cards there are (now 2 on Stock Transactions, 1 on Stock Transfer), they
+     share the full width, so the row is as wide as the table below it. */
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 4px;
   margin-bottom: 14px;
   align-items: stretch;
@@ -1888,7 +1891,6 @@ button.typeCard {
 
 @media (min-width: 900px) {
   .txSummaryRow {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px;
   }
 }
@@ -4661,16 +4663,18 @@ button.typeCard {
   color: #000;
 }
 
-.prepTitle {
+/* .screen h1 (specificity 0,1,1) was winning over a bare .prepTitle and forcing the margin to 4px */
+.prepSheet .prepTitle {
   font-size: 20px;
-  margin: 0 0 12px;
+  font-weight: 700;
+  margin: 0 0 40px;
   text-align: center;
 }
 
 .prepSummary {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 28px;
+  flex-direction: column;
+  gap: 6px;
   margin-bottom: 16px;
   font-size: 14px;
 }
@@ -5044,4 +5048,113 @@ button.typeCard {
   min-width: 104px;
   text-align: center;
   justify-content: center;
+}
+
+/* Admin tab: every box title and every box use one format */
+.adminLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #000;
+}
+
+.scannerInput.adminField,
+.bankingAccountSelect.adminField {
+  /* one size for every box: same height, full width of its column. flex: none stops the
+     text boxes shrinking to their content inside the column layout. */
+  flex: none;
+  height: 42px;
+  border-radius: 8px;
+  width: 100%;
+  padding: 0 12px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  color: #000;
+  letter-spacing: normal;
+  box-sizing: border-box;
+}
+
+/* Home buttons: the label on the left, today's count on the right */
+.homeButton {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.homeButtonCount {
+  min-width: 28px;
+  padding: 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft, var(--surface));
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Report: one block per material */
+.prepBlock {
+  margin: 14px 0;
+  font-size: 14px;
+  line-height: 1.9;
+  color: #000;
+}
+
+/* Stock Out Verification report: laid out as an A4 sheet (210 mm wide) so the tables fit the page */
+.a4Report {
+  width: 210mm;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 12mm;
+  font-size: 12px;
+  color: #000;
+}
+
+.a4Report table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.a4Report th,
+.a4Report td {
+  padding: 3px 6px;
+  overflow-wrap: anywhere;
+}
+
+.a4Report th.num,
+.a4Report td.num {
+  width: 18mm;
+  text-align: right;
+}
+
+.a4Report tr {
+  break-inside: avoid;
+}
+
+.a4Report img,
+.a4Report iframe {
+  max-width: 100%;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 10mm;
+  }
+
+  .a4Report {
+    width: auto;
+    padding: 0;
+    max-height: none;
+    overflow: visible;
+    box-shadow: none;
+    border: none;
+  }
 }

@@ -28,6 +28,8 @@ export type WarehouseScheduledJob = {
   panelQuantity: number | null;
   panelRating: number | null;
   powerOutput: string;
+  // "Single phase", "Three phase" or "Unknown": decides the TNB meter type.
+  phase: string;
   inverterText: string;
   batteryText: string;
   // Every invoice item line the scheduling system carries, for the warehouse to sort.
@@ -105,6 +107,7 @@ export async function GET(request: Request) {
       panelQuantity: job.panelQuantity,
       panelRating: job.panelRating,
       powerOutput: job.powerOutput,
+      phase: job.phase,
       inverterText: job.inverterBattery || job.derivedInverterModel || job.inverter,
       batteryText: job.batteryDetails || job.battery,
       sourceId: job.id,
