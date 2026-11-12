@@ -714,6 +714,12 @@ button.typeCard {
   color: #1e3a8a;
 }
 
+/* The active tab keeps white text on hover too (on a phone a tapped tab stays "hovered", which made it dark blue on dark blue) */
+.tab.tabActive,
+.tab.tabActive:hover {
+  color: #ffffff;
+}
+
 .tabActive {
   background: #1e3a8a;
   color: #ffffff;
