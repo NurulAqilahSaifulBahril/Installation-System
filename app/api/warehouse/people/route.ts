@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AuthError, requireAdmin } from "@/lib/auth";
+import { AuthError } from "@/lib/auth";
+import { requireAdmin } from "@/lib/warehouse-auth";
 import { querySource } from "@/lib/source-api";
 
 export const dynamic = "force-dynamic";

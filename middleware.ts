@@ -38,7 +38,12 @@ export function middleware(request: NextRequest) {
   if (isPublic) return withAppId(NextResponse.next());
 
   const hasSession = Boolean(request.cookies.get(SESSION_COOKIE)?.value);
-  if (hasSession) return withAppId(NextResponse.next());
+  // The Inventory Management sign-in has its own cookie. It is let through only for the warehouse
+  // routes and a job's drawings; each route still checks it against the database.
+  const hasWarehouseSession =
+    Boolean(request.cookies.get("wh_session")?.value) &&
+    (pathname.startsWith("/api/warehouse/") || /^\/api\/jobs\/[^/]+\/files$/.test(pathname));
+  if (hasSession || hasWarehouseSession) return withAppId(NextResponse.next());
 
   if (pathname.startsWith("/api/")) {
     return withAppId(NextResponse.json({ error: "Not signed in." }, { status: 401 }));

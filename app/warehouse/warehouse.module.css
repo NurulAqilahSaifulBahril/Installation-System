@@ -5158,3 +5158,54 @@ button.typeCard {
     border: none;
   }
 }
+
+/* Home: Stock In / Stock Out / Stock Transfer buttons: same length as the balance cards, half height */
+.homeButtons {
+  width: 100%;
+  gap: 5px;
+}
+
+.homeButtons .homeButton {
+  padding: 7px 8px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.homeButtons .homeButtonCount {
+  min-width: 18px;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+/* Phone: the day buttons (Previous, date, Next, Today) stay on one row */
+@media (max-width: 640px) {
+  .balanceHeaderRow > div:has(> .txWeekNav),
+  .balanceHeaderRow .txWeekNav {
+    width: 100%;
+  }
+
+  .balanceHeaderRow .txWeekNav {
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+
+  .balanceHeaderRow .txWeekNav .txWeekBadge {
+    display: none;
+  }
+
+  .balanceHeaderRow .txWeekNav button {
+    min-width: 0;
+    padding: 6px 8px;
+    font-size: 12px;
+    white-space: nowrap;
+    flex: none;
+  }
+
+  .balanceHeaderRow .txWeekNav input[type="date"] {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    width: auto !important;
+    font-size: 12px;
+    padding: 0 4px;
+  }
+}

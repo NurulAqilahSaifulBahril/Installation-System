@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AuthError, requireUser } from "@/lib/auth";
+import { AuthError } from "@/lib/auth";
+import { requireUser } from "@/lib/warehouse-auth";
 import { fetchJobFiles } from "@/lib/source-api";
 
 export const dynamic = "force-dynamic";

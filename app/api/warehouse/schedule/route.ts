@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
-import { AuthError, requireUser } from "@/lib/auth";
+import { GET as getJobs } from "@/app/api/jobs/route";
+import { AuthError } from "@/lib/auth";
+import { requireUser } from "@/lib/warehouse-auth";
 import { malaysiaToday } from "@/lib/dates";
 import { fetchInvoiceItemLines } from "@/lib/source-api";
 import type { InstallationJob } from "@/lib/types";
@@ -62,12 +64,9 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Not signed in." }, { status });
   }
 
-  // Reuse the jobs pipeline (and its short cache) with the caller's own cookie.
-  const origin = new URL(request.url).origin;
-  const response = await fetch(`${origin}/api/jobs`, {
-    headers: { cookie: request.headers.get("cookie") ?? "" },
-    cache: "no-store",
-  });
+  // Reuse the jobs pipeline (and its short cache) 
+  // Called directly (not over HTTP), so a warehouse session needs no Scheduling cookie.
+  const response = await getJobs(new Request(new URL("/api/jobs", request.url)));
   if (!response.ok) {
     return NextResponse.json({ error: "Could not load installation jobs." }, { status: 502 });
   }

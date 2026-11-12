@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
-import { AuthError, requireUser } from "@/lib/auth";
+import { GET as getJobs } from "@/app/api/jobs/route";
+import { AuthError } from "@/lib/auth";
+import { requireUser } from "@/lib/warehouse-auth";
 import { malaysiaToday } from "@/lib/dates";
 import { readOpsState } from "@/lib/ops-store";
 import type { InstallationJob } from "@/lib/types";
@@ -88,13 +90,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Not signed in." }, { status });
   }
 
-  const origin = new URL(request.url).origin;
+  // The jobs list is called directly (not over HTTP), so a warehouse session needs no Scheduling cookie.
   const [{ state }, jobsResponse] = await Promise.all([
     readOpsState(),
-    fetch(`${origin}/api/jobs`, {
-      headers: { cookie: request.headers.get("cookie") ?? "" },
-      cache: "no-store",
-    }),
+    getJobs(new Request(new URL("/api/jobs", request.url))),
   ]);
   if (!jobsResponse.ok) {
     return NextResponse.json({ error: "Could not load installation jobs." }, { status: 502 });

@@ -82,14 +82,16 @@ export default function WarehousePage() {
       setError("Enter the 6-digit OTP.");
       return;
     }
-    // Greet by the username registered for this phone number in Inventory Management.
+    // Sign in for real: a registered phone number gets a warehouse session (the data routes need it),
+    // and the same answer tells us the username to greet and the access level.
     let username = "";
     let access = "";
     try {
-      const response = await fetch("/api/public/warehouse-greeting", {
+      const response = await fetch("/api/public/warehouse-login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: trimmed }),
+        credentials: "same-origin",
+        body: JSON.stringify({ phone: trimmed, otp: code.trim() }),
       });
       if (response.ok) {
         const data = (await response.json()) as { username?: string | null; access?: string | null };
@@ -97,7 +99,7 @@ export default function WarehousePage() {
         access = data.access ?? "";
       }
     } catch {
-      // No greeting name: the page still opens.
+      // No session: the page still opens, without the live data.
     }
     window.sessionStorage.setItem(SESSION_KEY, trimmed);
     window.sessionStorage.setItem(NAME_KEY, username);
@@ -109,6 +111,7 @@ export default function WarehousePage() {
   }
 
   function signOut() {
+    void fetch("/api/public/warehouse-logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
     window.sessionStorage.removeItem(SESSION_KEY);
     window.sessionStorage.removeItem(NAME_KEY);
     window.sessionStorage.removeItem(ACCESS_KEY);
@@ -5714,12 +5717,13 @@ function HomeTab({
         <>
       {/* Warehouse filter selector for Home */}
       {/* Same All / JB / KL buttons as Stock Details */}
-      <div className={styles.filterRow}>
+      <div className={styles.filterRow} style={{ width: "50%", minWidth: "170px" }}>
         {(["all", "JB", "KL"] as const).map((value) => (
           <button
             key={value}
             type="button"
             className={`${styles.filterBtn} ${whFilter === value ? styles.filterActive : ""}`}
+            style={{ fontSize: "11px", padding: "3px 4px" }}
             onClick={() => setWhFilter(value)}
           >
             {value === "all" ? "All" : value}

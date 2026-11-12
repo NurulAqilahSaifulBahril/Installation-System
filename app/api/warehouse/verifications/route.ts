@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { AuthError, requireUser } from "@/lib/auth";
+import { AuthError } from "@/lib/auth";
+import { requireUser } from "@/lib/warehouse-auth";
 import { queryProxy } from "@/lib/proxy-db";
 import { toTitleCase } from "@/lib/title-case";
 import { ensureAuditTable, ensureVerificationsTable, MATERIALS } from "@/lib/warehouse-verifications";

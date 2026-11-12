@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AuthError, requireUser } from "@/lib/auth";
+import { AuthError } from "@/lib/auth";
+import { requireUser } from "@/lib/warehouse-auth";
 import { queryProxy } from "@/lib/proxy-db";
 import { ensureDoFilesTable, INLINE_SAFE_TYPES } from "@/lib/warehouse-do-files";
 
