@@ -261,27 +261,19 @@ export type StockDetailItem = {
 
 // Current stock totals by warehouse. Panel and battery totals are
 // estimates — the source sheet only has a full count for inverters.
-export const WAREHOUSE_STOCK_SUMMARY: WarehouseStockSummary[] = [
-  { warehouse: "JB", panels: 450, inverters: 245, batteries: 95 },
-  { warehouse: "KL", panels: 320, inverters: 197, batteries: 48 },
-];
+export const WAREHOUSE_STOCK_SUMMARY: WarehouseStockSummary[] = [];
 
 // End-of-month stock levels across all warehouses. Gives a sense
 // of whether inventory is building or depleting.
-export const STOCK_MODEL_TREND: StockModelTrendPoint[] = [
-  { month: "May", panels: 620, inverters: 340, batteries: 110 },
-  { month: "Jun", panels: 580, inverters: 360, batteries: 125 },
-  { month: "Jul", panels: 710, inverters: 390, batteries: 130 },
-  { month: "Aug", panels: 800, inverters: 410, batteries: 150 },
-  { month: "Sep", panels: 770, inverters: 442, batteries: 143 },
-];
+export const STOCK_MODEL_TREND: StockModelTrendPoint[] = [];
 
 // ── Stock Balance & Transaction Log ────────────────────────────────────
 
 export type CategoryStockBalance = {
-  id: "inverter" | "panel" | "battery";
+  id: "inverter" | "panel" | "battery" | "mounting" | "electrical";
   label: string;
-  onHand: number;
+  // null = no real count yet (shown as "—").
+  onHand: number | null;
   toInstall: number;
   available: number;
   toBuy: number;
@@ -292,16 +284,22 @@ export const WAREHOUSE_BALANCES: Record<"all" | "JB" | "KL", CategoryStockBalanc
     { id: "inverter", label: "Inverter", onHand: 442, toInstall: 365, available: 77, toBuy: 48 },
     { id: "panel", label: "Panel", onHand: 770, toInstall: 620, available: 150, toBuy: 0 },
     { id: "battery", label: "Battery", onHand: 143, toInstall: 118, available: 25, toBuy: 15 },
+    { id: "mounting", label: "Mounting Structure", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
+    { id: "electrical", label: "Electrical Accessories", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
   ],
   JB: [
     { id: "inverter", label: "Inverter", onHand: 245, toInstall: 210, available: 35, toBuy: 30 },
     { id: "panel", label: "Panel", onHand: 450, toInstall: 380, available: 70, toBuy: 0 },
     { id: "battery", label: "Battery", onHand: 95, toInstall: 80, available: 15, toBuy: 10 },
+    { id: "mounting", label: "Mounting Structure", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
+    { id: "electrical", label: "Electrical Accessories", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
   ],
   KL: [
     { id: "inverter", label: "Inverter", onHand: 197, toInstall: 155, available: 42, toBuy: 18 },
     { id: "panel", label: "Panel", onHand: 320, toInstall: 240, available: 80, toBuy: 0 },
     { id: "battery", label: "Battery", onHand: 48, toInstall: 38, available: 10, toBuy: 5 },
+    { id: "mounting", label: "Mounting Structure", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
+    { id: "electrical", label: "Electrical Accessories", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
   ],
 };
 
@@ -349,6 +347,8 @@ export type SupplierSerialUnit = {
 };
 
 export type StockOutScheduleData = {
+  // True when copied from the real scheduling system (not sample data).
+  live?: boolean;
   jobId: string;
   customerName: string;
   customerPhone?: string;
@@ -373,6 +373,15 @@ export type StockOutScheduleData = {
   sedaStatus?: string;
   insuranceAppliedDate?: string;
   agentName?: string;
+  // NEM (net energy metering) application. The scheduling system does not carry
+  // these yet, so they stay empty and show as "—" until a source exists.
+  // Source invoice id, used to load the job's drawings on demand.
+  jobSourceId?: string;
+  nemApplicationNo?: string;
+  nemStatus?: string;
+  nemApplicationDate?: string;
+  nemApprovalDate?: string;
+  tnbAccountNo?: string;
 };
 
 export type StockTransferData = {
@@ -389,11 +398,23 @@ export type StockTransferData = {
   notes?: string;
 };
 
+// One material line inside a customer's dispatch. Panels, inverters and batteries
+// carry serial numbers and are verified by scanning; mounting structure and
+// electrical accessories are bulk items, verified by checking them off.
+export type StockOutLine = {
+  category: "panel" | "inverter" | "battery" | "mounting" | "electrical";
+  model: string;
+  // null = quantity not known (bulk items have no bill of materials yet).
+  qty: number | null;
+  serialised: boolean;
+  serialCode?: string;
+};
+
 export type StockTransaction = {
   id: string;
   time: string;
   type: StockTransactionType;
-  category: "panel" | "inverter" | "battery" | "other";
+  category: "panel" | "inverter" | "battery" | "mounting" | "electrical" | "other";
   model: string;
   serialCode: string;
   qty: number;
@@ -405,511 +426,15 @@ export type StockTransaction = {
   invoice?: StockInInvoiceData;
   schedule?: StockOutScheduleData;
   transfer?: StockTransferData;
+  // A stock out is one customer's job; its materials are listed here.
+  lines?: StockOutLine[];
 };
 
-export const STOCK_TRANSACTIONS: StockTransaction[] = [
-  {
-    id: "tx-1",
-    time: "Today, 10:30 AM",
-    type: "in",
-    category: "panel",
-    model: "Jinko 620W",
-    serialCode: "E4FXJ425G217507196124815",
-    qty: 300,
-    warehouse: "KL",
-    reference: "DO-2026-9921",
-    party: "Jinko Solar & SAJ Electric Dist.",
-    status: "To Verify",
-    invoice: {
-      invoiceNo: "INV-2026-9921",
-      invoiceDate: "16 Oct 2026",
-      expectedDelivery: "16 Oct 2026, 10:30 AM (Today)",
-      poNumber: "PO-MY-4412",
-      supplierName: "Jinko Solar Technology Sdn Bhd / SAJ Electric Authorized Dist.",
-      invoicedQty: 300,
-      receivedQty: 300,
-      palletCount: 10,
-      unitPrice: "RM 395.00",
-      notes: "Direct container delivery from Port Klang warehouse. Seal #8812. Detailed 300 serial numbers provided on attached Delivery Order (DO) packing sheet.",
-      items: [
-        {
-          skuId: "JKM-620N-72HL4-BDV",
-          model: "Jinko Tiger Neo 620W N-Type",
-          description: "Bifacial Dual-Glass PV Modules (10 Pallets × 30 pcs per pallet)",
-          category: "panel",
-          invoicedQty: 300,
-          unit: "pcs",
-          barcode: "E4FXJ425G217507196124815",
-          palletBarcode: "PAL-JKM-001",
-          palletQty: 30,
-          sampleSerials: [
-            "E4FXJ425G217507196124815",
-            "E4FXJ425G217507196124816",
-            "E4FXJ425G217507196124817",
-          ],
-          unitPrice: "RM 395.00",
-        },
-      ],
-    },
-  },
-  {
-    id: "tx-2",
-    time: "Today, 09:15 AM",
-    type: "out",
-    category: "inverter",
-    model: "R5-7K-S2",
-    serialCode: "HDT2103J2613ESA06996",
-    qty: 1,
-    warehouse: "JB",
-    reference: "JOB #1042 · Tan Residence",
-    party: "Installer Team Alpha",
-    status: "To Verify",
-    schedule: {
-      jobId: "INS-1042",
-      customerName: "Tan Residence (Mr. Tan Wei Ming)",
-      customerPhone: "+60 12-788 1920",
-      customerAddress: "No. 18, Jalan Indah 12, Bukit Indah, 79100 Iskandar Puteri, Johor",
-      scheduledDate: "17 Oct 2026 (Tomorrow)",
-      installerTeam: "Team Alpha (Lead: Azman)",
-      systemPackage: "12.8 kWp Residential Solar System",
-      allocatedQty: 1,
-      dispatchedQty: 1,
-      notes: "Pick up by installer van before 8:30 AM. Customer requested inverter test on site.",
-      systemSizeKwp: "12.80",
-      dcAcRatio: "1.28",
-      systemPrice: "RM 38,500.00",
-      panelBrand: "Jinko Tiger Neo",
-      noOfPanel: 20,
-      panelPowerWatts: 620,
-      inverterBrand: "SAJ Electric",
-      inverterNo: "1",
-      inverterSize: "10.0 kW",
-      totalInverterPower: "10.0 kW",
-      payment: "100% Paid",
-      sedaStatus: "Approved",
-      insuranceAppliedDate: "11 Oct 2026",
-      agentName: "DENISE NG PEI SING",
-    },
-  },
-  {
-    id: "tx-3",
-    time: "Today, 08:45 AM",
-    type: "out",
-    category: "panel",
-    model: "Jinko 620W",
-    serialCode: "E4FXJ425G217507196111636",
-    qty: 14,
-    warehouse: "JB",
-    reference: "JOB #1039 · Lok Suet Lee",
-    party: "Installer Team Bravo",
-    status: "To Verify",
-    schedule: {
-      jobId: "INS-1039",
-      customerName: "Lok Suet Lee",
-      customerPhone: "+60 16-332 9901",
-      customerAddress: "No. 5, Jalan Molek 2/1, Taman Molek, 81100 Johor Bahru",
-      scheduledDate: "16 Oct 2026 (Today)",
-      installerTeam: "Team Bravo (Lead: Suresh)",
-      systemPackage: "8.68 kWp Residential Solar System",
-      allocatedQty: 14,
-      dispatchedQty: 14,
-      notes: "Scheduled for morning installation slot. Panels loaded on Team Bravo lorry.",
-      systemSizeKwp: "8.68",
-      dcAcRatio: "1.24",
-      systemPrice: "RM 26,900.00",
-      panelBrand: "Jinko Solar",
-      noOfPanel: 14,
-      panelPowerWatts: 620,
-      inverterBrand: "SAJ Electric",
-      inverterNo: "1",
-      inverterSize: "7.0 kW",
-      totalInverterPower: "7.0 kW",
-      payment: "100% Paid",
-      sedaStatus: "Approved",
-      insuranceAppliedDate: "08 Oct 2026",
-      agentName: "OLIVIER KOH CONG LEE",
-    },
-  },
-  {
-    id: "tx-4",
-    time: "Yesterday, 04:20 PM",
-    type: "in",
-    category: "battery",
-    model: "B3-16.0-LV",
-    serialCode: "ESB3-160LV",
-    qty: 10,
-    warehouse: "JB",
-    reference: "DO-2026-8840",
-    party: "FoxESS Malaysia",
-    status: "To Verify",
-    invoice: {
-      invoiceNo: "INV-FX-8840",
-      invoiceDate: "15 Oct 2026",
-      expectedDelivery: "15 Oct 2026, 04:00 PM (Yesterday)",
-      poNumber: "PO-MY-4390",
-      supplierName: "FoxESS Power (Malaysia) Sdn Bhd",
-      invoicedQty: 10,
-      receivedQty: 10,
-      palletCount: 2,
-      unitPrice: "RM 14,200.00",
-      notes: "Heavy shipment. Shelved on Bay B-04. Firmware 2.1 pre-loaded.",
-      items: [
-        {
-          skuId: "SKU-BAT-B3-16",
-          model: "B3-16.0-LV",
-          description: "FoxESS 16.0 kWh Low Voltage Storage Battery Pack",
-          category: "battery",
-          invoicedQty: 10,
-          unit: "units",
-          barcode: "ESB3-160LV",
-          palletBarcode: "PLT-BAT-B3-02",
-          palletQty: 5,
-          sampleSerials: [
-            "ESB3-160LV-SN01",
-            "ESB3-160LV-SN02",
-            "ESB3-160LV-SN03",
-            "ESB3-160LV-SN04",
-            "ESB3-160LV-SN05",
-          ],
-          unitPrice: "RM 14,200.00",
-        },
-      ],
-    },
-  },
-  {
-    id: "tx-5",
-    time: "Yesterday, 02:00 PM",
-    type: "transfer",
-    category: "panel",
-    model: "Astronergy 625W",
-    serialCode: "E4FXJ425G217507196137402",
-    qty: 4,
-    warehouse: "KL",
-    reference: "TR-2026-0041 · KL ➔ JB",
-    party: "Warehouse Transfer",
-    status: "Inspected",
-    issueRemark: "1 unit packaging crushed in transport",
-    transfer: {
-      transferNo: "TR-2026-0041",
-      fromWarehouse: "KL",
-      toWarehouse: "JB",
-      requestedBy: "Wei Hao (Ops Admin)",
-      driverName: "Inter-Warehouse Lorry B (Driver: Ramesh)",
-      vehiclePlate: "WXQ 8821",
-      dispatchedDate: "15 Oct 2026, 02:00 PM",
-      dispatchedQty: 4,
-      receivedQty: 4,
-      notes: "Inter-warehouse stock balancing for upcoming South Region commercial jobs.",
-    },
-  },
-  {
-    id: "tx-6",
-    time: "Yesterday, 11:30 AM",
-    type: "out",
-    category: "inverter",
-    model: "R6-8K-T2",
-    serialCode: "HDT2103J2613ESA07270",
-    qty: 1,
-    warehouse: "KL",
-    reference: "JOB #1035 · Woo Pek Lai",
-    party: "Installer Team Delta",
-    status: "Verified",
-    schedule: {
-      jobId: "INS-1035",
-      customerName: "Woo Pek Lai",
-      customerPhone: "+60 19-221 4488",
-      customerAddress: "22, Jalan Kiara 3, Mont Kiara, 50480 Kuala Lumpur",
-      scheduledDate: "15 Oct 2026 (Completed)",
-      installerTeam: "Team Delta (Lead: Kevin)",
-      systemPackage: "10 kWp Three-Phase Inverter Setup",
-      allocatedQty: 1,
-      dispatchedQty: 1,
-      notes: "Verified by Wei Hao on dispatch. Installation completed successfully.",
-    },
-  },
-  {
-    id: "tx-7",
-    time: "14 Oct, 03:50 PM",
-    type: "in",
-    category: "inverter",
-    model: "M2-1.8K-S4",
-    serialCode: "HDT2103J2613ESA07407",
-    qty: 25,
-    warehouse: "JB",
-    reference: "DO-2026-7731",
-    party: "Deye Tech Supplier",
-    status: "To Verify",
-    invoice: {
-      invoiceNo: "INV-DEYE-7731",
-      invoiceDate: "14 Oct 2026",
-      expectedDelivery: "14 Oct 2026, 03:30 PM",
-      poNumber: "PO-MY-4355",
-      supplierName: "Deye Malaysia Official Dist.",
-      invoicedQty: 25,
-      receivedQty: 25,
-      palletCount: 1,
-      unitPrice: "RM 1,480.00",
-      notes: "Microinverters boxed in master cartons of 5. Unopened and intact.",
-      items: [
-        {
-          skuId: "SKU-INV-M2-18",
-          model: "M2-1.8K-S4",
-          description: "Deye 1.8kW Single Phase 4-MPPT Microinverter",
-          category: "inverter",
-          invoicedQty: 25,
-          unit: "units",
-          barcode: "HDT2103J2613ESA07407",
-          palletBarcode: "CTN-DEYE-M2-BOX5",
-          palletQty: 5,
-          sampleSerials: [
-            "HDT2103J2613ESA07407",
-            "HDT2103J2613ESA07408",
-            "HDT2103J2613ESA07409",
-          ],
-          unitPrice: "RM 1,480.00",
-        },
-      ],
-    },
-  },
-  {
-    id: "tx-8",
-    time: "14 Oct, 01:10 PM",
-    type: "out",
-    category: "battery",
-    model: "B3-5.0-LV",
-    serialCode: "ESB3-50LV",
-    qty: 2,
-    warehouse: "JB",
-    reference: "JOB #1031 · Raj Kumar",
-    party: "Installer Team Alpha",
-    status: "Verified",
-    schedule: {
-      jobId: "INS-1031",
-      customerName: "Raj Kumar",
-      customerPhone: "+60 17-662 1099",
-      customerAddress: "45, Jalan Sutera 4, Taman Sutera Utama, 81300 Skudai, Johor",
-      scheduledDate: "14 Oct 2026 (Completed)",
-      installerTeam: "Team Alpha (Lead: Azman)",
-      systemPackage: "5.0 kWh Modular Battery Expansion",
-      allocatedQty: 2,
-      dispatchedQty: 2,
-      notes: "Customer signed handover receipt. System tested and commissioning verified.",
-    },
-  },
-  {
-    id: "tx-9",
-    time: "13 Oct, 05:00 PM",
-    type: "in",
-    category: "other",
-    model: "Single Phase ATS",
-    serialCode: "ATS-1P",
-    qty: 15,
-    warehouse: "KL",
-    reference: "DO-2026-6540",
-    party: "Schneider Electric",
-    status: "To Verify",
-    invoice: {
-      invoiceNo: "INV-SCH-6540",
-      invoiceDate: "13 Oct 2026",
-      expectedDelivery: "13 Oct 2026, 04:30 PM",
-      poNumber: "PO-MY-4310",
-      supplierName: "Schneider Electric Malaysia",
-      invoicedQty: 15,
-      receivedQty: 15,
-      palletCount: 1,
-      unitPrice: "RM 680.00",
-      notes: "Automatic Transfer Switch units for backup battery configurations.",
-      items: [
-        {
-          skuId: "SKU-ACC-ATS-1P",
-          model: "Single Phase ATS",
-          description: "Schneider 63A Single Phase Automatic Transfer Switch Unit",
-          category: "other",
-          invoicedQty: 15,
-          unit: "units",
-          barcode: "ATS-1P",
-          palletBarcode: "CTN-ATS-1P-BOX",
-          palletQty: 5,
-          sampleSerials: ["ATS-1P-SN01", "ATS-1P-SN02", "ATS-1P-SN03"],
-          unitPrice: "RM 680.00",
-        },
-      ],
-    },
-  },
-  {
-    id: "tx-10",
-    time: "13 Oct, 10:15 AM",
-    type: "out",
-    category: "panel",
-    model: "Jinko 650W",
-    serialCode: "E4FXJ425G217507196124815",
-    qty: 24,
-    warehouse: "JB",
-    reference: "JOB #1028 · Lee Chong Wei",
-    party: "Installer Team Charlie",
-    status: "To Verify",
-    schedule: {
-      jobId: "INS-1028",
-      customerName: "Lee Chong Wei",
-      customerPhone: "+60 12-555 8899",
-      customerAddress: "88, Jalan Senai Utama, 81400 Senai, Johor",
-      scheduledDate: "13 Oct 2026",
-      installerTeam: "Team Charlie (Lead: Hafiz)",
-      systemPackage: "15.6 kWp High Capacity Solar System",
-      allocatedQty: 24,
-      dispatchedQty: 24,
-      notes: "Commercial rooftop install. Pallet unloaded onto transport flatbed.",
-    },
-  },
-  {
-    id: "tx-11",
-    time: "Today, 11:30 AM",
-    type: "transfer",
-    category: "inverter",
-    model: "M2-1.8K-S4",
-    serialCode: "HDT2103J2613ESA07407",
-    qty: 5,
-    warehouse: "JB",
-    reference: "TR-2026-0042 · JB ➔ KL",
-    party: "Warehouse Transfer",
-    status: "To Verify",
-    transfer: {
-      transferNo: "TR-2026-0042",
-      fromWarehouse: "JB",
-      toWarehouse: "KL",
-      requestedBy: "Wei Hao (Ops Admin)",
-      driverName: "Inter-City Transport Alpha (Driver: Muthu)",
-      vehiclePlate: "JTP 4910",
-      dispatchedDate: "16 Oct 2026, 11:30 AM",
-      dispatchedQty: 5,
-      receivedQty: 5,
-      notes: "Urgent microinverter balancing for Central Region high-density residential installations.",
-    },
-  },
-  {
-    id: "tx-12",
-    time: "Yesterday, 09:30 AM",
-    type: "transfer",
-    category: "panel",
-    model: "Jinko 620W",
-    serialCode: "E4FXJ425G217507196111636",
-    qty: 10,
-    warehouse: "JB",
-    reference: "TR-2026-0043 · JB ➔ KL",
-    party: "Warehouse Transfer",
-    status: "Verified",
-    transfer: {
-      transferNo: "TR-2026-0043",
-      fromWarehouse: "JB",
-      toWarehouse: "KL",
-      requestedBy: "Wei Hao (Ops Admin)",
-      driverName: "Lorry Transport C (Driver: Azmi)",
-      vehiclePlate: "JQU 3312",
-      dispatchedDate: "15 Oct 2026, 09:30 AM",
-      receivedDate: "15 Oct 2026, 03:00 PM",
-      dispatchedQty: 10,
-      receivedQty: 10,
-      notes: "Verified on arrival at KL Warehouse by Ah Hock. Pallet and modules in pristine condition.",
-    },
-  },
-  {
-    id: "tx-13",
-    time: "Today, 02:15 PM",
-    type: "transfer",
-    category: "battery",
-    model: "B3-16.0-LV",
-    serialCode: "ESB3-160LV",
-    qty: 2,
-    warehouse: "KL",
-    reference: "TR-2026-0044 · KL ➔ JB",
-    party: "Warehouse Transfer",
-    status: "To Verify",
-    transfer: {
-      transferNo: "TR-2026-0044",
-      fromWarehouse: "KL",
-      toWarehouse: "JB",
-      requestedBy: "Wei Hao (Ops Admin)",
-      driverName: "Special Logistics Van (Driver: Ken)",
-      vehiclePlate: "VDC 7790",
-      dispatchedDate: "16 Oct 2026, 02:15 PM",
-      dispatchedQty: 2,
-      receivedQty: 2,
-      notes: "Battery relocation for Johor Bahru high-capacity residential energy storage setup.",
-    },
-  },
-];
+export const STOCK_TRANSACTIONS: StockTransaction[] = [];
 
 // Individual stock items — each row is one model in one warehouse.
 // Inverter qty totals match INVERTER_ON_HAND (442).
-export const STOCK_DETAIL_ITEMS: StockDetailItem[] = [
-  // ── Panels ── (dummy; highlighted rows are the priority models. Serials follow
-  // the format of a real panel serial, E4FXJ425G217507196111636.)
-  { id: "p1", category: "panel", model: "Jinko 620W", serialCode: "E4FXJ425G217507196111636", warehouse: "JB", qty: 90, highlight: true },
-  { id: "p2", category: "panel", model: "Jinko 620W", serialCode: "E4FXJ425G217507196111636", warehouse: "KL", qty: 65, highlight: true },
-  { id: "p3", category: "panel", model: "Jinko 650W", serialCode: "E4FXJ425G217507196124815", warehouse: "JB", qty: 80, highlight: true },
-  { id: "p4", category: "panel", model: "Jinko 650W", serialCode: "E4FXJ425G217507196124815", warehouse: "KL", qty: 55, highlight: true },
-  { id: "p5", category: "panel", model: "Astronergy 625W", serialCode: "E4FXJ425G217507196137402", warehouse: "JB", qty: 70, highlight: true },
-  { id: "p6", category: "panel", model: "Astronergy 625W", serialCode: "E4FXJ425G217507196137402", warehouse: "KL", qty: 50, highlight: true },
-  { id: "p7", category: "panel", model: "Jinko 575W", serialCode: "E4FXJ425G217507196140958", warehouse: "JB", qty: 60 },
-  { id: "p8", category: "panel", model: "Jinko 575W", serialCode: "E4FXJ425G217507196140958", warehouse: "KL", qty: 45 },
-  { id: "p9", category: "panel", model: "Jinko 585W", serialCode: "E4FXJ425G217507196152371", warehouse: "JB", qty: 55 },
-  { id: "p10", category: "panel", model: "Jinko 585W", serialCode: "E4FXJ425G217507196152371", warehouse: "KL", qty: 40 },
-  { id: "p11", category: "panel", model: "Astronergy 580W", serialCode: "E4FXJ425G217507196168024", warehouse: "JB", qty: 50 },
-  { id: "p12", category: "panel", model: "Astronergy 580W", serialCode: "E4FXJ425G217507196168024", warehouse: "KL", qty: 35 },
-  { id: "p13", category: "panel", model: "Jinko 590W", serialCode: "E4FXJ425G217507196179563", warehouse: "JB", qty: 45 },
-  { id: "p14", category: "panel", model: "Jinko 590W", serialCode: "E4FXJ425G217507196179563", warehouse: "KL", qty: 30 },
-  // ── Inverters ── (serials are dummy, in the format of a real inverter serial,
-  // HDT2103J2613ESA06996.)
-  { id: "i1", category: "inverter", model: "R5-7K-S2", serialCode: "HDT2103J2613ESA06996", warehouse: "JB", qty: 2 },
-  { id: "i2", category: "inverter", model: "R5-6K-S2", serialCode: "HDT2103J2613ESA07133", warehouse: "JB", qty: 4 },
-  { id: "i3", category: "inverter", model: "R5-6K-S2", serialCode: "HDT2103J2613ESA07133", warehouse: "KL", qty: 8 },
-  { id: "i4", category: "inverter", model: "R6-8K-T2", serialCode: "HDT2103J2613ESA07270", warehouse: "JB", qty: 3 },
-  { id: "i5", category: "inverter", model: "R6-8K-T2", serialCode: "HDT2103J2613ESA07270", warehouse: "KL", qty: 6 },
-  { id: "i6", category: "inverter", model: "M2-1.8K-S4", serialCode: "HDT2103J2613ESA07407", warehouse: "JB", qty: 80 },
-  { id: "i7", category: "inverter", model: "M2-1.8K-S4", serialCode: "HDT2103J2613ESA07407", warehouse: "KL", qty: 57 },
-  { id: "i8", category: "inverter", model: "C6-100K-T9", serialCode: "HDT2103J2613ESA07544", warehouse: "JB", qty: 2 },
-  { id: "i9", category: "inverter", model: "R6-20K-T2-32", serialCode: "HDT2103J2613ESA07681", warehouse: "JB", qty: 3 },
-  { id: "i10", category: "inverter", model: "R6-20K-T2-32", serialCode: "HDT2103J2613ESA07681", warehouse: "KL", qty: 2 },
-  { id: "i11", category: "inverter", model: "R6-15K-T2-32", serialCode: "HDT2103J2613ESA07818", warehouse: "JB", qty: 15 },
-  { id: "i12", category: "inverter", model: "R6-15K-T2-32", serialCode: "HDT2103J2613ESA07818", warehouse: "KL", qty: 18 },
-  { id: "i13", category: "inverter", model: "R5-5K-S2", serialCode: "HDT2103J2613ESA07955", warehouse: "JB", qty: 45 },
-  { id: "i14", category: "inverter", model: "R5-5K-S2", serialCode: "HDT2103J2613ESA07955", warehouse: "KL", qty: 38 },
-  { id: "i15", category: "inverter", model: "R5-8K-S2", serialCode: "HDT2103J2613ESA08092", warehouse: "JB", qty: 38 },
-  { id: "i16", category: "inverter", model: "R5-8K-S2", serialCode: "HDT2103J2613ESA08092", warehouse: "KL", qty: 30 },
-  { id: "i17", category: "inverter", model: "R6-10K-T2", serialCode: "HDT2103J2613ESA08229", warehouse: "JB", qty: 18 },
-  { id: "i18", category: "inverter", model: "R6-10K-T2", serialCode: "HDT2103J2613ESA08229", warehouse: "KL", qty: 13 },
-  // Hybrid (H2) rows are dummy; they make up the 60 Hybrid units in INVERTER_TYPES.
-  { id: "i19", category: "inverter", model: "H2-5K-LS2", serialCode: "HDT2103J2613ESA08366", warehouse: "JB", qty: 10 },
-  { id: "i20", category: "inverter", model: "H2-5K-LS2", serialCode: "HDT2103J2613ESA08366", warehouse: "KL", qty: 8 },
-  { id: "i21", category: "inverter", model: "H2-8K-LT2", serialCode: "HDT2103J2613ESA08503", warehouse: "JB", qty: 8 },
-  { id: "i22", category: "inverter", model: "H2-8K-LT2", serialCode: "HDT2103J2613ESA08503", warehouse: "KL", qty: 6 },
-  { id: "i23", category: "inverter", model: "H2-10K-LT2", serialCode: "HDT2103J2613ESA08640", warehouse: "JB", qty: 7 },
-  { id: "i24", category: "inverter", model: "H2-10K-LT2", serialCode: "HDT2103J2613ESA08640", warehouse: "KL", qty: 5 },
-  { id: "i25", category: "inverter", model: "H2-25K-T3", serialCode: "HDT2103J2613ESA08777", warehouse: "JB", qty: 5 },
-  { id: "i26", category: "inverter", model: "H2-25K-T3", serialCode: "HDT2103J2613ESA08777", warehouse: "KL", qty: 3 },
-  { id: "i27", category: "inverter", model: "H2-30K-T3", serialCode: "HDT2103J2613ESA08914", warehouse: "JB", qty: 5 },
-  { id: "i28", category: "inverter", model: "H2-30K-T3", serialCode: "HDT2103J2613ESA08914", warehouse: "KL", qty: 3 },
-  // ── Batteries ── (dummy; highlighted rows are the priority models)
-  { id: "b1", category: "battery", model: "B3-16.0-LV", serialCode: "ESB3-160LV", warehouse: "JB", qty: 25, highlight: true },
-  { id: "b2", category: "battery", model: "B3-16.0-LV", serialCode: "ESB3-160LV", warehouse: "KL", qty: 12, highlight: true },
-  { id: "b3", category: "battery", model: "B3-5.0-LV", serialCode: "ESB3-50LV", warehouse: "JB", qty: 22 },
-  { id: "b4", category: "battery", model: "B3-5.0-LV", serialCode: "ESB3-50LV", warehouse: "KL", qty: 11 },
-  { id: "b5", category: "battery", model: "B2-5.0-LV1", serialCode: "ESB2-50LV1", warehouse: "JB", qty: 20 },
-  { id: "b6", category: "battery", model: "B2-5.0-LV1", serialCode: "ESB2-50LV1", warehouse: "KL", qty: 10 },
-  { id: "b7", category: "battery", model: "BU3-5.0-TV2-PRO-BASE", serialCode: "ESBU3-50TV2PB", warehouse: "JB", qty: 15 },
-  { id: "b8", category: "battery", model: "BU3-5.0-TV2-PRO-BASE", serialCode: "ESBU3-50TV2PB", warehouse: "KL", qty: 8 },
-  { id: "b9", category: "battery", model: "BU3-5.0-TV2-PRO", serialCode: "ESBU3-50TV2P", warehouse: "JB", qty: 13 },
-  { id: "b10", category: "battery", model: "BU3-5.0-TV2-PRO", serialCode: "ESBU3-50TV2P", warehouse: "KL", qty: 7 },
-  // ── Battery Controller and Other ── (dummy quantities and codes)
-  { id: "o1", category: "other", group: "ATS", model: "Single Phase", serialCode: "ATS-1P", warehouse: "JB", qty: 20, highlight: true },
-  { id: "o2", category: "other", group: "ATS", model: "Single Phase", serialCode: "ATS-1P", warehouse: "KL", qty: 12, highlight: true },
-  { id: "o3", category: "other", group: "ATS", model: "Three Phase", serialCode: "ATS-3P", warehouse: "JB", qty: 14, highlight: true },
-  { id: "o4", category: "other", group: "ATS", model: "Three Phase", serialCode: "ATS-3P", warehouse: "KL", qty: 8, highlight: true },
-  { id: "o5", category: "other", group: "EV Charger", model: "AC7000-AE-35", serialCode: "EVAC7000AE35", warehouse: "JB", qty: 6 },
-  { id: "o6", category: "other", group: "EV Charger", model: "AC7000-AE-35", serialCode: "EVAC7000AE35", warehouse: "KL", qty: 4 },
-  { id: "o7", category: "other", group: "EV Charger", model: "AC011K-AE-35", serialCode: "EVAC011KAE35", warehouse: "JB", qty: 5 },
-  { id: "o8", category: "other", group: "EV Charger", model: "AC011K-AE-35", serialCode: "EVAC011KAE35", warehouse: "KL", qty: 3 },
-];
+export const STOCK_DETAIL_ITEMS: StockDetailItem[] = [];
 
 // ── Stock by Customer page data ────────────────────────────────────────
 
@@ -934,105 +459,7 @@ function serialFor(model: string): string {
   return STOCK_DETAIL_ITEMS.find((item) => item.model === model)?.serialCode ?? "";
 }
 
-export const CUSTOMER_STOCK_ALLOCATIONS: CustomerStock[] = [
-  {
-    id: "c1",
-    customerName: "Lok Suet Lee",
-    warehouse: "JB",
-    allocations: [
-      { category: "panel", model: "Jinko 620W", serialCode: serialFor("Jinko 620W"), qty: 12 },
-      { category: "inverter", model: "R5-7K-S2", serialCode: serialFor("R5-7K-S2"), qty: 1 },
-      { category: "battery", model: "B3-5.0-LV", serialCode: serialFor("B3-5.0-LV"), qty: 1 },
-    ],
-  },
-  {
-    id: "c2",
-    customerName: "Lim Kok Siang",
-    warehouse: "JB",
-    allocations: [
-      { category: "panel", model: "Jinko 650W", serialCode: serialFor("Jinko 650W"), qty: 16 },
-      { category: "inverter", model: "R5-8K-S2", serialCode: serialFor("R5-8K-S2"), qty: 1 },
-    ],
-  },
-  {
-    id: "c3",
-    customerName: "Chee Chin Fou",
-    warehouse: "JB",
-    allocations: [
-      { category: "panel", model: "Astronergy 625W", serialCode: serialFor("Astronergy 625W"), qty: 10 },
-      { category: "inverter", model: "R5-6K-S2", serialCode: serialFor("R5-6K-S2"), qty: 1 },
-      { category: "battery", model: "B2-5.0-LV1", serialCode: serialFor("B2-5.0-LV1"), qty: 1 },
-    ],
-  },
-  {
-    id: "c4",
-    customerName: "Woo Pek Lai",
-    warehouse: "KL",
-    allocations: [
-      { category: "panel", model: "Jinko 620W", serialCode: serialFor("Jinko 620W"), qty: 14 },
-      { category: "inverter", model: "R6-8K-T2", serialCode: serialFor("R6-8K-T2"), qty: 1 },
-      { category: "battery", model: "B3-16.0-LV", serialCode: serialFor("B3-16.0-LV"), qty: 1 },
-    ],
-  },
-  {
-    id: "c5",
-    customerName: "Ahmad Razali",
-    warehouse: "KL",
-    allocations: [
-      { category: "panel", model: "Jinko 650W", serialCode: serialFor("Jinko 650W"), qty: 20 },
-      { category: "inverter", model: "R5-5K-S2", serialCode: serialFor("R5-5K-S2"), qty: 1 },
-    ],
-  },
-  {
-    id: "c6",
-    customerName: "Tan Wei Ming",
-    warehouse: "JB",
-    allocations: [
-      { category: "panel", model: "Jinko 585W", serialCode: serialFor("Jinko 585W"), qty: 18 },
-      { category: "inverter", model: "M2-1.8K-S4", serialCode: serialFor("M2-1.8K-S4"), qty: 4 },
-      { category: "battery", model: "BU3-5.0-TV2-PRO", serialCode: serialFor("BU3-5.0-TV2-PRO"), qty: 1 },
-    ],
-  },
-  {
-    id: "c7",
-    customerName: "Nurul Huda",
-    warehouse: "KL",
-    allocations: [
-      { category: "panel", model: "Astronergy 625W", serialCode: serialFor("Astronergy 625W"), qty: 8 },
-      { category: "inverter", model: "R5-6K-S2", serialCode: serialFor("R5-6K-S2"), qty: 1 },
-    ],
-  },
-  {
-    id: "c8",
-    customerName: "Lee Chong Wei",
-    warehouse: "JB",
-    allocations: [
-      { category: "panel", model: "Jinko 650W", serialCode: serialFor("Jinko 650W"), qty: 24 },
-      { category: "inverter", model: "R6-10K-T2", serialCode: serialFor("R6-10K-T2"), qty: 1 },
-      { category: "battery", model: "B3-16.0-LV", serialCode: serialFor("B3-16.0-LV"), qty: 2 },
-    ],
-  },
-  {
-    id: "c9",
-    customerName: "Siti Aminah",
-    warehouse: "KL",
-    allocations: [
-      { category: "panel", model: "Jinko 620W", serialCode: serialFor("Jinko 620W"), qty: 10 },
-      { category: "inverter", model: "R5-5K-S2", serialCode: serialFor("R5-5K-S2"), qty: 1 },
-      { category: "battery", model: "B2-5.0-LV1", serialCode: serialFor("B2-5.0-LV1"), qty: 1 },
-    ],
-  },
-  {
-    id: "c10",
-    customerName: "Raj Kumar",
-    warehouse: "JB",
-    allocations: [
-      { category: "panel", model: "Jinko 585W", serialCode: serialFor("Jinko 585W"), qty: 12 },
-      { category: "inverter", model: "R6-20K-T2-32", serialCode: serialFor("R6-20K-T2-32"), qty: 1 },
-      { category: "battery", model: "B3-5.0-LV", serialCode: serialFor("B3-5.0-LV"), qty: 1 },
-    ],
-  },
-];
+export const CUSTOMER_STOCK_ALLOCATIONS: CustomerStock[] = [];
 
 export function generateSupplierSerialList(tx: StockTransaction): SupplierSerialUnit[] {
   const invoice = tx.invoice;
@@ -1096,7 +523,7 @@ export interface StockOutUnit {
   serialNo: string;
   model: string;
   unitIndex: number;
-  category: "panel" | "inverter" | "battery" | "other";
+  category: "panel" | "inverter" | "battery" | "mounting" | "electrical" | "other";
   powerRating: string;
   powerWatts: number;
 }
@@ -1169,7 +596,7 @@ export type StockTransferUnit = {
   serialNo: string;
   model: string;
   unitIndex: number;
-  category: "panel" | "inverter" | "battery" | "other";
+  category: "panel" | "inverter" | "battery" | "mounting" | "electrical" | "other";
   powerRating: string;
   powerWatts: number;
   palletNo: number;
@@ -1248,3 +675,78 @@ export function generateStockTransferSerialList(tx: StockTransaction): StockTran
   return list;
 }
 
+// ── Mounting structure: the two systems in use ─────────────────────────
+// Part lists copied from the ops team's "Mounting Structure Record" sheets
+// (MIBET and WINSTAR). The sheets' stock quantities have not been loaded yet,
+// so every part carries no quantity (null) rather than an invented number.
+
+export type MountingPart = {
+  name: string;
+  // Stock on hand per warehouse; null until the real figures are loaded.
+  jb: number | null;
+  kl: number | null;
+};
+
+export type MountingPartGroup = {
+  label: string;
+  parts: MountingPart[];
+};
+
+export type MountingSystem = {
+  id: "mibet" | "winstar";
+  label: string;
+  groups: MountingPartGroup[];
+};
+
+function mountingParts(names: string[]): MountingPart[] {
+  return names.map((name) => ({ name, jb: null, kl: null }));
+}
+
+export const MOUNTING_SYSTEMS: MountingSystem[] = [
+  {
+    id: "mibet",
+    label: "MIBET",
+    groups: [
+      { label: "Rail", parts: mountingParts(["Rail splice", "3.6M", "2.4M"]) },
+      {
+        label: "Hook & Bracket",
+        parts: mountingParts([
+          "Tile hook",
+          "Tile hook (130mm)",
+          "Tile hook (landscape)",
+          "Tile hook landscape (130mm)",
+          "L-feet",
+          "Kliplock",
+          "Standing seam base grip",
+          "Trapezoidal roof support",
+          "Hanger bolt kit",
+          "L-feet c/w screw",
+        ]),
+      },
+      { label: "Clamp", parts: mountingParts(["Mid clamp", "Earthing clip", "End clamp", "Bolt & nut"]) },
+      {
+        label: "Ballast system",
+        parts: mountingParts(["3 panels portrait", "2 panels portrait", "3 panels landscape", "2 panels landscape"]),
+      },
+    ],
+  },
+  {
+    id: "winstar",
+    label: "WINSTAR",
+    groups: [
+      { label: "Rail", parts: mountingParts(["3.6M", "2.4M", "Rail splice"]) },
+      {
+        label: "Hook & Bracket",
+        parts: mountingParts([
+          "Tile hook",
+          "Tile hook (landscape)",
+          "L-bracket",
+          "Kliplock",
+          "Standing seam base grip",
+          "L-bracket c/w screw",
+        ]),
+      },
+      { label: "Clamp", parts: mountingParts(["Mid clamp", "Earthing clip", "End clamp", "Bolt & nut"]) },
+    ],
+  },
+];
