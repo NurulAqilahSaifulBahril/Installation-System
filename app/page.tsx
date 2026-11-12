@@ -3450,7 +3450,7 @@ export default function DashboardPage() {
       ["delivery", "Delivery Schedule"],
       ["summary", "Project Summary"],
     ];
-    if (!currentUser || currentUser.role === "admin") return allViews;
+    if (!currentUser) return allViews;
     const access = currentUser.pageAccess || "all";
     if (access === "all") return allViews;
     const allowed = access.split(",").map((s) => s.trim());

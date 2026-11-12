@@ -26,7 +26,7 @@ type AdminUser = {
 
 const PRESET_OPTIONS = [
   { value: "all", label: "All Pages" },
-  { value: "groups,delivery,project", label: "Operations (Install, Delivery, Team)" },
+  { value: "groups,delivery,project", label: "Project Team, Installation & Delivery" },
   { value: "groups,delivery", label: "Installation & Delivery" },
   { value: "groups,delivery,own", label: "Installation & Delivery (Own Name Only)" },
   { value: "groups", label: "Installation Schedule Only" },
@@ -553,9 +553,8 @@ export default function AdminPage() {
                           </td>
                           <td>
                             <select
-                              value={user.role === "admin" ? "all" : (user.pageAccess || "all")}
+                              value={user.pageAccess || "all"}
                               onChange={(e) => void patchUser(user.id, { pageAccess: e.target.value })}
-                              disabled={user.role === "admin"}
                               style={{
                                 height: "28px",
                                 padding: "0 8px",
@@ -565,15 +564,10 @@ export default function AdminPage() {
                                 color: "var(--ink)",
                                 fontSize: "12px",
                                 fontWeight: 500,
-                                cursor: user.role === "admin" ? "default" : "pointer",
-                                opacity: user.role === "admin" ? 0.75 : 1,
+                                cursor: "pointer",
                                 outline: "none",
                               }}
-                              title={
-                                user.role === "admin"
-                                  ? "Admins always have full access to all pages"
-                                  : "Change page access"
-                              }
+                              title="Change page access"
                               aria-label={`Page access for ${user.username}`}
                             >
                               {PRESET_OPTIONS.map((opt) => (
