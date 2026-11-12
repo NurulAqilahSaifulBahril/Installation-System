@@ -757,6 +757,7 @@ function rowToJob(row: ProxyRow): InstallationJob {
     derivedInverterModel,
     sedaStatus: row.seda_status || "Pending",
     sldUrl: textUrl(row.drawing_pdf_system) || textUrl(row.pv_system_drawing),
+    pvDrawingUrl: textUrl(row.pv_system_drawing),
     packageName: hasPackageItem
       ? packageLine || row.package_name || "Not available"
       : "",
@@ -880,17 +881,76 @@ export async function fetchEligibleSourceJobs(): Promise<SourceJobsResult> {
 
 export type JobFiles = {
   sld: string[];
+  // The same links split by where they come from: the SEDA registration's engineering
+  // drawing, and the invoice's own PV system drawing.
+  seda?: string[];
+  pv?: string[];
+  // How the raw PV field looked, e.g. "list of 2 (object)" - only for troubleshooting.
+  pvShape?: string;
   roof: string[];
   site: string[];
 };
 
+// File fields arrive in more than one shape: a plain link, a list of links, a JSON
+// string holding a list, or a list of objects that carry the link under url/src/href.
+// All of them are flattened to plain links.
 function urlList(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.filter(
-      (item): item is string => typeof item === "string" && Boolean(item),
-    );
+  if (Array.isArray(value)) return value.flatMap((item) => urlList(item));
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) return [];
+    if (text.startsWith("[") || text.startsWith("{")) {
+      try {
+        return urlList(JSON.parse(text));
+      } catch {
+        return [text];
+      }
+    }
+    return [text];
   }
-  return typeof value === "string" && value ? [value] : [];
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["url", "src", "href", "link", "path", "file"]) {
+      const found = record[key];
+      if (typeof found === "string" && found.trim()) return [found.trim()];
+    }
+  }
+  return [];
+}
+
+// Short description of a raw field's shape, for diagnosing "no drawing found".
+function shapeOf(value: unknown): string {
+  if (value === null || value === undefined) return "empty";
+  if (Array.isArray(value)) return `list of ${value.length}${value.length ? ` (${typeof value[0]})` : ""}`;
+  return typeof value === "string" ? `text (${value.length} chars)` : typeof value;
+}
+
+// The invoice's own item lines, straight from the source: one entry per item, in order.
+// An item's description is often a multi-line package text ("16X 650W … Panel", "MIBET Solar
+// Mounting Structure", …). A single-line item sold with a quantity above 1 and no count of its
+// own gets "<qty>X " in front, so the count survives. Keyed by the invoice's bubble id.
+export async function fetchInvoiceItemLines(invoiceIds: string[]): Promise<Record<string, string[]>> {
+  if (invoiceIds.length === 0) return {};
+  const rows = await querySource<{ linked_invoice: string; qty: string | number | null; description: string | null }>(
+    [
+      "select linked_invoice, qty, description",
+      "from invoice_item",
+      "where linked_invoice = any($1::text[])",
+      "order by linked_invoice, sort nulls last",
+    ].join(String.fromCharCode(10)),
+    [invoiceIds],
+  );
+  const result: Record<string, string[]> = {};
+  rows.forEach((row) => {
+    const description = (row.description ?? "").trim();
+    if (!description) return;
+    const qty = Number(row.qty);
+    const singleLine = !description.includes(String.fromCharCode(10));
+    const hasCount = /^[0-9]+ *[xX]? +/.test(description);
+    const text = singleLine && !hasCount && qty > 1 ? `${qty}X ${description}` : description;
+    (result[row.linked_invoice] ||= []).push(text);
+  });
+  return result;
 }
 
 // One customer's SLD drawing, roof photos and site-assessment photos, for the
@@ -915,8 +975,33 @@ export async function fetchJobFiles(invoiceId: string): Promise<JobFiles | null>
   );
   const row = rows[0];
   if (!row) return null;
+
+  // The admin system's Engineering v2 screen saves the PV system drawing as attachments
+  // (category "drawing", doc_type "pv_system", owner = the invoice), not on the invoice
+  // row. Those come first; the invoice's own field is kept as a fallback for older jobs.
+  let attached: string[] = [];
+  try {
+    const attachments = await querySource<{ file_url: string | null }>(
+      [
+        "select file_url",
+        "from ee_attachment",
+        "where deleted_at is null",
+        "  and category = 'drawing' and doc_type = 'pv_system'",
+        "  and owner_type = 'invoice' and owner_id = $1",
+        "order by sort_order, uploaded_at",
+      ].join(String.fromCharCode(10)),
+      [invoiceId],
+    );
+    attached = attachments.map((item) => item.file_url ?? "").filter(Boolean);
+  } catch {
+    // No attachment table (or no access): fall back to the invoice field alone.
+  }
+  const pv = Array.from(new Set([...attached, ...urlList(row.pv_system_drawing)]));
   return {
-    sld: [...urlList(row.drawing_pdf_system), ...urlList(row.pv_system_drawing)],
+    sld: [...urlList(row.drawing_pdf_system), ...pv],
+    seda: urlList(row.drawing_pdf_system),
+    pv,
+    pvShape: `${attached.length} attached file(s); invoice field: ${shapeOf(row.pv_system_drawing)}`,
     roof: urlList(row.linked_roof_image),
     site: urlList(row.site_assessment_image),
   };

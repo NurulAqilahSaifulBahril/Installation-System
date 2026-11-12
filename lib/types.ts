@@ -190,6 +190,8 @@ export type InstallationJob = {
   derivedInverterModel: string;
   sedaStatus: string;
   sldUrl: string | null;
+  // The invoice's PV system drawing (panel layout), kept apart from sldUrl above.
+  pvDrawingUrl?: string | null;
   packageName: string;
   // Invoice/package type from the source — "Residential", "Tariff B&D Low
   // Voltage", "EV Charger". Used to filter Residential/Shoplots, Commercial,
