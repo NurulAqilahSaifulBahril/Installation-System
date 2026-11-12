@@ -221,6 +221,8 @@ function countLabel(value: number | null) {
   return value === null ? "—" : String(value);
 }
 
+type StockItemTab = "panel" | "inverter" | "battery" | "other" | "mounting";
+
 type TabId = "home" | "transfer" | "stock" | "customers";
 
 const TABS: { id: TabId; label: string; shortLabel: string }[] = [
@@ -421,6 +423,8 @@ function Dashboard({
 }) {
   const [tab, setTab] = useState<TabId>("home");
   const [homeShowsTx, setHomeShowsTx] = useState(false);
+  // Set when a home card is clicked: which Stock Details tab and warehouse to open on.
+  const [stockFocus, setStockFocus] = useState<{ item: StockItemTab; wh: "all" | "JB" | "KL" } | null>(null);
   const [inverterOpen, setInverterOpen] = useState(false);
   const [inverterType, setInverterType] = useState<InverterTypeId | null>(null);
   const [inspectTxId, setInspectTxId] = useState<string | null>(null);
@@ -428,27 +432,21 @@ function Dashboard({
 
   // Copy the booked installations from the scheduling system. Needs the dashboard
   // session; without it (401, public site) the sample Stock Out rows stay.
-  const [liveInfo, setLiveInfo] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    setLiveInfo("Loading schedule from the scheduling system…");
     fetch("/api/warehouse/schedule", { credentials: "same-origin", cache: "no-store" })
       .then(async (res) => {
-        if (res.status === 401) {
-          if (!cancelled) setLiveInfo("Not signed in to the dashboard (same browser), so no real jobs are loaded.");
-          return;
-        }
+        // 401 = not signed in to the dashboard: no real jobs are loaded.
+        if (res.status === 401) return;
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { jobs?: ScheduledJobPayload[] };
         if (cancelled) return;
         const jobs = data.jobs ?? [];
         const live = liveStockOutRows(jobs);
         setTransactions((prev) => [...live, ...prev.filter((t) => t.type !== "out")]);
-        setLiveInfo(`Live schedule: ${jobs.length} installation job${jobs.length === 1 ? "" : "s"} copied from the scheduling system.`);
       })
       .catch((err) => {
         console.error("Live schedule failed", err);
-        if (!cancelled) setLiveInfo(`Could not copy the schedule (${err instanceof Error ? err.message : "error"}). No jobs are loaded.`);
       });
     return () => {
       cancelled = true;
@@ -615,7 +613,10 @@ function Dashboard({
             key={t.id}
             type="button"
             className={`${styles.tab} ${tab === t.id ? styles.tabActive : ""}`}
-            onClick={() => setTab(t.id)}
+            onClick={() => {
+              setStockFocus(null);
+              setTab(t.id);
+            }}
             aria-current={tab === t.id ? "page" : undefined}
           >
             <span className={styles.tabLabelFull}>{t.label}</span>
@@ -624,7 +625,6 @@ function Dashboard({
         ))}
       </nav>
 
-      {tab === "home" && liveInfo && <p className={styles.note}>{liveInfo}</p>}
       {tab === "home" && (
         <HomeTab
           transactions={transactions}
@@ -634,6 +634,10 @@ function Dashboard({
           showTx={homeShowsTx}
           onShowTx={setHomeShowsTx}
           onOpenTransfer={() => setTab("transfer")}
+          onOpenStock={(item, wh) => {
+            setStockFocus({ item, wh });
+            setTab("stock");
+          }}
         />
       )}
       {tab === "transfer" && (
@@ -649,7 +653,7 @@ function Dashboard({
           }}
         />
       )}
-      {tab === "stock" && <StockDetailsTab />}
+      {tab === "stock" && <StockDetailsTab initialItem={stockFocus?.item} initialWarehouse={stockFocus?.wh} />}
       {tab === "customers" && <StockByCustomerTab />}
     </>
   );
@@ -4912,6 +4916,7 @@ function HomeTab({
   showTx,
   onShowTx,
   onOpenTransfer,
+  onOpenStock,
 }: {
   transactions: StockTransaction[];
   onInspectTx: (id: string) => void;
@@ -4921,6 +4926,7 @@ function HomeTab({
   showTx: boolean;
   onShowTx: (show: boolean) => void;
   onOpenTransfer: () => void;
+  onOpenStock: (item: StockItemTab, wh: "all" | "JB" | "KL") => void;
 }) {
   const [whFilter, setWhFilter] = useState<"all" | "JB" | "KL">("all");
   const [txType, setTxType] = useState<"all" | "in" | "out" | "transfer">("all");
@@ -5146,7 +5152,14 @@ function HomeTab({
 
               return (
                 <article key={card.id} className={`${styles.typeCard} ${styles.balanceCard}`}>
-                  {cardContent}
+                  <button
+                    type="button"
+                    className={styles.balanceCardButton}
+                    title={`Open ${card.label} in Stock Details`}
+                    onClick={() => onOpenStock(card.id === "electrical" ? "other" : card.id, whFilter)}
+                  >
+                    {cardContent}
+                  </button>
                   <div className={styles.balanceHintPlaceholder} aria-hidden="true" />
                 </article>
               );
@@ -6584,10 +6597,16 @@ function StockTransferTab({
 // Tab 2 — Stock Details
 // ---------------------------------------------------------------------------
 
-function StockDetailsTab() {
-  const [whFilter, setWhFilter] = useState<"all" | "JB" | "KL">("all");
+function StockDetailsTab({
+  initialItem,
+  initialWarehouse,
+}: {
+  initialItem?: StockItemTab;
+  initialWarehouse?: "all" | "JB" | "KL";
+}) {
+  const [whFilter, setWhFilter] = useState<"all" | "JB" | "KL">(initialWarehouse ?? "all");
   const [query, setQuery] = useState("");
-  const [stockTab, setStockTab] = useState<"panel" | "inverter" | "battery" | "other" | "mounting">("panel");
+  const [stockTab, setStockTab] = useState<StockItemTab>(initialItem ?? "panel");
 
   const filteredItems =
     whFilter === "all"
