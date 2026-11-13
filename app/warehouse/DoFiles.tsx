@@ -126,6 +126,17 @@ export function DoFileList({
   error: string | null;
   message: { ok: boolean; text: string } | null;
 }) {
+  // Nothing uploaded yet: show nothing (an upload or load message still shows on its own).
+  if (files.length === 0) {
+    const note = message ?? (error ? { ok: false, text: error } : null);
+    if (!note) return null;
+    return (
+      <p className={styles.note} style={{ marginBottom: "16px", color: note.ok ? "var(--green)" : "#b91c1c" }}>
+        {note.text}
+      </p>
+    );
+  }
+
   return (
     <div style={{ marginBottom: "16px" }}>
       <h2 className={styles.sectionTitle} style={{ margin: "0 0 8px" }}>
@@ -136,11 +147,7 @@ export function DoFileList({
           {message.text}
         </p>
       )}
-      {error && files.length === 0 ? (
-        <p className={styles.note}>{error}</p>
-      ) : files.length === 0 ? (
-        <p className={styles.note}>No delivery orders uploaded yet.</p>
-      ) : (
+      {(
         <div className={styles.tableWrap}>
           <table className={`${styles.detailTable} ${styles.mountTable}`}>
             <thead>

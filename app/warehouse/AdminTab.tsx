@@ -558,8 +558,7 @@ export default function AdminTab() {
           >
             <input
               type="search"
-              className={styles.tableSearch}
-              style={{ width: "auto", minWidth: "240px", marginTop: 0, height: "42px" }}
+              className={styles.searchCompact}
               placeholder="Search the log"
               aria-label="Search the audit log"
               value={search}

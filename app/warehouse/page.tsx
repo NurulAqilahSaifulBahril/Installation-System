@@ -4,7 +4,7 @@ import AdminTab from "./AdminTab";
 import { DoFileList, UploadDoButton, useDoFiles } from "./DoFiles";
 import { classifyInvoiceLines, parseCountedItem } from "./invoice-lines";
 import { estimateMounting, ROOF_OPTIONS, type MountingSystemId, type Orientation, type RoofType } from "./mounting-estimate";
-import { FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, Fragment, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import {
   INVERTER_TYPES,
   ORDER_MODELS,
@@ -37,6 +37,37 @@ import styles from "./warehouse.module.css";
 const SESSION_KEY = "warehouse-phone";
 const NAME_KEY = "warehouse-username";
 const ACCESS_KEY = "warehouse-access";
+
+// Camera scanner: ask for the back camera first, then any camera (laptops and some
+// tablets have no "environment" camera, which some browsers treat as a hard failure).
+async function openCameraStream(): Promise<MediaStream> {
+  try {
+    return await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
+  } catch (err) {
+    const name = err instanceof DOMException ? err.name : "";
+    if (name === "NotAllowedError" || name === "SecurityError") throw err;
+    return navigator.mediaDevices.getUserMedia({ video: true });
+  }
+}
+
+// A message that says why the camera did not start, so staff know what to fix.
+function cameraErrorMessage(err: unknown): string {
+  if (typeof window !== "undefined" && !window.isSecureContext) {
+    return "Camera needs a secure (https://) link. Open Inventory Management from its https address, or use the barcode gun / type the serial.";
+  }
+  if (!err) return "This browser has no camera support. Use the barcode gun or type the serial.";
+  const name = err instanceof DOMException ? err.name : "";
+  if (name === "NotAllowedError" || name === "SecurityError") {
+    return "Camera permission is blocked. Tap the lock / site settings icon in the address bar, allow Camera, then press Scan again.";
+  }
+  if (name === "NotFoundError" || name === "OverconstrainedError") {
+    return "No camera found on this device. Use the barcode gun or type the serial.";
+  }
+  if (name === "NotReadableError" || name === "AbortError") {
+    return "The camera is being used by another app or tab. Close it there, then press Scan again.";
+  }
+  return `Camera could not start (${name || "unknown error"}). Use the barcode gun or type the serial.`;
+}
 // Cropped to the artwork (public/eternalgy-logo.png has wide transparent margins).
 const LOGO_SRC = "/eternalgy-logo-tight.png";
 // The symbol alone, without the ETERNALGY / ETERNAL ENERGY wording (sign-in headline).
@@ -583,6 +614,12 @@ function Dashboard({
 }) {
   const [tab, setTab] = useState<TabId>("home");
   const [homeShowsTx, setHomeShowsTx] = useState(false);
+  // Which Home transaction list is open (Stock In / Stock Out / all), its category,
+  // status tab and day. Kept here so Back from a verification page returns to that same list.
+  const [homeTxType, setHomeTxType] = useState<HomeTxType>("all");
+  const [homeTxCat, setHomeTxCat] = useState<string>("all");
+  const [homeTxStatusTab, setHomeTxStatusTab] = useState<"toVerify" | "verified">("toVerify");
+  const [homeDay, setHomeDay] = useState(() => isoToday());
   const [dashboardAdmin, setDashboardAdmin] = useState(false);
   // Admin: every page. Staff: every page except Admin. A phone number that is not
   // registered falls back to the dashboard session (an admin there can open Admin).
@@ -819,7 +856,6 @@ function Dashboard({
       <div className={`${styles.screen} ${styles.head}`}>
         <div>
           <h1 id="warehouse-home">Inventory Management</h1>
-          <p className={styles.kicker}>{username ? `Hi ${username}!` : "Hi!"} · Real-time stock balance &amp; transactions</p>
         </div>
       </div>
 
@@ -850,6 +886,14 @@ function Dashboard({
           onInverterOpen={() => setInverterOpen(true)}
           showTx={homeShowsTx}
           onShowTx={setHomeShowsTx}
+          txType={homeTxType}
+          setTxType={setHomeTxType}
+          txCat={homeTxCat}
+          setTxCat={setHomeTxCat}
+          txStatusTab={homeTxStatusTab}
+          setTxStatusTab={setHomeTxStatusTab}
+          selectedDay={homeDay}
+          setSelectedDay={setHomeDay}
           onOpenTransfer={() => setTab("transfer")}
           onOpenStock={(item, wh) => {
             setStockFocus({ item, wh });
@@ -910,6 +954,8 @@ const WH_SPLIT: Record<string, { JB: number; KL: number }> = {
 };
 
 const WEEK_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+type HomeTxType = "all" | "in" | "out" | "transfer";
 
 function isoToday(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kuala_Lumpur" });
@@ -1130,12 +1176,18 @@ function StockInVerificationPage({
   useEffect(() => {
     let stream: MediaStream | null = null;
     let detectorTimer: NodeJS.Timeout | null = null;
+    // Set when the camera is closed (or the page re-renders) before the camera has started,
+    // so a stream that arrives late is stopped instead of keeping the camera busy.
+    let cancelled = false;
 
     if (cameraActive) {
-      if (typeof navigator !== "undefined" && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        navigator.mediaDevices
-          .getUserMedia({ video: { facingMode: "environment" } })
+      if (typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getUserMedia === "function") {
+        openCameraStream()
           .then((s) => {
+            if (cancelled) {
+              s.getTracks().forEach((t) => t.stop());
+              return;
+            }
             stream = s;
             if (videoRef.current) {
               videoRef.current.srcObject = s;
@@ -1160,11 +1212,11 @@ function StockInVerificationPage({
               } catch {}
             }
           })
-          .catch(() => {
-            setCameraError("Camera unavailable or permission denied. You can test detection below or use a barcode gun.");
+          .catch((err) => {
+            if (!cancelled) setCameraError(cameraErrorMessage(err));
           });
       } else {
-        setCameraError("Camera API not supported on this browser.");
+        setCameraError(cameraErrorMessage(null));
       }
     } else {
       if (videoRef.current && videoRef.current.srcObject) {
@@ -1175,6 +1227,7 @@ function StockInVerificationPage({
     }
 
     return () => {
+      cancelled = true;
       if (detectorTimer) clearInterval(detectorTimer);
       if (stream) {
         stream.getTracks().forEach((t) => t.stop());
@@ -1339,8 +1392,8 @@ function StockInVerificationPage({
     <section className={styles.screen} aria-labelledby="stockin-verify-title">
       {/* Top Navigation */}
       <div className={styles.inspectTopBar}>
-        <button className={styles.inspectBackBtn} type="button" onClick={onBack}>
-          &larr; Back to Stock Transactions
+        <button className={styles.btnActionGhost} type="button" onClick={onBack}>
+          &larr; Back to Transactions
         </button>
         <span
           className={
@@ -1418,18 +1471,20 @@ function StockInVerificationPage({
               Scan barcode using handheld laser gun or mobile camera.
             </p>
           </div>
-          <button
-            type="button"
-            className={`${styles.scannerBtnCamera} ${cameraActive ? styles.scannerBtnCameraActive : ""}`}
-            onClick={() => setCameraActive(!cameraActive)}
-          >
-            <span>📷</span> {cameraActive ? "Hide Camera" : "Use Camera Scanner"}
-          </button>
         </div>
 
         {/* Camera Viewfinder */}
         {cameraActive && (
           <div className={styles.cameraViewfinder}>
+                <button
+                  type="button"
+                  className={styles.cameraCloseBtn}
+                  onClick={() => setCameraActive(false)}
+                  aria-label="Close camera"
+                  title="Close camera"
+                >
+                  ✕
+                </button>
             <div className={styles.cameraScanLine} />
             <video ref={videoRef} className={styles.videoCameraActive} playsInline autoPlay muted />
             {cameraError && (
@@ -1478,7 +1533,15 @@ function StockInVerificationPage({
             value={barcodeInput}
             onChange={(e) => setBarcodeInput(e.target.value)}
           />
-          <button type="submit" className={styles.scannerBtnScan}>
+          <button
+            type="button"
+            className={styles.scannerBtnScan}
+            title="Records the typed serial; with an empty box it opens the camera scanner"
+            onClick={() => {
+              if (barcodeInput.trim()) handleScan();
+              else setCameraActive(true);
+            }}
+          >
             <span>⚡</span> Scan / Match
           </button>
         </form>
@@ -1570,19 +1633,11 @@ function StockInVerificationPage({
           <div style={{ display: "flex", gap: "8px", alignItems: "center", flex: "1 1 260px" }}>
             <input
               type="text"
+              className={styles.searchCompact}
               placeholder="Search serial code, pallet..."
               value={tableSearch}
               onChange={(e) => setTableSearch(e.target.value)}
-              style={{
-                padding: "7px 12px",
-                border: "1px solid var(--line)",
-                borderRadius: "6px",
-                fontSize: "12px",
-                background: "var(--surface)",
-                color: "var(--text)",
-                width: "100%",
-                maxWidth: "280px",
-              }}
+              style={{ width: "100%", maxWidth: "280px" }}
             />
             {tableSearch && (
               <button
@@ -1933,10 +1988,9 @@ function StockInVerificationPage({
 
       {/* 3. Verified Button & Action Footer */}
       <div className={styles.inspectFooterBar}>
-        <button className={styles.btnActionGhost} type="button" onClick={onBack}>
-          &larr; Back to Transactions
-        </button>
-
+        <p className={`${styles.note} ${styles.footerTip}`}>
+          💡 <strong>Warehouse Tip:</strong> Scan physical barcodes or type serials to match against PO #{invoice?.poNumber ?? tx.reference}. When all invoiced items reach 100%, the <strong>Verified</strong> button unlocks to confirm stock entry into warehouse inventory.
+        </p>
         <div className={styles.inspectActionGroup}>
           <button
             className={styles.btnActionDanger}
@@ -1969,10 +2023,6 @@ function StockInVerificationPage({
           </button>
         </div>
       </div>
-
-      <p className={styles.note} style={{ marginTop: "4px" }}>
-        💡 <strong>Warehouse Tip:</strong> Scan physical barcodes or type serials to match against PO #{invoice?.poNumber ?? tx.reference}. When all invoiced items reach 100%, the <strong>Verified</strong> button unlocks to confirm stock entry into warehouse inventory.
-      </p>
 
       {/* View Invoice Modal */}
       {showInvoiceModal && invoice && (
@@ -2853,12 +2903,18 @@ function StockOutVerificationPage({
   useEffect(() => {
     let stream: MediaStream | null = null;
     let detectorTimer: NodeJS.Timeout | null = null;
+    // Set when the camera is closed (or the page re-renders) before the camera has started,
+    // so a stream that arrives late is stopped instead of keeping the camera busy.
+    let cancelled = false;
 
     if (cameraActive) {
-      if (typeof navigator !== "undefined" && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        navigator.mediaDevices
-          .getUserMedia({ video: { facingMode: "environment" } })
+      if (typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getUserMedia === "function") {
+        openCameraStream()
           .then((s) => {
+            if (cancelled) {
+              s.getTracks().forEach((t) => t.stop());
+              return;
+            }
             stream = s;
             if (videoRef.current) {
               videoRef.current.srcObject = s;
@@ -2883,11 +2939,11 @@ function StockOutVerificationPage({
               } catch {}
             }
           })
-          .catch(() => {
-            setCameraError("Camera unavailable or permission denied. You can test detection below or use a barcode gun.");
+          .catch((err) => {
+            if (!cancelled) setCameraError(cameraErrorMessage(err));
           });
       } else {
-        setCameraError("Camera API not supported on this browser.");
+        setCameraError(cameraErrorMessage(null));
       }
     } else {
       if (videoRef.current && videoRef.current.srcObject) {
@@ -2898,6 +2954,7 @@ function StockOutVerificationPage({
     }
 
     return () => {
+      cancelled = true;
       if (detectorTimer) clearInterval(detectorTimer);
       if (stream) {
         stream.getTracks().forEach((t) => t.stop());
@@ -3093,14 +3150,14 @@ function StockOutVerificationPage({
           >
             <div style={{ flex: 1, minWidth: "300px" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
-                <h2 className={styles.inspectCardTitle} style={{ margin: 0, color: "#000000" }}>
+                <h2 className={styles.inspectCardTitle} style={{ margin: 0, color: "#000000", fontWeight: 700 }}>
                   <span>📅</span> Customer Details &middot; #{schedule?.jobId ?? tx.reference}
                 </h2>
                 <span className={`${styles.tag} ${styles.ok}`}>Live Scheduling System</span>
               </div>
 
               {/* Customer with Address & Agent directly underneath, plus Phone */}
-              <div style={{ fontSize: "13px", color: "#000000", padding: "10px 14px", background: "#f8fafc", borderRadius: "6px", border: "1px solid var(--line)", marginTop: "6px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", ...(forReport ? { background: "none", border: "none", padding: 0 } : {}) }}>
+              <div style={{ fontSize: "13px", color: "#000000", marginTop: "6px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "max-content max-content 1fr", columnGap: "6px", rowGap: "4px", color: "#000000" }}>
                   <div style={{ display: "contents" }}>
                     <span style={{ color: "#000000", fontWeight: 700 }}>Customer</span>
@@ -3152,7 +3209,7 @@ function StockOutVerificationPage({
           <h3 style={{ margin: "0 0 8px", fontSize: "14px", fontWeight: 700, color: "#000000" }}>ATAP Details</h3>
 
           {/* Technical Scheduling System Specification (wraps to fit, no sideways scroll) */}
-          <div style={{ fontSize: "13px", color: "#000000", padding: "10px 14px", background: "#f8fafc", borderRadius: "6px", border: "1px solid var(--line)", display: "grid", gridTemplateColumns: "max-content max-content 1fr", columnGap: "6px", rowGap: "4px", alignItems: "baseline" }}>
+          <div style={{ fontSize: "13px", color: "#000000", display: "grid", gridTemplateColumns: "max-content max-content 1fr", columnGap: "6px", rowGap: "4px", alignItems: "baseline" }}>
             <div style={{ display: "contents" }}>
               <span style={{ color: "#000000", fontWeight: 700 }}>System Size (kWp)</span>
               <span style={{ color: "#000000", fontWeight: 700 }}>:</span>
@@ -3274,8 +3331,8 @@ function StockOutVerificationPage({
     <section className={styles.screen} aria-labelledby="stockout-verify-title">
       {/* Top Navigation */}
       <div className={styles.inspectTopBar}>
-        <button className={styles.inspectBackBtn} type="button" onClick={onBack}>
-          &larr; Back to Stock Transactions
+        <button className={styles.btnActionGhost} type="button" onClick={onBack}>
+          &larr; Back
         </button>
         <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
           <button
@@ -3296,12 +3353,6 @@ function StockOutVerificationPage({
       <h1 id="stockout-verify-title" className={styles.inspectHeroTitle} style={{ margin: "0 0 12px" }}>
         Stock Out Verification
       </h1>
-
-      {schedule?.systemPackage && (
-        <p className={styles.itemDesc} style={{ margin: "0 0 12px" }}>
-          Package: {schedule.systemPackage}
-        </p>
-      )}
 
       {/* 1. Scheduling System Record (also shown in the report) */}
       {renderSchedulingRecord(false)}
@@ -3355,18 +3406,20 @@ function StockOutVerificationPage({
                   Scan physical barcode using live mobile camera or handheld laser gun to record each unit before installer pickup.
                 </p>
               </div>
-              <button
-                type="button"
-                className={`${styles.scannerBtnCamera} ${cameraActive ? styles.scannerBtnCameraActive : ""}`}
-                onClick={() => setCameraActive(!cameraActive)}
-              >
-                <span>📷</span> {cameraActive ? "Hide Camera" : "Use Camera Scanner"}
-              </button>
             </div>
 
             {/* Camera Viewfinder */}
             {cameraActive && (
               <div className={styles.cameraViewfinder}>
+                <button
+                  type="button"
+                  className={styles.cameraCloseBtn}
+                  onClick={() => setCameraActive(false)}
+                  aria-label="Close camera"
+                  title="Close camera"
+                >
+                  ✕
+                </button>
                 <div className={styles.cameraScanLine} />
                 <video ref={videoRef} className={styles.videoCameraActive} playsInline autoPlay muted />
                 {cameraError && (
@@ -3410,7 +3463,15 @@ function StockOutVerificationPage({
             value={barcodeInput}
             onChange={(e) => setBarcodeInput(e.target.value)}
           />
-          <button type="submit" className={styles.scannerBtnScan}>
+          <button
+            type="button"
+            className={styles.scannerBtnScan}
+            title="Records the typed serial; with an empty box it opens the camera scanner"
+            onClick={() => {
+              if (barcodeInput.trim()) handleScan();
+              else setCameraActive(true);
+            }}
+          >
             <span>⚡</span> Scan / Match
           </button>
         </form>
@@ -3602,7 +3663,7 @@ function StockOutVerificationPage({
                     <thead>
                       <tr>
                         <th scope="col">Part</th>
-                        <th scope="col" className={styles.num}>Qty</th>
+                        <th scope="col" className={styles.qtyCenter}>Qty</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3613,7 +3674,7 @@ function StockOutVerificationPage({
                           {group.parts.map((part) => (
                             <tr key={part.name}>
                               <td>{part.name}</td>
-                              <td className={styles.num}>
+                              <td className={styles.qtyCenter}>
                                 <input
                                   type="number"
                                   min="0"
@@ -3677,7 +3738,7 @@ function StockOutVerificationPage({
                     <thead>
                       <tr>
                         <th scope="col">Item</th>
-                        <th scope="col" className={styles.num}>Qty</th>
+                        <th scope="col" className={styles.qtyCenter}>Qty</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3686,7 +3747,7 @@ function StockOutVerificationPage({
                           {group.parts.map((name) => (
                             <tr key={name}>
                               <td>{name}</td>
-                              <td className={styles.num}>
+                              <td className={styles.qtyCenter}>
                                 <input
                                   type="number"
                                   min="0"
@@ -3797,10 +3858,9 @@ function StockOutVerificationPage({
 
       {/* 5. Footer Action Bar */}
       <div className={styles.inspectFooterBar}>
-        <button className={styles.btnActionGhost} type="button" onClick={onBack}>
-          &larr; Back to Transactions
-        </button>
-
+        <p className={`${styles.note} ${styles.footerTip}`}>
+          💡 <strong>Warehouse Tip:</strong> Scan physical barcodes of panels / inverters loaded onto installer lorry to register serial numbers for Job #{schedule?.jobId ?? tx.reference}. When all {totalRequired} units reach 100%, the <strong>Verified</strong> button unlocks.
+        </p>
         <div className={styles.inspectActionGroup}>
           <button
             className={`${styles.btnActionPrimary} ${
@@ -3821,10 +3881,6 @@ function StockOutVerificationPage({
           </button>
         </div>
       </div>
-
-      <p className={styles.note} style={{ marginTop: "4px" }}>
-        💡 <strong>Warehouse Tip:</strong> Scan physical barcodes of panels / inverters loaded onto installer lorry to register serial numbers for Job #{schedule?.jobId ?? tx.reference}. When all {totalRequired} units reach 100%, the <strong>Verified</strong> button unlocks.
-      </p>
 
       {/* PV drawing viewer */}
       {sldOpen && (
@@ -4144,12 +4200,18 @@ function StockTransferVerificationPage({
   useEffect(() => {
     let stream: MediaStream | null = null;
     let detectorTimer: NodeJS.Timeout | null = null;
+    // Set when the camera is closed (or the page re-renders) before the camera has started,
+    // so a stream that arrives late is stopped instead of keeping the camera busy.
+    let cancelled = false;
 
     if (cameraActive) {
-      if (typeof navigator !== "undefined" && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        navigator.mediaDevices
-          .getUserMedia({ video: { facingMode: "environment" } })
+      if (typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getUserMedia === "function") {
+        openCameraStream()
           .then((s) => {
+            if (cancelled) {
+              s.getTracks().forEach((t) => t.stop());
+              return;
+            }
             stream = s;
             if (videoRef.current) {
               videoRef.current.srcObject = s;
@@ -4174,11 +4236,11 @@ function StockTransferVerificationPage({
               } catch {}
             }
           })
-          .catch(() => {
-            setCameraError("Camera unavailable or permission denied. You can test detection below or use a handheld barcode scanner.");
+          .catch((err) => {
+            if (!cancelled) setCameraError(cameraErrorMessage(err));
           });
       } else {
-        setCameraError("Camera API not supported on this browser.");
+        setCameraError(cameraErrorMessage(null));
       }
     } else {
       if (videoRef.current && videoRef.current.srcObject) {
@@ -4189,6 +4251,7 @@ function StockTransferVerificationPage({
     }
 
     return () => {
+      cancelled = true;
       if (detectorTimer) clearInterval(detectorTimer);
       if (stream) {
         stream.getTracks().forEach((t) => t.stop());
@@ -4293,8 +4356,8 @@ function StockTransferVerificationPage({
     <section className={styles.screen} aria-labelledby="stocktransfer-verify-title">
       {/* Top Navigation */}
       <div className={styles.inspectTopBar}>
-        <button className={styles.inspectBackBtn} type="button" onClick={onBack}>
-          &larr; Back to Stock Transactions
+        <button className={styles.btnActionGhost} type="button" onClick={onBack}>
+          &larr; Back to Transactions
         </button>
         <button type="button" className={styles.btnActionGhost} onClick={() => setReportOpen(true)}>
           Report
@@ -4485,18 +4548,20 @@ function StockTransferVerificationPage({
               Scan physical barcodes using live mobile camera or handheld laser gun to record each unit loading from {fromWh} to {toWh}.
             </p>
           </div>
-          <button
-            type="button"
-            className={`${styles.scannerBtnCamera} ${cameraActive ? styles.scannerBtnCameraActive : ""}`}
-            onClick={() => setCameraActive(!cameraActive)}
-          >
-            <span>📷</span> {cameraActive ? "Hide Camera" : "Use Camera Scanner"}
-          </button>
         </div>
 
         {/* Camera Viewfinder */}
         {cameraActive && (
           <div className={styles.cameraViewfinder}>
+                <button
+                  type="button"
+                  className={styles.cameraCloseBtn}
+                  onClick={() => setCameraActive(false)}
+                  aria-label="Close camera"
+                  title="Close camera"
+                >
+                  ✕
+                </button>
             <div className={styles.cameraScanLine} />
             <video ref={videoRef} className={styles.videoCameraActive} playsInline autoPlay muted />
             {cameraError && (
@@ -4545,7 +4610,15 @@ function StockTransferVerificationPage({
             value={barcodeInput}
             onChange={(e) => setBarcodeInput(e.target.value)}
           />
-          <button type="submit" className={styles.scannerBtnScan}>
+          <button
+            type="button"
+            className={styles.scannerBtnScan}
+            title="Records the typed serial; with an empty box it opens the camera scanner"
+            onClick={() => {
+              if (barcodeInput.trim()) handleScan();
+              else setCameraActive(true);
+            }}
+          >
             <span>⚡</span> Scan / Match
           </button>
         </form>
@@ -4661,10 +4734,9 @@ function StockTransferVerificationPage({
 
       {/* 5. Footer Action Bar */}
       <div className={styles.inspectFooterBar}>
-        <button className={styles.btnActionGhost} type="button" onClick={onBack}>
-          &larr; Back to Transactions
-        </button>
-
+        <p className={`${styles.note} ${styles.footerTip}`}>
+          💡 <strong>Warehouse Tip:</strong> Scan physical barcodes of units loaded onto transit lorry {vehiclePlate} moving between {fromWh} and {toWh}. When all {totalRequired} units reach 100%, the <strong>Verified</strong> button unlocks.
+        </p>
         <div className={styles.inspectActionGroup}>
           <button
             className={styles.btnActionDanger}
@@ -4696,10 +4768,6 @@ function StockTransferVerificationPage({
           </button>
         </div>
       </div>
-
-      <p className={styles.note} style={{ marginTop: "4px" }}>
-        💡 <strong>Warehouse Tip:</strong> Scan physical barcodes of units loaded onto transit lorry {vehiclePlate} moving between {fromWh} and {toWh}. When all {totalRequired} units reach 100%, the <strong>Verified</strong> button unlocks.
-      </p>
 
       {/* Transfer Report (includes the Physical Inspection & Inter-Warehouse Transit Checklist) */}
       {reportOpen && (
@@ -4843,7 +4911,7 @@ function StockTransferVerificationPage({
               <div className={styles.excelRibbonActions}>
                 <input
                   type="search"
-                  className={styles.excelRibbonSearch}
+                  className={styles.searchCompact}
                   placeholder="🔍 Search sheet..."
                   value={excelSearch}
                   onChange={(e) => setExcelSearch(e.target.value)}
@@ -5032,8 +5100,8 @@ function TransactionInspectionPage({
   return (
     <section className={styles.screen} aria-labelledby="tx-inspection-title">
       <div className={styles.inspectTopBar}>
-        <button className={styles.inspectBackBtn} type="button" onClick={onBack}>
-          &larr; Back to Stock Transactions
+        <button className={styles.btnActionGhost} type="button" onClick={onBack}>
+          &larr; Back to Transactions
         </button>
         <span
           className={
@@ -5338,10 +5406,6 @@ function TransactionInspectionPage({
 
       {/* Footer Action Bar */}
       <div className={styles.inspectFooterBar}>
-        <button className={styles.btnActionGhost} type="button" onClick={onBack}>
-          &larr; Back to Transactions
-        </button>
-
         <div className={styles.inspectActionGroup}>
           {tx.status !== "Inspected" && (
             <button
@@ -5456,9 +5520,25 @@ function HomeTab({
   onOpenStock,
   canUpload,
   verifications,
+  txType,
+  setTxType,
+  txCat,
+  setTxCat,
+  txStatusTab,
+  setTxStatusTab,
+  selectedDay,
+  setSelectedDay,
 }: {
   transactions: StockTransaction[];
   onInspectTx: (id: string) => void;
+  txType: HomeTxType;
+  setTxType: Dispatch<SetStateAction<HomeTxType>>;
+  txCat: string;
+  setTxCat: Dispatch<SetStateAction<string>>;
+  txStatusTab: "toVerify" | "verified";
+  setTxStatusTab: Dispatch<SetStateAction<"toVerify" | "verified">>;
+  selectedDay: string;
+  setSelectedDay: Dispatch<SetStateAction<string>>;
   peak?: number;
   onSignOut: () => void;
   onInverterOpen: () => void;
@@ -5470,16 +5550,12 @@ function HomeTab({
   verifications: VerificationRecord[];
 }) {
   const [whFilter, setWhFilter] = useState<"all" | "JB" | "KL">("all");
-  const [txType, setTxType] = useState<"all" | "in" | "out" | "transfer">("all");
-  const [txCat, setTxCat] = useState<string>("all");
   const [txSearch, setTxSearch] = useState("");
   const [prepReportOpen, setPrepReportOpen] = useState(false);
   const doFiles = useDoFiles(showTx && txType === "in");
   const prepSheetRef = useRef<HTMLDivElement>(null);
   const [checkedBy, setCheckedBy] = useState("");
-  const [txStatusTab, setTxStatusTab] = useState<"toVerify" | "verified">("toVerify");
   const txSectionRef = useRef<HTMLDivElement>(null);
-  const [selectedDay, setSelectedDay] = useState(() => isoToday());
   const isToday = selectedDay === isoToday();
   const dayLabel = getDayLabel(selectedDay);
   const inSelectedDay = (tx: StockTransaction) => txDate(tx) === selectedDay;
@@ -5855,7 +5931,7 @@ function HomeTab({
                 <input
                   type="date"
                   className={`${styles.scannerInput} ${styles.transferField}`}
-                  style={{ width: "auto", minWidth: 0, height: "36px", flex: "none" }}
+                  style={{ width: "auto", minWidth: 0, flex: "none" }}
                   value={selectedDay}
                   onChange={(e) => {
                     if (e.target.value) setSelectedDay(e.target.value);
@@ -5907,7 +5983,7 @@ function HomeTab({
 
               <input
                 type="search"
-                className={styles.txSearchInput}
+                className={`${styles.txSearchInput} ${styles.searchCompact}`}
                 placeholder="Search reference, customer, model..."
                 value={txSearch}
                 onChange={(e) => setTxSearch(e.target.value)}
@@ -5926,15 +6002,31 @@ function HomeTab({
                       <th scope="col">Customer Name</th>
                       <th scope="col">Model / Serial</th>
                       <th scope="col" className={styles.num}>Qty</th>
-                      <th scope="col">Type</th>
+                      {txType !== "out" && <th scope="col">Type</th>}
                       <th scope="col">Installation Date</th>
-                      <th scope="col">WH</th>
-                      <th scope="col">Status</th>
                     </tr>
                   </thead>
                   <tbody>
                     {filteredTx.map((tx) => (
-                      <tr key={tx.id}>
+                      <tr
+                        key={tx.id}
+                        className={styles.txRowClickable}
+                        tabIndex={0}
+                        onClick={() => onInspectTx(tx.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            onInspectTx(tx.id);
+                          }
+                        }}
+                        title={
+                          tx.status === "To Verify"
+                            ? "To Verify — tap to inspect"
+                            : tx.status === "Inspected"
+                            ? "Inspected (issue) — tap to open"
+                            : "Verified — tap to view"
+                        }
+                      >
                         <td className={styles.txRefCell}>
                           <span className={styles.txCustName}>{tx.party}</span>
                           <span className={`${styles.txParty} ${styles.txInvoiceNo}`}>{tx.reference}</span>
@@ -5981,6 +6073,7 @@ function HomeTab({
                             ? `${tx.qty}`
                             : `${tx.qty}`}
                         </td>
+                        {txType !== "out" && (
                         <td>
                           <span
                             className={`${styles.txTypeText} ${
@@ -5994,44 +6087,9 @@ function HomeTab({
                             {tx.type === "in" ? "IN" : tx.type === "out" ? "OUT" : "TRANSFER"}
                           </span>
                         </td>
+                        )}
                         <td style={{ whiteSpace: "nowrap", fontSize: "12px", color: "#000" }}>
                           {isoDateLabel(tx.time)}
-                        </td>
-                        <td>
-                          {tx.type === "transfer" && tx.transfer ? (
-                            <span
-                              className={styles.txWhText}
-                              title={`Transfer from ${tx.transfer.fromWarehouse} to ${tx.transfer.toWarehouse}`}
-                            >
-                              {tx.transfer.fromWarehouse} ➔ {tx.transfer.toWarehouse}
-                            </span>
-                          ) : (
-                            <span className={styles.txWhText}>{tx.warehouse}</span>
-                          )}
-                        </td>
-                        <td>
-                          <button
-                            type="button"
-                            className={
-                              tx.status === "To Verify"
-                                ? styles.btnToVerify
-                                : tx.status === "Inspected"
-                                ? styles.btnInspected
-                                : styles.btnVerified
-                            }
-                            onClick={() => onInspectTx(tx.id)}
-                            title={
-                              tx.status === "To Verify"
-                                ? "To Verify — Click to inspect transaction"
-                                : tx.status === "Inspected"
-                                ? "Inspected (Issue) — Pending issue like missing item or damage"
-                                : "Verified — All items received in good condition"
-                            }
-                          >
-                            {tx.status === "To Verify" && "To Verify ➔"}
-                            {tx.status === "Inspected" && "⚠️ Inspected"}
-                            {tx.status === "Verified" && "Verified ✓"}
-                          </button>
                         </td>
                       </tr>
                     ))}
@@ -6326,12 +6384,18 @@ function StockTransferTab({
   useEffect(() => {
     let stream: MediaStream | null = null;
     let detectorTimer: NodeJS.Timeout | null = null;
+    // Set when the camera is closed (or the page re-renders) before the camera has started,
+    // so a stream that arrives late is stopped instead of keeping the camera busy.
+    let cancelled = false;
 
     if (cameraActive) {
-      if (typeof navigator !== "undefined" && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        navigator.mediaDevices
-          .getUserMedia({ video: { facingMode: "environment" } })
+      if (typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getUserMedia === "function") {
+        openCameraStream()
           .then((s) => {
+            if (cancelled) {
+              s.getTracks().forEach((t) => t.stop());
+              return;
+            }
             stream = s;
             if (videoRef.current) {
               videoRef.current.srcObject = s;
@@ -6356,11 +6420,11 @@ function StockTransferTab({
               } catch {}
             }
           })
-          .catch(() => {
-            setCameraError("Camera unavailable or permission denied. You can test detection below or use a handheld barcode scanner.");
+          .catch((err) => {
+            if (!cancelled) setCameraError(cameraErrorMessage(err));
           });
       } else {
-        setCameraError("Camera API not supported on this browser.");
+        setCameraError(cameraErrorMessage(null));
       }
     } else {
       if (videoRef.current && videoRef.current.srcObject) {
@@ -6371,6 +6435,7 @@ function StockTransferTab({
     }
 
     return () => {
+      cancelled = true;
       if (detectorTimer) clearInterval(detectorTimer);
       if (stream) {
         stream.getTracks().forEach((t) => t.stop());
@@ -6482,9 +6547,6 @@ function StockTransferTab({
           <h1 id="stock-transfer-title" className={styles.sectionTitle} style={{ margin: "0 0 4px", fontSize: "24px", fontWeight: 700, color: "#000" }}>
             Stock Transfer
           </h1>
-          <p className={styles.kicker}>
-            Online banking style stock transfer — select origin, destination, equipment, and verify barcodes before dispatch.
-          </p>
         </div>
       </div>
 
@@ -6579,6 +6641,10 @@ function StockTransferTab({
                 <option value="KL">Kuala Lumpur (KL) Warehouse</option>
                 <option value="JB">Johor Bahru (JB) Warehouse</option>
               </select>
+              <div className={styles.bankingAccountBalance}>
+                <span>📦 Available on Hand:</span>
+                <strong>{availableAtDest} units</strong>
+              </div>
             </div>
           </div>
 
@@ -6637,7 +6703,8 @@ function StockTransferTab({
             </div>
           </div>
 
-          {/* Transport & Driver Details */}
+          {/* Transport & Driver Details, separated from the item fields by a line */}
+          <hr style={{ border: 0, borderTop: "1px solid var(--line)", margin: "4px 0 16px" }} />
           <div className={styles.bankingAmountGrid} style={{ marginBottom: "0" }}>
             <div className={styles.bankingFieldGroup}>
               <label className={styles.bankingFieldLabel}>Driver &amp; Logistics Team:</label>
@@ -6710,18 +6777,20 @@ function StockTransferTab({
                 Scan physical barcodes using live mobile camera or handheld laser gun to record each unit loading from {fromWh} to {toWh}.
               </p>
             </div>
-            <button
-              type="button"
-              className={`${styles.scannerBtnCamera} ${cameraActive ? styles.scannerBtnCameraActive : ""}`}
-              onClick={() => setCameraActive(!cameraActive)}
-            >
-              <span>📷</span> {cameraActive ? "Hide Camera" : "Use Camera Scanner"}
-            </button>
           </div>
 
           {/* Camera Viewfinder */}
           {cameraActive && (
             <div className={styles.cameraViewfinder}>
+                <button
+                  type="button"
+                  className={styles.cameraCloseBtn}
+                  onClick={() => setCameraActive(false)}
+                  aria-label="Close camera"
+                  title="Close camera"
+                >
+                  ✕
+                </button>
               <div className={styles.cameraScanLine} />
               <video ref={videoRef} className={styles.videoCameraActive} playsInline autoPlay muted />
               {cameraError && (
@@ -6757,7 +6826,15 @@ function StockTransferTab({
               value={barcodeInput}
               onChange={(e) => setBarcodeInput(e.target.value)}
             />
-            <button type="submit" className={styles.scannerBtnScan}>
+            <button
+            type="button"
+            className={styles.scannerBtnScan}
+            title="Records the typed serial; with an empty box it opens the camera scanner"
+            onClick={() => {
+              if (barcodeInput.trim()) handleScan();
+              else setCameraActive(true);
+            }}
+          >
               <span>⚡</span> Scan / Record
             </button>
           </form>
@@ -6877,17 +6954,12 @@ function StockTransferTab({
             disabled={!isAllVerified}
             onClick={handleAuthorizeVerifiedTransfer}
             title="Scan at least one unit to unlock verification"
-            style={{ padding: "10px 24px", fontSize: "14px" }}
           >
             {isAllVerified
               ? "✓ Verified (Authorize & Complete Transfer)"
               : "🔒 Verified (scan at least one unit to unlock)"}
           </button>
         </div>
-
-        <p className={styles.note} style={{ marginTop: "4px" }}>
-          💡 <strong>Online Banking Model:</strong> Once you click <strong>Verified</strong>, this transfer data will sit on <strong>Stock Transactions</strong> (under Home tab). No persistent data sits on this transfer tab, keeping it clean for your next transfer!
-        </p>
       </div>
 
       {/* Transfer Report (includes the Physical Inspection & Transit Checklist) */}
@@ -7068,13 +7140,14 @@ function StockDetailsTab({
       <h1 id="warehouse-stock-details">Stock Details</h1>
       <p className={styles.kicker}>Current inventory across JB and KL warehouses.</p>
 
-      {/* Warehouse filter */}
-      <div className={styles.filterRow}>
+      {/* Warehouse filter: same size as the Home page buttons */}
+      <div className={styles.filterRow} style={{ width: "50%", minWidth: "170px" }}>
         {(["all", "JB", "KL"] as const).map((value) => (
           <button
             key={value}
             type="button"
             className={`${styles.filterBtn} ${whFilter === value ? styles.filterActive : ""}`}
+            style={{ fontSize: "11px", padding: "3px 4px" }}
             onClick={() => setWhFilter(value)}
           >
             {value === "all" ? "All" : value}
@@ -7093,8 +7166,8 @@ function StockDetailsTab({
       {/* Detail tables, all filtered by the one search box */}
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: "10px", marginTop: "18px", marginBottom: "12px" }}>
         <input
-          className={styles.tableSearch}
-          style={{ width: "auto", minWidth: "240px", marginTop: 0, marginLeft: "auto" }}
+          className={styles.searchCompact}
+          style={{ marginLeft: "auto" }}
           type="search"
           placeholder="Search this tab by model or code"
           aria-label="Search stock by model or code"
@@ -7531,11 +7604,12 @@ function ArrangedInstallationView({ groups }: { groups: ArrangedGroupPayload[] }
     weekIndex ?? Math.max(0, weeks.includes(todayWeek) ? weeks.indexOf(todayWeek) : weeks.length - 1);
   const week = weeks[index];
   const [groupBy, setGroupBy] = useState<"team" | "installation" | "wiring">("team");
-  const rawGroups = groups.filter((g) => arrMonday(g.installationDate) === week);
+  const [nameQuery, setNameQuery] = useState("");
+  const query = nameQuery.trim().toLowerCase();
 
-  // Combine the week's bookings that share the chosen key into one section. Crew fields
+  // Combine a week's bookings that share the chosen key into one section. Crew fields
   // that differ between the combined bookings are listed together.
-  const weekGroups: ArrangedGroupPayload[] = (() => {
+  const mergeWeek = (rawGroups: ArrangedGroupPayload[]): ArrangedGroupPayload[] => {
     const keyOf = (g: ArrangedGroupPayload) =>
       groupBy === "team"
         ? g.teamLabel || "No team"
@@ -7564,14 +7638,30 @@ function ArrangedInstallationView({ groups }: { groups: ArrangedGroupPayload[] }
       ...g,
       customers: [...g.customers].sort((a, b) => (a.date + (a.time || "")).localeCompare(b.date + (b.time || ""))),
     }));
-  })();
+  };
+
+  // No search: the chosen week. Searching: every week with a customer whose name (or
+  // invoice number) matches, showing only the matching customers.
+  const matches = (c: ArrangedCustomerPayload) =>
+    c.name.toLowerCase().includes(query) || c.invoice.toLowerCase().includes(query);
+  const sections: { week: string; groups: ArrangedGroupPayload[] }[] = query
+    ? weeks
+        .map((w) => ({
+          week: w,
+          groups: mergeWeek(groups.filter((g) => arrMonday(g.installationDate) === w))
+            .map((g) => ({ ...g, customers: g.customers.filter(matches) }))
+            .filter((g) => g.customers.length > 0),
+        }))
+        .filter((section) => section.groups.length > 0)
+    : [{ week, groups: mergeWeek(groups.filter((g) => arrMonday(g.installationDate) === week)) }];
+  const matchCount = sections.reduce((sum, sec) => sum + sec.groups.reduce((n, g) => n + g.customers.length, 0), 0);
 
   return (
     <section className={styles.screen} aria-labelledby="warehouse-arranged">
       <div className={styles.arrHeader}>
         <div>
           <h1 id="warehouse-arranged">Customer Details</h1>
-          <p className={styles.kicker}>Customers scheduled with installation dates and teams</p>
+          <p className={styles.kicker}>Details are from Project Team</p>
         </div>
         <div className={styles.arrNav}>
           <label className={styles.bankingFieldLabel} style={{ display: "flex", alignItems: "center", gap: "6px", margin: 0 }}>
@@ -7620,12 +7710,31 @@ function ArrangedInstallationView({ groups }: { groups: ArrangedGroupPayload[] }
         </div>
       </div>
 
-      {weekGroups.length === 0 ? (
+      {/* Customer search, below the week buttons */}
+      <div style={{ display: "flex", justifyContent: "flex-end", margin: "0 0 12px" }}>
+        <input
+          type="search"
+          className={styles.searchCompact}
+          placeholder="Search customer name"
+          aria-label="Search customer name"
+          value={nameQuery}
+          onChange={(e) => setNameQuery(e.target.value)}
+        />
+      </div>
+
+      {query && (
+        <p className={styles.note} style={{ margin: "0 0 10px" }}>
+          {matchCount === 0
+            ? `No customer matches "${nameQuery.trim()}" in any week.`
+            : `${matchCount} customer${matchCount === 1 ? "" : "s"} matching "${nameQuery.trim()}", across all weeks.`}
+        </p>
+      )}
+      {!query && sections[0].groups.length === 0 ? (
         <p className={styles.note}>No arranged installation in this period.</p>
       ) : (
-        weekGroups.map((group, gi) => (
-          <div key={group.id} className={styles.arrGroup}>
-            <div className={styles.arrWeekBar}>Week {arrWeekLabel(week)}</div>
+        sections.flatMap((section) => section.groups.map((group, gi) => (
+          <div key={`${section.week}-${group.id}`} className={styles.arrGroup}>
+            <div className={styles.arrWeekBar}>Week {arrWeekLabel(section.week)}</div>
             <div className={styles.arrTeamBand} style={{ background: ARR_BAND_COLOURS[gi % ARR_BAND_COLOURS.length] }}>
               <div className={styles.arrTeamName}>
                 <strong>{group.teamLabel || "Team"}</strong>
@@ -7694,7 +7803,7 @@ function ArrangedInstallationView({ groups }: { groups: ArrangedGroupPayload[] }
               </tbody>
             </table>
           </div>
-        ))
+        )))
       )}
     </section>
   );

@@ -610,6 +610,7 @@ button.typeCard {
   border: 0;
   background: transparent;
   color: var(--frost);
+  font-weight: 700;
   padding: 0;
   margin-bottom: 8px;
 }
@@ -658,8 +659,8 @@ button.typeCard {
   margin: 0 auto 16px;
   display: flex;
   gap: 2px;
-  background: var(--surface);
-  border: 1px solid var(--line);
+  background: #bf9000;
+  border: 1px solid #bf9000;
   border-radius: 10px;
   padding: 2px;
   box-sizing: border-box;
@@ -677,7 +678,7 @@ button.typeCard {
   min-width: 0;
   border: 0;
   background: transparent;
-  color: var(--muted);
+  color: #ffffff;
   font: inherit;
   font-size: 11.5px;
   font-weight: 500;
@@ -711,24 +712,26 @@ button.typeCard {
 }
 
 .tab:hover {
-  color: #1e3a8a;
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
 }
 
-/* The active tab keeps white text on hover too (on a phone a tapped tab stays "hovered", which made it dark blue on dark blue) */
+/* Gold tab bar (#bf9000): the active tab is a white pill with dark gold text,
+   and keeps it on hover too (on a phone a tapped tab stays "hovered"). */
 .tab.tabActive,
 .tab.tabActive:hover {
-  color: #ffffff;
+  background: #ffffff;
+  color: #7a5c00;
 }
 
 .tabActive {
-  background: #1e3a8a;
-  color: #ffffff;
   font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
 }
 
 .tab:focus-visible {
-  outline: 2px solid var(--frost);
-  outline-offset: 2px;
+  outline: 2px solid #ffffff;
+  outline-offset: 1px;
 }
 
 /* ── Placeholder empty-state ─────────────────────────────────────────── */
@@ -1422,7 +1425,7 @@ button.typeCard {
 .brandLogo {
   display: block;
   width: auto;
-  height: 20px;
+  height: 15px;
 }
 
 .brandRight {
@@ -1433,8 +1436,8 @@ button.typeCard {
 
 .brandUser {
   font-size: 12px;
-  color: var(--muted);
-  font-weight: 500;
+  color: #000000;
+  font-weight: 700;
 }
 
 .brandSignOut {
@@ -1479,7 +1482,7 @@ button.typeCard {
 }
 
 .desktop .brandLogo {
-  height: 24px;
+  height: 17px;
 }
 
 .desktop .lockLogo {
@@ -1655,7 +1658,7 @@ button.typeCard {
 
 @media (min-width: 900px) {
   .balanceGrid {
-    gap: 12px;
+    gap: 8px;
   }
 }
 
@@ -1672,7 +1675,7 @@ button.typeCard {
 
 @media (min-width: 900px) {
   .balanceCard {
-    padding: 16px;
+    padding: 8px 10px;
   }
 }
 
@@ -1704,7 +1707,7 @@ button.typeCard {
 
 @media (min-width: 900px) {
   .balanceCard .typeName {
-    font-size: 15px;
+    font-size: 12.5px;
   }
 }
 
@@ -1719,12 +1722,12 @@ button.typeCard {
   display: flex;
   align-items: baseline;
   gap: 3px;
-  margin: 3px 0 6px;
+  margin: 2px 0 4px;
   flex-wrap: wrap;
 }
 
 .balanceCard .onHandNumber {
-  font-size: 20px;
+  font-size: 17px;
   font-weight: 700;
   color: var(--ink);
   line-height: 1;
@@ -1733,7 +1736,7 @@ button.typeCard {
 
 @media (min-width: 900px) {
   .balanceCard .onHandNumber {
-    font-size: 34px;
+    font-size: 22px;
   }
 }
 
@@ -1745,7 +1748,7 @@ button.typeCard {
 
 @media (min-width: 900px) {
   .balanceCard .onHandLabel {
-    font-size: 13px;
+    font-size: 11px;
   }
 }
 
@@ -1769,9 +1772,9 @@ button.typeCard {
 
 @media (min-width: 900px) {
   .balanceCard .onHandSplit {
-    font-size: 12px;
-    gap: 14px;
-    padding-top: 8px;
+    font-size: 10.5px;
+    gap: 8px;
+    padding-top: 5px;
   }
 }
 
@@ -1784,8 +1787,7 @@ button.typeCard {
 }
 
 .balanceHintPlaceholder {
-  height: 13px;
-  margin-top: 4px;
+  display: none;
 }
 
 .balanceBadge {
@@ -2172,9 +2174,10 @@ button.typeCard {
   background: var(--surface);
   color: var(--muted);
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
-  padding: 5px 12px;
+  line-height: 1.4;
+  padding: 3px 10px;
   border-radius: 999px;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -2553,7 +2556,7 @@ button.typeCard {
 
 .inspectFooterBar {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
@@ -2611,10 +2614,11 @@ button.typeCard {
   background: transparent;
   color: var(--muted);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 6px;
   font: inherit;
-  font-size: 13px;
-  padding: 10px 16px;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 4px 10px;
   cursor: pointer;
 }
 
@@ -2690,7 +2694,7 @@ button.typeCard {
   padding: 0 14px;
   border: 2px solid var(--frost);
   border-radius: 8px;
-  background: var(--surface-soft);
+  background: transparent;
   color: var(--ink);
   font: inherit;
   font-size: 14px;
@@ -2702,7 +2706,7 @@ button.typeCard {
 .scannerInput:focus {
   border-color: var(--green);
   box-shadow: 0 0 0 3px rgba(35, 122, 75, 0.18);
-  background: var(--surface);
+  background: transparent;
 }
 
 .scannerBtnScan {
@@ -2723,27 +2727,6 @@ button.typeCard {
 
 .scannerBtnScan:hover {
   background: #004d40;
-}
-
-.scannerBtnCamera {
-  background: var(--surface-soft);
-  color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 0 14px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.scannerBtnCameraActive {
-  background: rgba(28, 110, 140, 0.15);
-  border-color: var(--frost);
-  color: var(--frost);
 }
 
 .cameraViewfinder {
@@ -4199,8 +4182,8 @@ button.typeCard {
 
 .bankingRouteRow {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: stretch;
   gap: 16px;
   margin-bottom: 24px;
 }
@@ -4212,7 +4195,7 @@ button.typeCard {
 }
 
 .bankingAccountCard {
-  background: var(--surface-soft);
+  background: transparent;
   border: 1.5px solid var(--line);
   border-radius: 12px;
   padding: 16px 18px;
@@ -4509,12 +4492,18 @@ button.typeCard {
   color: #0284c7;
 }
 
-/* WH column in Stock Transactions: plain black text, no tag */
-.txWhText {
-  color: #000;
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
+/* Stock Transactions rows open the inspection on tap (status shows on the To Verify / Verified tabs) */
+.txRowClickable {
+  cursor: pointer;
+}
+
+.txRowClickable:hover td {
+  background: #f8fafc;
+}
+
+.txRowClickable:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: -2px;
 }
 
 /* Stock Transactions table: black header, time and reference text */
@@ -4765,14 +4754,14 @@ button.typeCard {
 .arrWeekBar {
   background: #000;
   color: #fff;
-  font-size: 13px;
+  font-size: 11.5px;
   font-weight: 700;
-  padding: 8px 14px;
+  padding: 6px 12px;
 }
 
 .arrTeamBand {
   color: #fff;
-  padding: 10px 14px;
+  padding: 8px 12px;
   display: flex;
   flex-wrap: wrap;
   gap: 8px 24px;
@@ -4802,34 +4791,35 @@ button.typeCard {
 
 .arrCrew small {
   display: block;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   opacity: 0.85;
 }
 
 .arrCrew span {
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 .arrTable {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 10px;
+  line-height: 1.35;
   color: #000;
 }
 
 .arrTable th {
   text-align: left;
-  font-size: 11px;
+  font-size: 9px;
   font-weight: 700;
   color: #000;
   background: var(--surface-soft);
-  padding: 8px 10px;
+  padding: 5px 8px;
 }
 
 .arrTable td {
-  padding: 10px;
+  padding: 5px 8px;
   vertical-align: top;
   border-top: 1px solid var(--line);
   overflow-wrap: anywhere;
@@ -4838,14 +4828,14 @@ button.typeCard {
 .arrSlot span,
 .arrInvoice {
   display: block;
-  font-size: 11px;
+  font-size: 9px;
   color: var(--muted);
 }
 
 .arrBatteryTag {
   display: inline-block;
   margin-top: 4px;
-  font-size: 10px;
+  font-size: 9px;
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 0 6px;
@@ -4879,7 +4869,7 @@ button.typeCard {
   .arrTable td::before {
     content: attr(data-label);
     display: block;
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 700;
     color: var(--muted);
     text-transform: uppercase;
@@ -5201,8 +5191,6 @@ button.typeCard {
 
   .balanceHeaderRow .txWeekNav button {
     min-width: 0;
-    padding: 6px 8px;
-    font-size: 12px;
     white-space: nowrap;
     flex: none;
   }
@@ -5211,7 +5199,220 @@ button.typeCard {
     flex: 1 1 0 !important;
     min-width: 0 !important;
     width: auto !important;
-    font-size: 12px;
-    padding: 0 4px;
+  }
+}
+
+/* Every search box uses the Stock Details size (same height as the All / JB / KL buttons) */
+.searchCompact {
+  height: auto;
+  min-width: 240px;
+  margin-top: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+.searchCompact:focus-visible {
+  outline: 2px solid var(--frost);
+  outline-offset: 2px;
+}
+
+/* Day row (Previous, day badge, date, Next, Today): compact, same size as the search boxes */
+.txWeekNav {
+  gap: 6px;
+}
+
+.txWeekNav button,
+.txWeekNav input[type="date"],
+.txWeekNav .txWeekBadge {
+  height: auto;
+  min-height: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+.txWeekNav .txNavBtn {
+  min-width: 0;
+}
+
+.txWeekNav .txWeekBadge {
+  border-radius: 999px;
+}
+
+/* ── Large monitors: scale the whole page up so it fills the screen ──────
+   Phone (< 900px) and laptop / desktop (900–1599px) keep their own layouts.
+   On wider monitors everything (text, cards, tables, buttons) grows together,
+   so the 1120px column becomes ~1340px at 1600px and ~1620px at 2200px+.
+   Pop-ups sized in vh / vw are divided by the same factor so they still fit
+   the screen height. */
+@media (min-width: 1600px) {
+  .desktop.page {
+    zoom: 1.2;
+  }
+
+  .desktop.page .invoiceModal,
+  .desktop.page .serialModal,
+  .desktop.page .transferModal,
+  .desktop.page .transferReportCard {
+    max-height: calc(90vh / 1.2);
+  }
+
+  .desktop.page .excelModal {
+    width: calc(96vw / 1.2);
+    height: calc(90vh / 1.2);
+    max-height: calc(90vh / 1.2);
+  }
+
+  .desktop.page .noticePanel {
+    max-height: calc((100vh - 32px) / 1.2);
+  }
+}
+
+@media (min-width: 2200px) {
+  .desktop.page {
+    zoom: 1.45;
+  }
+
+  .desktop.page .invoiceModal,
+  .desktop.page .serialModal,
+  .desktop.page .transferModal,
+  .desktop.page .transferReportCard {
+    max-height: calc(90vh / 1.45);
+  }
+
+  .desktop.page .excelModal {
+    width: calc(96vw / 1.45);
+    height: calc(90vh / 1.45);
+    max-height: calc(90vh / 1.45);
+  }
+
+  .desktop.page .noticePanel {
+    max-height: calc((100vh - 32px) / 1.45);
+  }
+}
+
+/* Phone: cards sit two per row, so an odd last card fills the whole row */
+@media (max-width: 639px) {
+  .balanceGrid > .balanceCard:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Stock out (mounting / electrical): Qty header, cell and number box centred */
+.mountTable th.qtyCenter,
+.mountTable td.qtyCenter {
+  text-align: center;
+}
+
+.mountTable td.qtyCenter input {
+  margin: 0 auto;
+  text-align: center;
+}
+
+/* Stock Transfer: From and To boxes are the same size; the swap button stays centred between them */
+.bankingRouteRow > :not(.bankingAccountCard) {
+  align-self: center;
+  justify-self: center;
+}
+
+/* Action buttons (Verified, Flag Issue, secondary) are the same size as the outlined
+   buttons such as Clear / Reset Form: 11px text, 4px 10px padding, 1px border. */
+.btnActionPrimary,
+.btnActionSecondary,
+.btnActionDanger {
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.btnActionPrimary {
+  border: 1px solid transparent;
+}
+
+/* Camera scanner: opened by the Scan button, closed with this ✕ in the corner */
+.cameraCloseBtn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffffff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cameraCloseBtn:hover {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+/* Warehouse Tip sits on the same row as the Verified button: tip on the left, buttons on the right.
+   On a narrow screen the buttons wrap below the tip. */
+.inspectFooterBar .footerTip {
+  flex: 1 1 280px;
+  margin: 0 auto 0 0;
+  text-align: left;
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
+.inspectFooterBar .footerTip + .inspectActionGroup {
+  margin-left: auto;
+}
+
+/* Customer Details: week row (Group by, Previous, week picker, Next) uses the
+   same compact size as the Stock Out day row */
+.arrNav {
+  gap: 6px;
+}
+
+.arrNav button,
+.arrNav select {
+  height: auto;
+  min-height: 0;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+.arrNav label {
+  font-size: 11px;
+}
+
+/* Customer Details: Slot (date / time) and Customer (name / invoice) columns one step smaller */
+.arrTable td[data-label="Slot"],
+.arrTable td[data-label="Customer"] {
+  font-size: 9px;
+}
+
+.arrTable td[data-label="Slot"] span,
+.arrTable td[data-label="Customer"] .arrInvoice {
+  font-size: 8.5px;
+}
+
+/* Big monitors: the page is scaled up (1.2× / 1.45×), but the Customer Details table keeps
+   its real small text size, so the Slot and Customer columns stay small there too. */
+@media (min-width: 1600px) {
+  .desktop.page .arrTable {
+    zoom: 0.8333;
+  }
+}
+
+@media (min-width: 2200px) {
+  .desktop.page .arrTable {
+    zoom: 0.6897;
   }
 }
