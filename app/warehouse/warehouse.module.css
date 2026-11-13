@@ -5538,9 +5538,15 @@ button.typeCard {
     padding: 12px;
   }
 
-  .soPage .scannerInput {
+  /* Only the scan box in its row grows sideways; boxes stacked in a column must not grow */
+  .soPage .scannerInputRow .scannerInput {
     min-width: 0;
     flex: 1 1 140px;
+  }
+
+  .soPage .bankingFieldGroup .scannerInput {
+    min-width: 0;
+    flex: none;
   }
 
   /* Serial list: fixed layout so the four columns share the width and wrap */
@@ -5705,5 +5711,142 @@ button.typeCard {
   /* Save / Cancel while editing may stack instead of widening the table */
   .adminPage .detailTable td:last-child > * {
     flex-wrap: wrap;
+  }
+}
+
+/* Phone: stock out verification scan box and Scan / Match button are smaller and stay on one row */
+@media (max-width: 639px) {
+  .soPage .scannerInputRow {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .soPage .scannerInput {
+    height: 32px;
+    padding: 0 8px;
+    font-size: 11px;
+    border-width: 1.5px;
+    border-radius: 6px;
+  }
+
+  .soPage .scannerBtnScan {
+    flex: none;
+    height: 32px;
+    padding: 0 10px;
+    font-size: 11px;
+    gap: 4px;
+    border-radius: 6px;
+    white-space: nowrap;
+  }
+}
+
+/* Phone: stock out verification transport fields (Driver & Logistics Team, Lorry / Transport
+   Plate Number, Lorry Photo) are smaller. The two text boxes set 52px / 16px in the code,
+   so !important is needed. */
+@media (max-width: 639px) {
+  .soPage .bankingFieldGroup .bankingFieldLabel {
+    font-size: 11px;
+  }
+
+  .soPage .bankingFieldGroup input.scannerInput {
+    height: 32px !important;
+    font-size: 11px !important;
+    padding: 0 8px;
+    border-radius: 6px;
+  }
+
+  .soPage .lorryPhotoBox {
+    min-height: 72px;
+    border-radius: 6px;
+  }
+
+  .soPage .lorryPhotoEmpty {
+    font-size: 11px;
+    padding: 8px;
+  }
+
+  .soPage .lorryPhotoImg {
+    max-height: 200px;
+  }
+}
+
+/* Phone: Stock Transfer scanned-units table fits the screen (no sideways scrolling).
+   The four columns share the width and long serials wrap; the code sets fixed widths
+   and 13px text, so !important is needed. */
+@media (max-width: 639px) {
+  .transferPage .unitScrollTableWrap {
+    overflow-x: hidden;
+  }
+
+  .transferPage .unitScrollTableWrap table {
+    table-layout: fixed;
+    width: 100%;
+    font-size: 10px;
+  }
+
+  .transferPage .unitScrollTableWrap th,
+  .transferPage .unitScrollTableWrap td {
+    width: auto !important;
+    min-width: 0 !important;
+    padding: 5px 4px !important;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .transferPage .unitScrollTableWrap th {
+    font-size: 9px;
+  }
+
+  .transferPage .unitScrollTableWrap th:first-child,
+  .transferPage .unitScrollTableWrap td:first-child {
+    width: 28px !important;
+  }
+
+  .transferPage .unitScrollTableWrap th:last-child,
+  .transferPage .unitScrollTableWrap td:last-child {
+    width: 62px !important;
+  }
+
+  .transferPage .unitScrollTableWrap td div,
+  .transferPage .unitScrollTableWrap td strong {
+    font-size: 10px !important;
+    max-width: none;
+  }
+
+  .transferPage .unitScrollTableWrap td:first-child {
+    font-size: 9px !important;
+  }
+
+  .transferPage .unitScrollTableWrap td button {
+    font-size: 10px;
+    padding: 3px 6px;
+  }
+}
+
+/* Phone: Stock Transfer scan box and Scan / Record button on one row, same size as stock out */
+@media (max-width: 639px) {
+  .transferPage .scannerInputRow {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .transferPage .scannerInputRow .scannerInput {
+    flex: 1 1 140px;
+    min-width: 0;
+    height: 32px;
+    padding: 0 8px;
+    font-size: 11px;
+    border-width: 1.5px;
+    border-radius: 6px;
+  }
+
+  .transferPage .scannerBtnScan {
+    flex: none;
+    height: 32px;
+    padding: 0 10px;
+    font-size: 11px;
+    gap: 4px;
+    border-radius: 6px;
+    white-space: nowrap;
   }
 }

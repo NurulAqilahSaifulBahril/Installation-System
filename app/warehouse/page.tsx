@@ -641,6 +641,10 @@ function Dashboard({
   const [inverterOpen, setInverterOpen] = useState(false);
   const [inverterType, setInverterType] = useState<InverterTypeId | null>(null);
   const [inspectTxId, setInspectTxId] = useState<string | null>(null);
+  // Opening a customer's verification page starts at its header, not at the list's scroll position.
+  useEffect(() => {
+    if (inspectTxId) window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [inspectTxId]);
   const [transactions, setTransactions] = useState<StockTransaction[]>(STOCK_TRANSACTIONS);
   // Saved verification records: which job and material, and who completed it.
   const [verifications, setVerifications] = useState<VerificationRecord[]>([]);
@@ -6530,7 +6534,7 @@ function StockTransferTab({
   const toLabel = toWh === "JB" ? "Johor Bahru (JB) Warehouse" : "Kuala Lumpur (KL) Warehouse";
 
   return (
-    <section className={`${styles.screen} ${styles.arialPage}`} aria-labelledby="stock-transfer-title">
+    <section className={`${styles.screen} ${styles.arialPage} ${styles.transferPage}`} aria-labelledby="stock-transfer-title">
       {/* Back (left) and Report (right) on one row */}
       <div className={styles.head}>
         <button className={styles.back} type="button" onClick={onBack}>
@@ -6710,8 +6714,8 @@ function StockTransferTab({
               <label className={styles.bankingFieldLabel}>Driver &amp; Logistics Team:</label>
               <input
                 type="text"
-                className={`${styles.scannerInput} ${styles.transferField}`}
-                style={{ height: "52px", fontSize: "16px", width: "100%", minWidth: 0 }}
+                className={styles.bankingAccountSelect}
+                style={{ cursor: "text", lineHeight: 1.25 }}
                 value={driverName}
                 onChange={(e) => setDriverName(e.target.value)}
                 placeholder="Driver Name / Transport Team..."
@@ -6722,8 +6726,8 @@ function StockTransferTab({
               <label className={styles.bankingFieldLabel}>Lorry / Transport Plate Number:</label>
               <input
                 type="text"
-                className={`${styles.scannerInput} ${styles.transferField}`}
-                style={{ height: "52px", fontSize: "16px", width: "100%", minWidth: 0 }}
+                className={styles.bankingAccountSelect}
+                style={{ cursor: "text", lineHeight: 1.25 }}
                 value={vehiclePlate}
                 onChange={(e) => setVehiclePlate(e.target.value)}
                 placeholder="e.g. JTP 4910"
