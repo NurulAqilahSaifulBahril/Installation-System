@@ -4842,37 +4842,17 @@ button.typeCard {
   color: var(--muted);
 }
 
-/* Phone: each customer becomes a labelled card, so nothing scrolls sideways */
+/* Phone: the same table as desktop and monitor. Its columns keep a readable width, so
+   the table scrolls sideways inside its own box; the page itself does not scroll sideways. */
+.arrTableWrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 @media (max-width: 899px) {
-  .arrTable thead {
-    display: none;
-  }
-
-  .arrTable,
-  .arrTable tbody,
-  .arrTable tr,
-  .arrTable td {
-    display: block;
-    width: 100%;
-  }
-
-  .arrTable tr {
-    border-top: 1px solid var(--line);
-    padding: 8px 0;
-  }
-
-  .arrTable td {
-    border-top: 0;
-    padding: 4px 12px;
-  }
-
-  .arrTable td::before {
-    content: attr(data-label);
-    display: block;
-    font-size: 9px;
-    font-weight: 700;
-    color: var(--muted);
-    text-transform: uppercase;
+  .arrTable {
+    min-width: 760px;
   }
 }
 
@@ -5414,5 +5394,316 @@ button.typeCard {
 @media (min-width: 2200px) {
   .desktop.page .arrTable {
     zoom: 0.6897;
+  }
+}
+
+/* Stock Out list: Qty column (3rd) centred, header and every per-material line */
+.txLedgerOut th:nth-child(3),
+.txLedgerOut td:nth-child(3) {
+  text-align: center;
+}
+
+.txLedgerOut td:nth-child(3) .txItemEnd {
+  justify-content: center;
+}
+
+/* Phone: stock out item cards (Panel, Inverter, Battery, Mounting, Electrical) all on one row,
+   equal widths, with smaller text so up to five fit side by side */
+@media (max-width: 639px) {
+  .soCards {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .soCard {
+    min-width: 0;
+    padding: 6px 5px;
+    border-radius: 8px;
+  }
+
+  .soCardLabel {
+    font-size: 9.5px;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+  }
+
+  .soCardNumber {
+    font-size: 18px;
+  }
+
+  .soCardSub {
+    font-size: 8.5px;
+    line-height: 1.2;
+  }
+}
+
+/* Stock Out list: smaller table text and shorter material lines */
+.txLedgerOut {
+  font-size: 10px;
+}
+
+.txLedgerOut thead th {
+  font-size: 9px;
+}
+
+.txLedgerOut .txRefCell .txCustName {
+  font-size: 11px;
+}
+
+.txLedgerOut .txRefCell .txInvoiceNo {
+  font-size: 9px;
+}
+
+.txLedgerOut .txItem {
+  min-height: 32px;
+}
+
+.txLedgerOut td,
+.txLedgerOut td strong {
+  font-size: 10px;
+}
+
+.txLedgerOut td[style] {
+  font-size: 10px !important;
+}
+
+/* Phone: the "X units" figure on the Today Out / Today In / Today Transfer cards sits on the right */
+@media (max-width: 899px) {
+  .txKpiHeader .txKpiValue {
+    align-self: flex-end;
+    text-align: right;
+  }
+}
+
+/* Stock out verification: smaller text in its tables (serial list, mounting, electrical).
+   The serial table sets 13px in the code, so !important is needed to bring it down. */
+.soPage .unitScrollTableWrap table {
+  font-size: 9px;
+}
+
+.soPage .unitScrollTableWrap thead th {
+  font-size: 8px;
+  padding: 6px 8px;
+}
+
+.soPage .unitScrollTableWrap tbody td {
+  padding: 6px 8px;
+}
+
+.soPage .unitScrollTableWrap tbody td div,
+.soPage .unitScrollTableWrap tbody td strong {
+  font-size: 9px !important;
+}
+
+.soPage .unitScrollTableWrap tbody td:first-child {
+  font-size: 8px !important;
+}
+
+.soPage .matchPill {
+  font-size: 8px;
+  padding: 2px 6px;
+}
+
+.soPage .mountTable,
+.soPage .mountTable td,
+.soPage .mountTable input {
+  font-size: 9px;
+}
+
+.soPage .mountTable th {
+  font-size: 8px;
+}
+
+/* Big monitors: the page is scaled up (1.2x / 1.45x); the stock out verification tables keep
+   their real small size, the same as the Customer Details table */
+@media (min-width: 1600px) {
+  .desktop.page .soPage .unitScrollTableWrap,
+  .desktop.page .soPage .mountTable {
+    zoom: 0.8333;
+  }
+}
+
+@media (min-width: 2200px) {
+  .desktop.page .soPage .unitScrollTableWrap,
+  .desktop.page .soPage .mountTable {
+    zoom: 0.6897;
+  }
+}
+
+/* Phone: stock out verification fits the screen width (no sideways scrolling) */
+@media (max-width: 639px) {
+  .soPage .inspectCard {
+    padding: 12px;
+  }
+
+  .soPage .scannerInput {
+    min-width: 0;
+    flex: 1 1 140px;
+  }
+
+  /* Serial list: fixed layout so the four columns share the width and wrap */
+  .soPage .unitScrollTableWrap {
+    overflow-x: hidden;
+  }
+
+  .soPage .unitScrollTableWrap table {
+    table-layout: fixed;
+    width: 100%;
+  }
+
+  .soPage .unitScrollTableWrap th,
+  .soPage .unitScrollTableWrap td {
+    width: auto !important;
+    min-width: 0 !important;
+    padding: 5px 4px !important;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .soPage .unitScrollTableWrap th:first-child,
+  .soPage .unitScrollTableWrap td:first-child {
+    width: 28px !important;
+  }
+
+  .soPage .unitScrollTableWrap th:last-child,
+  .soPage .unitScrollTableWrap td:last-child {
+    width: 74px !important;
+  }
+
+  .soPage .matchPill {
+    white-space: normal;
+    line-height: 1.2;
+  }
+
+  /* Mounting / electrical tables and anything else wide: allow wrapping */
+  .soPage .mountTable {
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .soPage .mountTable td,
+  .soPage .mountTable th {
+    overflow-wrap: anywhere;
+  }
+
+  .soPage .mountTable td:last-child,
+  .soPage .mountTable th:last-child {
+    width: 84px;
+  }
+
+  /* Qty boxes fill their cell instead of a fixed 80-90px that sticks out */
+  .soPage .mountTable td:last-child input {
+    width: 100% !important;
+    max-width: 72px;
+    box-sizing: border-box;
+  }
+}
+
+/* Phone: To Verify / Verified pills and the search box stay on one row;
+   the pills keep their size and the search box takes the rest of the width */
+@media (max-width: 639px) {
+  .txTabsSearchRow {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .txTabsSearchRow .txFilterPills {
+    flex: none;
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+
+  .txTabsSearchRow .txPill {
+    padding: 3px 7px;
+    white-space: nowrap;
+  }
+
+  .txTabsSearchRow .txSearchInput {
+    flex: 1 1 0;
+    min-width: 0;
+    width: auto;
+  }
+}
+
+/* The dashboard's global "td strong { font-size: 13px; max-width: 195px }" made the Slot date and
+   Customer name 13px whatever the table size. Here bold text follows its cell's size. */
+.arrTable td strong {
+  font-size: inherit;
+  max-width: none;
+}
+
+/* Phone: Customer Details week row (Group by, Previous, week, Next) on one line.
+   The "Group by" word is hidden (the dropdown keeps it as its label for screen readers),
+   and the week dropdown takes the remaining width, cutting off its text if needed. */
+@media (max-width: 639px) {
+  .arrHeader > .arrNav {
+    width: 100%;
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+
+  .arrNav label {
+    font-size: 0 !important;
+    gap: 0 !important;
+    flex: none;
+  }
+
+  .arrNav label select {
+    font-size: 11px;
+    max-width: 64px;
+  }
+
+  .arrNav button {
+    flex: none;
+    padding: 3px 6px;
+    white-space: nowrap;
+  }
+
+  .arrNav > select {
+    flex: 1 1 0;
+    min-width: 0;
+    width: auto !important;
+    text-overflow: ellipsis;
+  }
+}
+
+/* Phone: smaller text in the Admin tables (users and audit log), including the
+   boxes shown while editing a user */
+@media (max-width: 639px) {
+  .adminPage .detailTable {
+    font-size: 10px;
+  }
+
+  .adminPage .detailTable th {
+    font-size: 9px;
+  }
+
+  .adminPage .detailTable th,
+  .adminPage .detailTable td {
+    padding: 5px 4px;
+  }
+
+  .adminPage .detailTable td strong {
+    font-size: inherit;
+    max-width: none;
+  }
+
+  .adminPage .detailTable td input:not([type="checkbox"]),
+  .adminPage .detailTable td select {
+    height: auto !important;
+    font-size: 11px;
+    padding: 3px 6px;
+  }
+
+  .adminPage .detailTable td button {
+    font-size: 10px;
+    padding: 3px 6px;
+  }
+
+  /* Save / Cancel while editing may stack instead of widening the table */
+  .adminPage .detailTable td:last-child > * {
+    flex-wrap: wrap;
   }
 }

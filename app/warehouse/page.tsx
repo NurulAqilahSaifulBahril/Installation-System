@@ -3148,7 +3148,7 @@ function StockOutVerificationPage({
             className={styles.inspectCardHeader}
             style={{ alignItems: "flex-start", flexWrap: "wrap", gap: "10px", ...(forReport ? { borderBottom: "none", paddingBottom: 0 } : {}) }}
           >
-            <div style={{ flex: 1, minWidth: "300px" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
                 <h2 className={styles.inspectCardTitle} style={{ margin: 0, color: "#000000", fontWeight: 700 }}>
                   <span>📅</span> Customer Details &middot; #{schedule?.jobId ?? tx.reference}
@@ -3328,7 +3328,7 @@ function StockOutVerificationPage({
   );
 
   return (
-    <section className={styles.screen} aria-labelledby="stockout-verify-title">
+    <section className={`${styles.screen} ${styles.soPage}`} aria-labelledby="stockout-verify-title">
       {/* Top Navigation */}
       <div className={styles.inspectTopBar}>
         <button className={styles.btnActionGhost} type="button" onClick={onBack}>
@@ -5996,7 +5996,7 @@ function HomeTab({
               <p className={styles.note}>No stock transactions match your filter criteria.</p>
             ) : (
               <div className={styles.tableWrap}>
-                <table className={`${styles.detailTable} ${styles.txLedger}`}>
+                <table className={`${styles.detailTable} ${styles.txLedger} ${txType === "out" ? styles.txLedgerOut : ""}`}>
                   <thead>
                     <tr>
                       <th scope="col">Customer Name</th>
@@ -7303,22 +7303,22 @@ function StockOutModelTable({
   query: string;
 }) {
   const rows = useMemo(() => {
-    const byModel = new Map<string, { qty: number; jobs: Set<string>; type: string }>();
+    const byModel = new Map<string, { qty: number; inQty: number; jobs: Set<string>; type: string }>();
     // Inverters: every model on the staff list is shown, with 0 when nothing needs it.
     if (category === "panel") {
-      PANEL_MODELS.forEach((code) => byModel.set(code, { qty: 0, jobs: new Set<string>(), type: detectPanelBrand(code) }));
+      PANEL_MODELS.forEach((code) => byModel.set(code, { qty: 0, inQty: 0, jobs: new Set<string>(), type: detectPanelBrand(code) }));
     }
     if (category === "battery") {
-      BATTERY_MODELS.forEach((code) => byModel.set(code, { qty: 0, jobs: new Set<string>(), type: "—" }));
+      BATTERY_MODELS.forEach((code) => byModel.set(code, { qty: 0, inQty: 0, jobs: new Set<string>(), type: "—" }));
     }
     if (category === "inverter") {
       Object.values(INVERTER_MODELS).flat().forEach((code) =>
-        byModel.set(code, { qty: 0, jobs: new Set<string>(), type: code.startsWith("M") ? "Micro" : code.startsWith("H") ? "Hybrid" : "String" }),
+        byModel.set(code, { qty: 0, inQty: 0, jobs: new Set<string>(), type: code.startsWith("M") ? "Micro" : code.startsWith("H") ? "Hybrid" : "String" }),
       );
     }
     transactions
-      // Inverters: only the stock outs dated today.
-      .filter((tx) => tx.type === "out" && (category !== "inverter" || txDate(tx) === isoToday()))
+      // Stock out (▼) and stock in (▲). Inverters: only the ones dated today.
+      .filter((tx) => (tx.type === "out" || tx.type === "in") && (category !== "inverter" || txDate(tx) === isoToday()))
       .forEach((tx) => {
         txLines(tx)
           .filter((line) => line.category === category)
@@ -7338,14 +7338,18 @@ function StockOutModelTable({
             if (category === "battery" && !key) return;
             // Inverters: only the models on the staff model list; anything else is left out.
             if (category === "inverter" && !Object.values(INVERTER_MODELS).some((list) => list.includes(key))) return;
-            const entry = byModel.get(key) ?? { qty: 0, jobs: new Set<string>(), type: modelTypeOf(category, line.model) };
-            entry.qty += line.qty ?? 0;
-            entry.jobs.add(tx.id);
+            const entry = byModel.get(key) ?? { qty: 0, inQty: 0, jobs: new Set<string>(), type: modelTypeOf(category, line.model) };
+            if (tx.type === "in") {
+              entry.inQty += line.qty ?? 0;
+            } else {
+              entry.qty += line.qty ?? 0;
+              entry.jobs.add(tx.id);
+            }
             byModel.set(key, entry);
           });
       });
     return Array.from(byModel.entries())
-      .map(([model, entry]) => ({ model, type: entry.type, qty: entry.qty, jobs: entry.jobs.size }))
+      .map(([model, entry]) => ({ model, type: entry.type, qty: entry.qty, inQty: entry.inQty, jobs: entry.jobs.size }))
       .sort((a, b) => b.qty - a.qty); // stable: equal quantities keep the model-list order
   }, [transactions, category]);
 
@@ -7357,6 +7361,7 @@ function StockOutModelTable({
     : rows;
   const shown = category === "inverter" ? matching.filter((row) => row.type === inverterType) : matching;
   const total = shown.reduce((sum, row) => sum + row.qty, 0);
+  const totalIn = shown.reduce((sum, row) => sum + row.inQty, 0);
 
   return (
     <div className={styles.tableWrap}>
@@ -7382,14 +7387,19 @@ function StockOutModelTable({
           <tr>
             <th scope="col">Type</th>
             <th scope="col">Model</th>
-            <th scope="col" className={styles.num}>Qty (stock out)</th>
-            <th scope="col" className={styles.num}>Jobs</th>
+            <th scope="col" className={styles.num} title="Qty (stock in)" aria-label="Qty (stock in)">
+              <span aria-hidden="true" style={{ color: "var(--green)", fontSize: "13px" }}>&#9650;</span>
+            </th>
+            <th scope="col" className={styles.num} title="Qty (stock out)" aria-label="Qty (stock out)">
+              <span aria-hidden="true" style={{ color: "var(--red)", fontSize: "13px" }}>&#9660;</span>
+            </th>
+            <th scope="col" className={styles.num} title="Balance = stock in (▲) minus stock out (▼)">Balance</th>
           </tr>
         </thead>
         <tbody>
           {shown.length === 0 ? (
             <tr>
-              <td colSpan={4}>
+              <td colSpan={5}>
                 No {title.toLowerCase()} models from stock out yet. Sign in to the dashboard (same browser) to load the
                 booked jobs.
               </td>
@@ -7399,8 +7409,9 @@ function StockOutModelTable({
               <tr key={row.model}>
                 <td>{row.type}</td>
                 <td>{row.model}</td>
+                <td className={styles.num}>{row.inQty}</td>
                 <td className={styles.num}>{row.qty}</td>
-                <td className={styles.num}>{row.jobs}</td>
+                <td className={styles.num}>{row.inQty - row.qty}</td>
               </tr>
             ))
           )}
@@ -7412,9 +7423,14 @@ function StockOutModelTable({
                 Total
               </th>
               <td className={styles.num}>
+                <strong>{totalIn}</strong>
+              </td>
+              <td className={styles.num}>
                 <strong>{total}</strong>
               </td>
-              <td />
+              <td className={styles.num}>
+                <strong>{totalIn - total}</strong>
+              </td>
             </tr>
           </tfoot>
         )}
@@ -7763,6 +7779,7 @@ function ArrangedInstallationView({ groups }: { groups: ArrangedGroupPayload[] }
               </div>
             </div>
 
+            <div className={styles.arrTableWrap}>
             <table className={styles.arrTable}>
               <thead>
                 <tr>
@@ -7802,6 +7819,7 @@ function ArrangedInstallationView({ groups }: { groups: ArrangedGroupPayload[] }
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         )))
       )}

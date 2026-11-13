@@ -291,7 +291,7 @@ export default function AdminTab() {
   }, [section]);
 
   return (
-    <section className={styles.screen} aria-labelledby="warehouse-admin">
+    <section className={`${styles.screen} ${styles.adminPage}`} aria-labelledby="warehouse-admin">
       <h1 id="warehouse-admin" className={styles.sectionTitle} style={{ margin: "0 0 12px", fontSize: "24px", fontWeight: 700, color: "#000" }}>
         Admin
       </h1>
