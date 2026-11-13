@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Scheduling Operations",
+  title: "Installation System",
   description: "Solar installation scheduling, delivery, and team operations.",
 };
 

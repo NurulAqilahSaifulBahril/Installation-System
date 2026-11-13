@@ -4760,7 +4760,7 @@ export default function DashboardPage() {
             />
           </div>
           <div className="brand-text">
-            <strong>Scheduling Operations</strong>
+            <strong>Installation System</strong>
             <span>Solar scheduling and delivery</span>
             {currentUser && (
               <span className="brand-greeting">

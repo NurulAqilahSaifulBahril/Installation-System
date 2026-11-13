@@ -201,7 +201,7 @@ export default function LoginPage() {
           <div className="login-brand">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/eternalgy-logo.png" alt="Eternalgy" />
-            <h1>Scheduling Operations</h1>
+            <h1>Installation System</h1>
             <p>
               {!ready
                 ? "Checking setup…"

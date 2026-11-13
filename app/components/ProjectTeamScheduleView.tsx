@@ -774,6 +774,8 @@ export function syncArrangedMembers(
 
   // 2. Merge existing members, but ensure canonical Arranged Installation role and standardized name
   for (const em of existingMembers) {
+    // Leave-only entries auto-created from NUrul_DB (mem-db-*) are not project team members.
+    if (String(em.id || "").startsWith("mem-db-")) continue;
     const rawLower = em.name.toLowerCase().trim();
     // Delete any created dummy/mock names
     if (CREATED_DUMMY_NAMES.has(rawLower)) continue;
@@ -1308,9 +1310,9 @@ export function ProjectTeamScheduleView({
         })
       );
 
+      // Only project team members (the roster) take leave / MC records. Leave
+      // holders who are not on the roster are not added to the team.
       setMembers((prevMembers) => {
-        const matchedLeaveIds = new Set<string>();
-
         const updated = prevMembers.map((m) => {
           const mNorm = m.name.toLowerCase().trim();
           // Match against hr_people for phone sync
@@ -1351,7 +1353,6 @@ export function ProjectTeamScheduleView({
               : m.phone;
 
           if (matchedLeave && matchedLeave.from_date) {
-            matchedLeaveIds.add(matchedLeave.id);
             const isMc =
               Boolean(matchedLeave.has_mc) ||
               /\b(mc|medical|sick)\b/i.test(String(matchedLeave.type || "")) ||
@@ -1379,39 +1380,6 @@ export function ProjectTeamScheduleView({
           }
           return m;
         });
-
-        // Ensure any leave from NUrul_DB that didn't match existing members is added as a team member entry
-        for (const l of leavesList) {
-          if (!l.id || matchedLeaveIds.has(l.id)) continue;
-          matchedLeaveIds.add(l.id);
-          const isMc =
-            Boolean(l.has_mc) ||
-            /\b(mc|medical|sick)\b/i.test(String(l.type || "")) ||
-            /\b(mc|medical|sick)\b/i.test(String(l.note || ""));
-          const rawStatus = (l.status || "approved").toLowerCase();
-          const approval: "approved" | "rejected" | "pending" =
-            rawStatus === "rejected" ? "rejected" : rawStatus === "pending" ? "pending" : "approved";
-          const dispName = l.employee_name || l.employee_username || `Employee ${l.employee_id}`;
-          const role: ProjectTeamMemberRole =
-            l.staff_role === "site_supervisor" ? "site_supervisor" : l.staff_role === "intern" ? "intern" : "technician";
-
-          const leaveStatus: MemberAvailabilityStatus = isMc ? "mc" : "leave";
-          updated.push({
-            id: `mem-db-${l.employee_id || l.id}`,
-            name: dispName,
-            role,
-            phone: l.employee_phone || "",
-            expertise: [],
-            availability: {
-              status: leaveStatus,
-              startDate: (l.from_date || todayIso).slice(0, 10),
-              endDate: (l.to_date || l.from_date || todayIso).slice(0, 10),
-              reason: l.note || l.type || undefined,
-              leaveId: l.id,
-              approvalStatus: approval,
-            },
-          });
-        }
 
         return updated;
       });
@@ -5036,9 +5004,9 @@ export function ProjectTeamScheduleView({
                   );
                 });
 
-                if (matchedMember) {
-                  seenMemberNames.add(matchedMember.name.toLowerCase().trim());
-                }
+                // Project team only: leave / MC rows for people not on the roster are skipped.
+                if (!matchedMember) continue;
+                seenMemberNames.add(matchedMember.name.toLowerCase().trim());
                 if (rawEmpName) {
                   seenMemberNames.add(rawEmpName.toLowerCase().trim());
                 }
