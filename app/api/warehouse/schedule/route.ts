@@ -39,6 +39,9 @@ export type WarehouseScheduledJob = {
   // The source invoice id: drawings are looked up on demand with it (they are kept
   // out of the job list on purpose, because the links for every invoice are huge).
   sourceId: string;
+  // Commercial job, by the dashboard's rule: a Tariff B package, or a Selco customer.
+  // Stock out shows the commercial special materials (trunking, cable gland, metal DB box).
+  commercial: boolean;
 };
 
 // Booked jobs from the 1st of last month (so last month's transactions stay visible) to two weeks ahead.
@@ -110,6 +113,7 @@ export async function GET(request: Request) {
       inverterText: job.inverterBattery || job.derivedInverterModel || job.inverter,
       batteryText: job.batteryDetails || job.battery,
       sourceId: job.id,
+      commercial: /tariff\s*b/i.test(job.packageType ?? "") || /\bselco\b/i.test(job.customerName),
       itemLines: invoiceLines[job.id]?.length
         ? invoiceLines[job.id]
         : [

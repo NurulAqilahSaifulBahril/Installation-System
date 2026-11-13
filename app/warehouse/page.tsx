@@ -12,6 +12,7 @@ import {
   STOCK_DETAIL_ITEMS,
   MOUNTING_SYSTEMS,
   ELECTRICAL_GROUPS,
+  COMMERCIAL_GROUPS,
   STOCK_TRANSACTIONS,
   WAREHOUSE_BALANCES,
   WAREHOUSE_NOTICES,
@@ -327,6 +328,7 @@ type ScheduledJobPayload = {
   itemLines?: string[];
   sourceId?: string;
   phase?: string;
+  commercial?: boolean;
 };
 
 function txLines(tx: StockTransaction): StockOutLine[] {
@@ -518,6 +520,7 @@ function liveStockOutRows(jobs: ScheduledJobPayload[]): StockTransaction[] {
       scheduledDate: job.installationDate,
       installerTeam: job.teams.join(", ") || "—",
       systemPackage: job.packageName || undefined,
+      commercial: job.commercial === true,
       allocatedQty: panelQty,
       dispatchedQty: 0,
       systemSizeKwp: kwp,
@@ -1173,7 +1176,9 @@ function StockInVerificationPage({
   const barcodeInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    barcodeInputRef.current?.focus();
+    // Ready for the laser gun on a computer. Not on phones / tablets: focusing the box there
+    // pops up the keyboard and makes iPhones zoom in on the page.
+    if (window.matchMedia("(pointer: fine)").matches) barcodeInputRef.current?.focus();
   }, []);
 
   // Camera video stream & live BarcodeDetector hook
@@ -2900,7 +2905,9 @@ function StockOutVerificationPage({
   const barcodeInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    barcodeInputRef.current?.focus();
+    // Ready for the laser gun on a computer. Not on phones / tablets: focusing the box there
+    // pops up the keyboard and makes iPhones zoom in on the page.
+    if (window.matchMedia("(pointer: fine)").matches) barcodeInputRef.current?.focus();
   }, []);
 
   // Camera video stream & live BarcodeDetector hook
@@ -3737,6 +3744,27 @@ function StockOutVerificationPage({
                     </button>
                   ))}
                 </div>
+                {schedule?.commercial && (
+                  <>
+                    <p className={styles.itemDesc} style={{ margin: "0 0 6px", fontWeight: 700, color: "#000" }}>
+                      Commercial special materials
+                    </p>
+                <div className={styles.txFilterPills} role="tablist" aria-label="Commercial special materials" style={{ marginBottom: "10px" }}>
+                      {COMMERCIAL_GROUPS.map((group) => (
+                        <button
+                          key={group.label}
+                          type="button"
+                          role="tab"
+                          aria-selected={elecGroup === group.label}
+                          className={`${styles.txPill} ${elecGroup === group.label ? styles.txPillActive : ""}`}
+                          onClick={() => setElecGroup(group.label)}
+                        >
+                          {group.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
                 <div className={styles.tableWrap}>
                   <table className={`${styles.detailTable} ${styles.mountTable}`}>
                     <thead>
@@ -3746,7 +3774,7 @@ function StockOutVerificationPage({
                       </tr>
                     </thead>
                     <tbody>
-                      {ELECTRICAL_GROUPS.filter((group) => group.label === elecGroup).map((group) => (
+                      {[...ELECTRICAL_GROUPS, ...(schedule?.commercial ? COMMERCIAL_GROUPS : [])].filter((group) => group.label === elecGroup).map((group) => (
                         <Fragment key={group.label}>
                           {group.parts.map((name) => (
                             <tr key={name}>
@@ -4112,6 +4140,31 @@ function StockOutVerificationPage({
                 );
               })()}
             </div>
+            {/* Commercial jobs: the special materials, as a table */}
+            {schedule?.commercial && (
+              <div style={{ marginTop: "8px" }}>
+                <div style={{ fontWeight: 700, color: "#000", marginBottom: "8px" }}>Commercial Special Materials</div>
+                <table style={{ border: "1px solid #000" }}>
+                  <tbody>
+                    {COMMERCIAL_GROUPS.flatMap((group) => [
+                      <tr key={`h-${group.label}`}>
+                        <td colSpan={2} style={{ border: "1px solid #000", fontWeight: 700, textTransform: "uppercase" }}>
+                          {group.label}
+                        </td>
+                      </tr>,
+                      ...group.parts.map((name) => (
+                        <tr key={name}>
+                          <td style={{ border: "1px solid #000" }}>{name}</td>
+                          <td className={styles.num} style={{ border: "1px solid #000" }}>
+                            {(elecQty[name] ?? "").trim()}
+                          </td>
+                        </tr>
+                      )),
+                    ])}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -4197,7 +4250,9 @@ function StockTransferVerificationPage({
   const barcodeInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    barcodeInputRef.current?.focus();
+    // Ready for the laser gun on a computer. Not on phones / tablets: focusing the box there
+    // pops up the keyboard and makes iPhones zoom in on the page.
+    if (window.matchMedia("(pointer: fine)").matches) barcodeInputRef.current?.focus();
   }, []);
 
   // Camera video stream & live BarcodeDetector hook
@@ -5863,18 +5918,20 @@ function HomeTab({
           {txType === "in" ? "Stock In" : txType === "out" ? "Stock Out" : "Stock Transactions"}{txCat !== "all" ? ` · ${CAT_LABEL[txCat] === "Inv." ? "Inverter" : CAT_LABEL[txCat] === "Batt." ? "Battery" : CAT_LABEL[txCat] === "Mounting" ? "Mounting Structure" : CAT_LABEL[txCat] === "Electrical" ? "Electrical Accessories" : (CAT_LABEL[txCat] ?? txCat)}` : ""}
           <span className={styles.sectionCount}>{verifiedCount}</span>
         </h2>
-            <div className={styles.balanceWhSelector} role="group" aria-label="Warehouse filter" style={{ marginLeft: "auto" }}>
+            </div>
+            {/* Same All / JB / KL buttons as the Home page */}
+            <div className={styles.filterRow} role="group" aria-label="Warehouse filter" style={{ width: "50%", minWidth: "170px" }}>
               {(["all", "JB", "KL"] as const).map((wh) => (
                 <button
                   key={wh}
                   type="button"
-                  className={`${styles.balanceWhBtn} ${whFilter === wh ? styles.balanceWhActive : ""}`}
+                  className={`${styles.filterBtn} ${whFilter === wh ? styles.filterActive : ""}`}
+                  style={{ fontSize: "11px", padding: "3px 4px" }}
                   onClick={() => setWhFilter(wh)}
                 >
-                  {wh === "all" ? "All WH" : `${wh} WH`}
+                  {wh === "all" ? "All" : wh}
                 </button>
               ))}
-            </div>
             </div>
             {/* In / Out KPI summary chips for This Week with Inverter, Panel, Battery Breakdown */}
             <div className={styles.txSummaryRow} style={{ marginBottom: "24px" }}>
@@ -7623,7 +7680,8 @@ function ArrangedInstallationView({ groups }: { groups: ArrangedGroupPayload[] }
   const index =
     weekIndex ?? Math.max(0, weeks.includes(todayWeek) ? weeks.indexOf(todayWeek) : weeks.length - 1);
   const week = weeks[index];
-  const [groupBy, setGroupBy] = useState<"team" | "installation" | "wiring">("team");
+  // Bookings are grouped by team (the "Group by" picker was removed).
+  const groupBy = "team" as "team" | "installation" | "wiring";
   const [nameQuery, setNameQuery] = useState("");
   const query = nameQuery.trim().toLowerCase();
 
@@ -7684,19 +7742,6 @@ function ArrangedInstallationView({ groups }: { groups: ArrangedGroupPayload[] }
           <p className={styles.kicker}>Details are from Project Team</p>
         </div>
         <div className={styles.arrNav}>
-          <label className={styles.bankingFieldLabel} style={{ display: "flex", alignItems: "center", gap: "6px", margin: 0 }}>
-            Group by
-            <select
-              className={styles.bankingAccountSelect}
-              style={{ width: "auto" }}
-              value={groupBy}
-              onChange={(e) => setGroupBy(e.target.value as "team" | "installation" | "wiring")}
-            >
-              <option value="team">Team</option>
-              <option value="installation">Installation team</option>
-              <option value="wiring">Wiring team</option>
-            </select>
-          </label>
           <button
             type="button"
             className={styles.btnActionGhost}

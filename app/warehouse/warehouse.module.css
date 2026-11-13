@@ -1610,35 +1610,6 @@ button.typeCard {
   margin-bottom: 12px;
 }
 
-.balanceWhSelector {
-  display: inline-flex;
-  background: var(--surface-soft);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 2px;
-  gap: 2px;
-}
-
-.balanceWhBtn {
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 4px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.balanceWhActive {
-  background: var(--surface);
-  color: var(--ink);
-  font-weight: 600;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
-}
-
 /* ── Stock Balance Single-Row Cards (Desktop & Phone) ───────────────── */
 
 .balanceGrid {
@@ -5368,9 +5339,6 @@ button.typeCard {
   border-radius: 6px;
 }
 
-.arrNav label {
-  font-size: 11px;
-}
 
 /* Customer Details: Slot (date / time) and Customer (name / invoice) columns one step smaller */
 .arrTable td[data-label="Slot"],
@@ -5640,25 +5608,13 @@ button.typeCard {
   max-width: none;
 }
 
-/* Phone: Customer Details week row (Group by, Previous, week, Next) on one line.
-   The "Group by" word is hidden (the dropdown keeps it as its label for screen readers),
-   and the week dropdown takes the remaining width, cutting off its text if needed. */
+/* Phone: Customer Details week row (Previous, week, Next) on one line; the week dropdown
+   takes the remaining width, cutting off its text if needed. */
 @media (max-width: 639px) {
   .arrHeader > .arrNav {
     width: 100%;
     flex-wrap: nowrap;
     gap: 4px;
-  }
-
-  .arrNav label {
-    font-size: 0 !important;
-    gap: 0 !important;
-    flex: none;
-  }
-
-  .arrNav label select {
-    font-size: 11px;
-    max-width: 64px;
   }
 
   .arrNav button {
@@ -5848,5 +5804,54 @@ button.typeCard {
     gap: 4px;
     border-radius: 6px;
     white-space: nowrap;
+  }
+}
+
+/* Phones keep a tapped button "hovered", and the hover style turned the text dark on the
+   dark active button. The active All / JB / KL and To Verify / Verified buttons keep
+   white text (and their dark background) when hovered or tapped. */
+.filterBtn.filterActive,
+.filterBtn.filterActive:hover {
+  background: var(--primary);
+  color: var(--bg);
+  border-color: var(--primary);
+}
+
+.txPill.txPillActive,
+.txPill.txPillActive:hover {
+  background: var(--primary);
+  color: var(--bg);
+  border-color: var(--primary);
+}
+
+/* Phone: each Customer Details block (week bar, team band, table) keeps the desktop layout.
+   The team band stays on one line (team name, then Installation team, Wiring team,
+   Site supervisor, Team member, Car) and the whole block scrolls sideways together inside
+   its box, instead of the band wrapping and only the table scrolling. */
+@media (max-width: 899px) {
+  .arrGroup {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .arrGroup > * {
+    min-width: 760px;
+    box-sizing: border-box;
+  }
+
+  .arrGroup .arrTableWrap {
+    overflow-x: visible;
+  }
+
+  .arrTeamBand {
+    flex-wrap: nowrap;
+  }
+
+  .arrCrew {
+    flex-wrap: nowrap;
+  }
+
+  .arrCrew > div {
+    flex: none;
   }
 }

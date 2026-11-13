@@ -355,6 +355,9 @@ export type StockOutScheduleData = {
   // these yet, so they stay empty and show as "—" until a source exists.
   // Source invoice id, used to load the job's drawings on demand.
   jobSourceId?: string;
+  // Commercial job (Tariff B package or a Selco customer): stock out adds the
+  // commercial special materials list.
+  commercial?: boolean;
   // TNB meter type (Single phase / Three phase) and the inverter model, shown under Customer Details.
   tnbMeter?: string;
   inverterModel?: string;
@@ -673,6 +676,26 @@ export const ELECTRICAL_GROUPS: { label: string; parts: string[] }[] = [
   { label: "Battery", parts: ["SAJ EK60-B3-16LV Battery", "ATS"] },
   { label: "Selco Meter", parts: ["SINGLE PHASE 80A", "THREE PHASE 100A", "THREE PHASE 250A"] },
   { label: "EV Charger Breaker", parts: ["SINGLE PHASE 40A RCBO", "THREE PHASE 40A RCBO"] },
+];
+
+// Commercial jobs only: extra materials entered on stock out (from the staff sheet).
+// Part names carry their group so each one is its own saved quantity.
+export const COMMERCIAL_GROUPS: { label: string; parts: string[] }[] = [
+  {
+    label: "Metal Trunking (Orange)",
+    parts: ["Metal Trunking (Orange) 2x2", "Metal Trunking (Orange) 2x3", "Metal Trunking (Orange) 2x4"],
+  },
+  {
+    label: "Trunking Jointer (Orange)",
+    parts: ["Trunking Jointer (Orange) 2x2", "Trunking Jointer (Orange) 2x3", "Trunking Jointer (Orange) 2x4"],
+  },
+  { label: "HDG", parts: ["HDG 2x2", "HDG 2x3", "HDG 2x4"] },
+  {
+    label: "Trunking Jointer (HDG)",
+    parts: ["Trunking Jointer (HDG) 2x2", "Trunking Jointer (HDG) 2x3", "Trunking Jointer (HDG) 2x4"],
+  },
+  { label: "Cable Gland (HDG)", parts: ["Cable Gland (HDG)"] },
+  { label: "DB Box (Metal for Selco)", parts: ["DB Box (Metal for Selco) 15~19"] },
 ];
 
 export const MOUNTING_SYSTEMS: MountingSystem[] = [
