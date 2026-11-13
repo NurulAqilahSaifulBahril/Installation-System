@@ -71,7 +71,7 @@ const MATERIAL_LABEL: Record<string, string> = {
   inverter: "Inverter",
   battery: "Battery",
   mounting: "Mounting Structure",
-  electrical: "Electrical Accessories",
+  electrical: "Electrical Item",
 };
 
 export async function POST(request: Request) {

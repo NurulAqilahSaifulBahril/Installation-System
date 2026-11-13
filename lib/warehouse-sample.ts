@@ -248,7 +248,7 @@ export type StockDetailItem = {
 // ── Stock Balance & Transaction Log ────────────────────────────────────
 
 export type CategoryStockBalance = {
-  id: "inverter" | "panel" | "battery" | "mounting" | "electrical";
+  id: "inverter" | "panel" | "battery" | "mounting" | "electrical" | "special";
   label: string;
   // null = no real count yet (shown as "—").
   onHand: number | null;
@@ -263,21 +263,27 @@ export const WAREHOUSE_BALANCES: Record<"all" | "JB" | "KL", CategoryStockBalanc
     { id: "inverter", label: "Inverter", onHand: 442, toInstall: 365, available: 77, toBuy: 48 },
     { id: "battery", label: "Battery", onHand: 143, toInstall: 118, available: 25, toBuy: 15 },
     { id: "mounting", label: "Mounting Structure", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
-    { id: "electrical", label: "Electrical Accessories", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
+    { id: "electrical", label: "Electrical Item", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
+    // Commercial jobs' special materials (trunking, jointers, cable gland, metal DB box).
+    { id: "special", label: "Special Material", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
   ],
   JB: [
     { id: "panel", label: "Panel", onHand: 450, toInstall: 380, available: 70, toBuy: 0 },
     { id: "inverter", label: "Inverter", onHand: 245, toInstall: 210, available: 35, toBuy: 30 },
     { id: "battery", label: "Battery", onHand: 95, toInstall: 80, available: 15, toBuy: 10 },
     { id: "mounting", label: "Mounting Structure", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
-    { id: "electrical", label: "Electrical Accessories", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
+    { id: "electrical", label: "Electrical Item", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
+    // Commercial jobs' special materials (trunking, jointers, cable gland, metal DB box).
+    { id: "special", label: "Special Material", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
   ],
   KL: [
     { id: "panel", label: "Panel", onHand: 320, toInstall: 240, available: 80, toBuy: 0 },
     { id: "inverter", label: "Inverter", onHand: 197, toInstall: 155, available: 42, toBuy: 18 },
     { id: "battery", label: "Battery", onHand: 48, toInstall: 38, available: 10, toBuy: 5 },
     { id: "mounting", label: "Mounting Structure", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
-    { id: "electrical", label: "Electrical Accessories", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
+    { id: "electrical", label: "Electrical Item", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
+    // Commercial jobs' special materials (trunking, jointers, cable gland, metal DB box).
+    { id: "special", label: "Special Material", onHand: null, toInstall: 0, available: 0, toBuy: 0 },
   ],
 };
 

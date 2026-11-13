@@ -1,7 +1,9 @@
 "use client";
 
 import AdminTab from "./AdminTab";
-import { DoFileList, UploadDoButton, useDoFiles } from "./DoFiles";
+import { PO_ITEM_TYPE_OPTIONS, UploadDoButton, poDay, useDoFiles } from "./DoFiles";
+import { cameraErrorMessage, openCameraStream } from "./camera";
+import PoVerificationPage from "./PoVerification";
 import { classifyInvoiceLines, parseCountedItem } from "./invoice-lines";
 import { estimateMounting, ROOF_OPTIONS, type MountingSystemId, type Orientation, type RoofType } from "./mounting-estimate";
 import { FormEvent, Fragment, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
@@ -39,36 +41,6 @@ const SESSION_KEY = "warehouse-phone";
 const NAME_KEY = "warehouse-username";
 const ACCESS_KEY = "warehouse-access";
 
-// Camera scanner: ask for the back camera first, then any camera (laptops and some
-// tablets have no "environment" camera, which some browsers treat as a hard failure).
-async function openCameraStream(): Promise<MediaStream> {
-  try {
-    return await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
-  } catch (err) {
-    const name = err instanceof DOMException ? err.name : "";
-    if (name === "NotAllowedError" || name === "SecurityError") throw err;
-    return navigator.mediaDevices.getUserMedia({ video: true });
-  }
-}
-
-// A message that says why the camera did not start, so staff know what to fix.
-function cameraErrorMessage(err: unknown): string {
-  if (typeof window !== "undefined" && !window.isSecureContext) {
-    return "Camera needs a secure (https://) link. Open Inventory Management from its https address, or use the barcode gun / type the serial.";
-  }
-  if (!err) return "This browser has no camera support. Use the barcode gun or type the serial.";
-  const name = err instanceof DOMException ? err.name : "";
-  if (name === "NotAllowedError" || name === "SecurityError") {
-    return "Camera permission is blocked. Tap the lock / site settings icon in the address bar, allow Camera, then press Scan again.";
-  }
-  if (name === "NotFoundError" || name === "OverconstrainedError") {
-    return "No camera found on this device. Use the barcode gun or type the serial.";
-  }
-  if (name === "NotReadableError" || name === "AbortError") {
-    return "The camera is being used by another app or tab. Close it there, then press Scan again.";
-  }
-  return `Camera could not start (${name || "unknown error"}). Use the barcode gun or type the serial.`;
-}
 // Cropped to the artwork (public/eternalgy-logo.png has wide transparent margins).
 const LOGO_SRC = "/eternalgy-logo-tight.png";
 // The symbol alone, without the ETERNALGY / ETERNAL ENERGY wording (sign-in headline).
@@ -242,9 +214,7 @@ function SignIn({
         <img className={styles.lockLogo} src={MARK_SRC} alt="Eternalgy" width={357} height={176} />
         <span>Inventory Management</span>
       </h1>
-      <div className={styles.shade}>
-        <NoticeList />
-      </div>
+      <NoticeList />
       {/* Sign-in form sits below the notifications (same for both mobile and desktop) */}
       <form className={`${styles.form} ${styles.inlineForm}`} onSubmit={onSubmit} aria-label="Sign in">
         {fields}
@@ -253,14 +223,54 @@ function SignIn({
   );
 }
 
+// The sign-in screen shows at most this many notices (the first ones in the list).
+const MAX_SIGN_IN_NOTICES = 3;
+
+// Notices closed with × are remembered on this device (the next ones move up).
+const DISMISSED_NOTICES_KEY = "warehouse-dismissed-notices";
+
 function NoticeList() {
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(DISMISSED_NOTICES_KEY) ?? "[]");
+      if (Array.isArray(saved)) setDismissed(saved.filter((id): id is string => typeof id === "string"));
+    } catch {
+      // No storage (private window, blocked): nothing was dismissed.
+    }
+  }, []);
+  function dismiss(id: string) {
+    setDismissed((prev) => {
+      const next = [...prev, id];
+      try {
+        window.localStorage.setItem(DISMISSED_NOTICES_KEY, JSON.stringify(next));
+      } catch {
+        // Not saved; it is still hidden until the page reloads.
+      }
+      return next;
+    });
+  }
+  const shown = WAREHOUSE_NOTICES.filter((notice) => !dismissed.includes(String(notice.id))).slice(0, MAX_SIGN_IN_NOTICES);
+  if (shown.length === 0) return null;
   return (
+    <div className={styles.shade}>
     <ul className={styles.noticeList} aria-label="Urgent notices">
-      {WAREHOUSE_NOTICES.map((notice) => (
+      {shown.map((notice) => (
         <li key={notice.id} className={styles.noticeCard}>
+          <button
+            type="button"
+            className={styles.noticeClose}
+            aria-label={`Dismiss: ${notice.title}`}
+            title="Dismiss"
+            onClick={() => dismiss(String(notice.id))}
+          >
+            ×
+          </button>
           <span className={styles.noticeTop}>
             <span className={styles.noticeName}>
-              <span className={`${styles.dot} ${NOTICE_KIND[notice.kind].dot}`} aria-hidden="true" />
+              <span className={`${styles.noticeIcon} ${NOTICE_KIND[notice.kind].dot}`} aria-hidden="true">
+                {NOTICE_KIND[notice.kind].icon}
+              </span>
               {NOTICE_KIND[notice.kind].label} · {notice.warehouse}
             </span>
             <span>{notice.time}</span>
@@ -275,14 +285,15 @@ function NoticeList() {
         </li>
       ))}
     </ul>
+    </div>
   );
 }
 
-const NOTICE_KIND: Record<WarehouseNoticeKind, { label: string; dot: string }> = {
-  order: { label: "Order", dot: styles.dotOrder },
-  stockIn: { label: "Stock in", dot: styles.dotStockIn },
-  faulty: { label: "Faulty", dot: styles.dotFaulty },
-  install: { label: "Install", dot: styles.dotInstall },
+const NOTICE_KIND: Record<WarehouseNoticeKind, { label: string; dot: string; icon: string }> = {
+  order: { label: "Order", dot: styles.dotOrder, icon: "🛒" },
+  stockIn: { label: "Stock in", dot: styles.dotStockIn, icon: "📥" },
+  faulty: { label: "Faulty", dot: styles.dotFaulty, icon: "⚠️" },
+  install: { label: "Install", dot: styles.dotInstall, icon: "🔧" },
 };
 
 function countLabel(value: number | null) {
@@ -292,7 +303,7 @@ function countLabel(value: number | null) {
 type VerificationMaterial = "job" | "panel" | "inverter" | "battery" | "mounting" | "electrical";
 type VerificationRecord = { jobRef: string; material: string; by: string };
 
-type StockItemTab = "panel" | "inverter" | "battery" | "other" | "mounting";
+type StockItemTab = "panel" | "inverter" | "battery" | "other" | "mounting" | "special";
 
 type TabId = "home" | "transfer" | "stock" | "customers" | "admin";
 
@@ -875,6 +886,12 @@ function Dashboard({
             className={`${styles.tab} ${tab === t.id ? styles.tabActive : ""}`}
             onClick={() => {
               setStockFocus(null);
+              // The Home tab always opens the Home page (cards and Stock In / Out / Transfer
+              // buttons), not the Stock In or Stock Out list that was open before.
+              if (t.id === "home") {
+                setHomeShowsTx(false);
+                setHomeTxType("all");
+              }
               setTab(t.id);
             }}
             aria-current={tab === t.id ? "page" : undefined}
@@ -1005,6 +1022,12 @@ function txInWarehouse(tx: StockTransaction, wh: "all" | "JB" | "KL"): boolean {
     return tx.transfer.fromWarehouse === wh || tx.transfer.toWarehouse === wh || tx.warehouse === wh;
   }
   return tx.warehouse === wh;
+}
+
+// Stock In "Item Type": Panel, Inverter, Battery, Mounting Structure, Electrical Item, ...
+function itemTypeLabel(category: string): string {
+  if (!category) return "—";
+  return PO_ITEM_TYPE_OPTIONS.find(([value]) => value === category)?.[1] ?? category.charAt(0).toUpperCase() + category.slice(1);
 }
 
 function isoDateLabel(text: string): string {
@@ -2745,9 +2768,12 @@ const STOCK_OUT_TABS = [
   ["inverter", "Inverter"],
   ["battery", "Battery"],
   ["mounting", "Mounting Structure"],
-  ["electrical", "Electrical Accessories"],
+  ["electrical", "Electrical Item"],
+  // Commercial jobs only (Tariff B or Selco): trunking, jointers, cable gland, metal DB box.
+  ["commercial", "Special Material"],
 ] as const;
 type StockOutTab = (typeof STOCK_OUT_TABS)[number][0];
+const COMMERCIAL_PART_NAMES = new Set(COMMERCIAL_GROUPS.flatMap((group) => group.parts));
 
 function StockOutVerificationPage({
   tx,
@@ -2857,6 +2883,7 @@ function StockOutVerificationPage({
   const [pvPicked, setPvPicked] = useState<Record<string, string>>({});
   const [elecGroup, setElecGroup] = useState(ELECTRICAL_GROUPS[0].label);
   const [elecQty, setElecQty] = useState<Record<string, string>>({});
+  const [commGroup, setCommGroup] = useState(COMMERCIAL_GROUPS[0].label);
   const panelCount = lines.filter((line) => line.category === "panel").reduce((sum, line) => sum + (line.qty ?? 0), 0);
   const mountEstimate = useMemo(
     () =>
@@ -3375,8 +3402,24 @@ function StockOutVerificationPage({
             .filter((line) => line.serialised && line.category === id)
             .reduce((sum, line) => sum + (line.qty ?? 0), 0);
           const bulkCount = lines.filter((line) => !line.serialised && line.category === id).length;
-          if (serialQty === 0 && bulkCount === 0) return null;
+          const isSpecial = id === "commercial";
+          if (isSpecial ? !schedule?.commercial : serialQty === 0 && bulkCount === 0) return null;
           const scanned = slots.filter((slot) => slot.line.category === id && slot.serial !== null).length;
+          // Mounting / electrical: total quantity entered so far (parts list plus the invoice-line boxes).
+          const qtyOf = (value: string | undefined) => {
+            const n = Number((value ?? "").trim());
+            return Number.isFinite(n) && n > 0 ? n : 0;
+          };
+          const listQty =
+            id === "mounting"
+              ? Object.values(partQty).reduce((sum, value) => sum + qtyOf(value), 0)
+              : id === "electrical" || id === "commercial"
+                ? Object.entries(elecQty)
+                    .filter(([name]) => COMMERCIAL_PART_NAMES.has(name) === (id === "commercial"))
+                    .reduce((sum, [, value]) => sum + qtyOf(value), 0)
+                : 0;
+          const itemCount =
+            listQty + bulkLines.reduce((sum, line, index) => (line.category === id ? sum + qtyOf(bulkQty[index]) : sum), 0);
           return (
             <button
               key={id}
@@ -3395,8 +3438,8 @@ function StockOutVerificationPage({
                 </>
               ) : (
                 <>
-                  <strong className={styles.soCardNumber}>{bulkCount}</strong>
-                  <span className={styles.soCardSub}>{bulkCount === 1 ? "item" : "items"} &middot; enter qty</span>
+                  <strong className={styles.soCardNumber}>{isSpecial ? COMMERCIAL_PART_NAMES.size : bulkCount}</strong>
+                  <span className={styles.soCardSub}>{itemCount} item count</span>
                 </>
               )}
             </button>
@@ -3586,7 +3629,7 @@ function StockOutVerificationPage({
             <h2 className={styles.inspectCardTitle}>
               {STOCK_OUT_TABS.find(([id]) => id === tab)?.[1]} for this customer
             </h2>
-            {tab !== "mounting" && (
+            {tab !== "mounting" && tab !== "commercial" && (
               <p className={styles.itemDesc}>
                 The invoice does not set these quantities. Enter how many are loaded for each item (0 if none).
               </p>
@@ -3744,27 +3787,6 @@ function StockOutVerificationPage({
                     </button>
                   ))}
                 </div>
-                {schedule?.commercial && (
-                  <>
-                    <p className={styles.itemDesc} style={{ margin: "0 0 6px", fontWeight: 700, color: "#000" }}>
-                      Commercial special materials
-                    </p>
-                <div className={styles.txFilterPills} role="tablist" aria-label="Commercial special materials" style={{ marginBottom: "10px" }}>
-                      {COMMERCIAL_GROUPS.map((group) => (
-                        <button
-                          key={group.label}
-                          type="button"
-                          role="tab"
-                          aria-selected={elecGroup === group.label}
-                          className={`${styles.txPill} ${elecGroup === group.label ? styles.txPillActive : ""}`}
-                          onClick={() => setElecGroup(group.label)}
-                        >
-                          {group.label}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
                 <div className={styles.tableWrap}>
                   <table className={`${styles.detailTable} ${styles.mountTable}`}>
                     <thead>
@@ -3774,7 +3796,7 @@ function StockOutVerificationPage({
                       </tr>
                     </thead>
                     <tbody>
-                      {[...ELECTRICAL_GROUPS, ...(schedule?.commercial ? COMMERCIAL_GROUPS : [])].filter((group) => group.label === elecGroup).map((group) => (
+                      {ELECTRICAL_GROUPS.filter((group) => group.label === elecGroup).map((group) => (
                         <Fragment key={group.label}>
                           {group.parts.map((name) => (
                             <tr key={name}>
@@ -3799,7 +3821,58 @@ function StockOutVerificationPage({
                 </div>
               </div>
             )}
-            {tab !== "mounting" && bulkLines.filter((line) => line.category === tab).length === 0 && (
+            {tab === "commercial" && (
+              <div className={styles.mountPanel}>
+                <p className={styles.itemDesc}>Commercial job: enter the quantity of each special material loaded.</p>
+                <div className={styles.txFilterPills} role="tablist" aria-label="Special material group" style={{ marginBottom: "10px" }}>
+                  {COMMERCIAL_GROUPS.map((group) => (
+                    <button
+                      key={group.label}
+                      type="button"
+                      role="tab"
+                      aria-selected={commGroup === group.label}
+                      className={`${styles.txPill} ${commGroup === group.label ? styles.txPillActive : ""}`}
+                      onClick={() => setCommGroup(group.label)}
+                    >
+                      {group.label}
+                    </button>
+                  ))}
+                </div>
+                <div className={styles.tableWrap}>
+                  <table className={`${styles.detailTable} ${styles.mountTable}`}>
+                    <thead>
+                      <tr>
+                        <th scope="col">Item</th>
+                        <th scope="col" className={styles.qtyCenter}>Qty</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {COMMERCIAL_GROUPS.filter((group) => group.label === commGroup).map((group) => (
+                        <Fragment key={group.label}>
+                          {group.parts.map((name) => (
+                            <tr key={name}>
+                              <td>{name}</td>
+                              <td className={styles.qtyCenter}>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  inputMode="numeric"
+                                  aria-label={`Quantity loaded for ${name}`}
+                                  value={elecQty[name] ?? ""}
+                                  onChange={(e) => setElecQty((prev) => ({ ...prev, [name]: e.target.value }))}
+                                  className={`${styles.scannerInput} ${styles.transferField} ${styles.mountQtyInput}`}
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+            {tab !== "mounting" && tab !== "commercial" && bulkLines.filter((line) => line.category === tab).length === 0 && (
               <p className={styles.note}>Nothing in this group on the invoice.</p>
             )}
             <div className={styles.inspectChecklist}>
@@ -4096,7 +4169,7 @@ function StockOutVerificationPage({
             </div>
             {/* Electrical accessories, as a table */}
             <div style={{ marginTop: "8px" }}>
-              <div style={{ fontWeight: 700, color: "#000", marginBottom: "8px" }}>Electrical Accessories</div>
+              <div style={{ fontWeight: 700, color: "#000", marginBottom: "8px" }}>Electrical Item</div>
               {(() => {
                 // Two side-by-side blocks, as on the staff sheet: Breaker / PV Meter / DB Box / SPD on the
                 // left; Ballast / EV Charger / Battery / Selco Meter / EV Charger Breaker on the right.
@@ -5615,6 +5688,9 @@ function HomeTab({
   const prepSheetRef = useRef<HTMLDivElement>(null);
   const [checkedBy, setCheckedBy] = useState("");
   const txSectionRef = useRef<HTMLDivElement>(null);
+  const txTableRef = useRef<HTMLDivElement>(null);
+  // Stock In: the PO whose Stock In Verification page is open (tapped on its row).
+  const [openPoId, setOpenPoId] = useState<string | null>(null);
   const isToday = selectedDay === isoToday();
   const dayLabel = getDayLabel(selectedDay);
   const inSelectedDay = (tx: StockTransaction) => txDate(tx) === selectedDay;
@@ -5668,8 +5744,27 @@ function HomeTab({
 
   // "To Verify" tab also holds Inspected rows (issue still pending); "Verified" holds the rest
   const isVerifiedTx = (status: string) => status === "Verified";
-  const toVerifyCount = baseTx.filter((t) => !isVerifiedTx(t.status)).length;
-  const verifiedCount = baseTx.length - toVerifyCount;
+  // Stock In: each uploaded PO is a row of the table (To Verify), on the day it was uploaded.
+  const poRows =
+    txType === "in"
+      ? doFiles.files.filter((file) => {
+          // Shown on the date written on the PO (older uploads: the upload day).
+          if (poDay(file) !== selectedDay) return false;
+          const q = txSearch.trim().toLowerCase();
+          return (
+            !q ||
+            file.fileName.toLowerCase().includes(q) ||
+            file.uploadedBy.toLowerCase().includes(q) ||
+            (file.poLines ?? []).some(
+              (line) => line.itemCode.toLowerCase().includes(q) || line.description.toLowerCase().includes(q),
+            )
+          );
+        })
+      : [];
+  // A PO moves to Verified once all its units are scanned and Verified was pressed.
+  const shownPoRows = poRows.filter((file) => (txStatusTab === "verified" ? !!file.verifiedAt : !file.verifiedAt));
+  const toVerifyCount = baseTx.filter((t) => !isVerifiedTx(t.status)).length + poRows.filter((file) => !file.verifiedAt).length;
+  const verifiedCount = baseTx.length + poRows.length - toVerifyCount;
   const filteredTx = baseTx.filter((t) =>
     txStatusTab === "verified" ? isVerifiedTx(t.status) : !isVerifiedTx(t.status)
   );
@@ -5772,7 +5867,7 @@ function HomeTab({
       { id: "inverter", label: "Inverter", icon: "⚡", bulk: false },
       { id: "battery", label: "Battery", icon: "🔋", bulk: false },
       { id: "mounting", label: "Mounting Structure", icon: "📦", bulk: true },
-      { id: "electrical", label: "Electrical Accessories", icon: "🔌", bulk: true },
+      { id: "electrical", label: "Electrical Item", icon: "🔌", bulk: true },
     ];
     const verifiedOut = whTx.filter((t) => t.type === "out" && t.status === "Verified");
     return defs
@@ -5821,6 +5916,17 @@ function HomeTab({
 
 
 
+  const openPo = openPoId ? doFiles.files.find((file) => file.id === openPoId) : undefined;
+  if (openPo) {
+    return (
+      <PoVerificationPage
+        file={openPo}
+        onBack={() => setOpenPoId(null)}
+        onVerified={(verifiedAt, verifiedBy) => doFiles.markVerified(openPo.id, verifiedAt, verifiedBy)}
+      />
+    );
+  }
+
   return (
     <section className={styles.screen} aria-labelledby="warehouse-home">
       <div className={styles.head}>
@@ -5840,7 +5946,21 @@ function HomeTab({
         </div>
         {showTx && (
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-            {txType === "in" && canUpload && <UploadDoButton busy={doFiles.busy} onFile={(file) => void doFiles.upload(file)} />}
+            {txType === "in" && canUpload && (
+              <UploadDoButton
+                busy={doFiles.busy}
+                onFile={(file) =>
+                  void doFiles.upload(file).then((day) => {
+                    if (!day) return;
+                    // Show the new PO row: its PO date's To Verify list, scrolled into view.
+                    setSelectedDay(day);
+                    setTxStatusTab("toVerify");
+                    setTxSearch("");
+                    setTimeout(() => txTableRef.current?.scrollIntoView({ block: "start" }), 150);
+                  })
+                }
+              />
+            )}
             <button type="button" className={styles.btnActionGhost} onClick={() => setPrepReportOpen(true)}>
               Report
             </button>
@@ -5912,10 +6032,17 @@ function HomeTab({
             ref={txSectionRef}
             style={!showTx ? { display: "none" } : undefined}
           >
-            {txType === "in" && <DoFileList files={doFiles.files} error={doFiles.error} message={doFiles.message} />}
+            {txType === "in" && (doFiles.message || (doFiles.error && doFiles.files.length === 0)) && (
+              <p
+                className={styles.note}
+                style={{ margin: "0 0 12px", color: doFiles.message?.ok ? "var(--green)" : "#b91c1c" }}
+              >
+                {doFiles.message?.text ?? doFiles.error}
+              </p>
+            )}
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "10px", marginBottom: "12px" }}>
         <h2 className={styles.sectionTitle} style={{ margin: 0, fontSize: "24px", fontWeight: 700, color: "#000" }}>
-          {txType === "in" ? "Stock In" : txType === "out" ? "Stock Out" : "Stock Transactions"}{txCat !== "all" ? ` · ${CAT_LABEL[txCat] === "Inv." ? "Inverter" : CAT_LABEL[txCat] === "Batt." ? "Battery" : CAT_LABEL[txCat] === "Mounting" ? "Mounting Structure" : CAT_LABEL[txCat] === "Electrical" ? "Electrical Accessories" : (CAT_LABEL[txCat] ?? txCat)}` : ""}
+          {txType === "in" ? "Stock In" : txType === "out" ? "Stock Out" : "Stock Transactions"}{txCat !== "all" ? ` · ${CAT_LABEL[txCat] === "Inv." ? "Inverter" : CAT_LABEL[txCat] === "Batt." ? "Battery" : CAT_LABEL[txCat] === "Mounting" ? "Mounting Structure" : CAT_LABEL[txCat] === "Electrical" ? "Electrical Item" : (CAT_LABEL[txCat] ?? txCat)}` : ""}
           <span className={styles.sectionCount}>{verifiedCount}</span>
         </h2>
             </div>
@@ -6053,21 +6180,95 @@ function HomeTab({
             </div>
 
             {/* Transaction Ledger Table */}
-            {filteredTx.length === 0 ? (
+            {filteredTx.length === 0 && shownPoRows.length === 0 ? (
               <p className={styles.note}>No stock transactions match your filter criteria.</p>
             ) : (
-              <div className={styles.tableWrap}>
+              <div className={styles.tableWrap} ref={txTableRef}>
                 <table className={`${styles.detailTable} ${styles.txLedger} ${txType === "out" ? styles.txLedgerOut : ""}`}>
                   <thead>
                     <tr>
-                      <th scope="col">Customer Name</th>
-                      <th scope="col">Model / Serial</th>
+                      <th scope="col">{txType === "in" ? "PO Number" : "Customer Name"}</th>
+                      {txType === "in" && <th scope="col">Item Type</th>}
+                      <th scope="col">{txType === "in" ? "Item Code" : "Model / Serial"}</th>
                       <th scope="col" className={styles.num}>Qty</th>
-                      {txType !== "out" && <th scope="col">Type</th>}
-                      <th scope="col">Installation Date</th>
+                      {txType === "all" && <th scope="col">Type</th>}
+                      <th scope="col">{txType === "in" ? "Date" : "Installation Date"}</th>
                     </tr>
                   </thead>
                   <tbody>
+                    {shownPoRows.map((file) => (
+                      <tr
+                        key={`po-${file.id}`}
+                        className={styles.txRowClickable}
+                        tabIndex={0}
+                        title={file.verifiedAt ? "Verified — tap to view" : "To Verify — tap to scan the units received"}
+                        onClick={() => setOpenPoId(file.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setOpenPoId(file.id);
+                          }
+                        }}
+                      >
+                        <td className={styles.txRefCell}>
+                          <span className={styles.txCustName}>{file.fileName}</span>
+                          <span className={`${styles.txParty} ${styles.txInvoiceNo}`}>
+                            {file.uploadedBy ? `uploaded by ${file.uploadedBy}` : ""}
+                          </span>
+                        </td>
+                        <td>
+                          {canUpload ? (
+                            <select
+                              className={styles.poItemTypeSelect}
+                              value={file.itemType}
+                              aria-label={`Item type for ${file.fileName}`}
+                              onClick={(e) => e.stopPropagation()}
+                              onKeyDown={(e) => e.stopPropagation()}
+                              onChange={(e) => void doFiles.setItemType(file.id, e.target.value)}
+                            >
+                              {!file.itemType && <option value="">Choose…</option>}
+                              {PO_ITEM_TYPE_OPTIONS.map(([value, label]) => (
+                                <option key={value} value={value}>
+                                  {label}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            itemTypeLabel(file.itemType)
+                          )}
+                        </td>
+                        <td>
+                          {file.poLines?.length ? (
+                            // Every line of the PO (even when two lines share an item code), each with
+                            // its description; its quantity sits on the same ruled line in the Qty column.
+                            file.poLines.map((line, n) => (
+                              <div key={n} className={styles.txItem}>
+                                <div>
+                                  <strong>{line.itemCode}</strong>
+                                  <span className={styles.txInvoiceNo} style={{ display: "block", color: "var(--muted)" }}>
+                                    {line.description}
+                                  </span>
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <strong>Purchase Order (PO)</strong>
+                          )}
+                        </td>
+                        <td className={`${styles.num} ${styles.txQtyIn}`}>
+                          {file.poLines?.length
+                            ? file.poLines.map((line, n) => (
+                                <div key={n} className={`${styles.txItem} ${styles.txItemEnd}`}>
+                                  {line.qty.toLocaleString("en-MY")}
+                                </div>
+                              ))
+                            : "—"}
+                        </td>
+                        <td style={{ whiteSpace: "nowrap", fontSize: "12px", color: "#000" }}>
+                          {isoDateLabel(poDay(file))}
+                        </td>
+                      </tr>
+                    ))}
                     {filteredTx.map((tx) => (
                       <tr
                         key={tx.id}
@@ -6097,6 +6298,9 @@ function HomeTab({
                             </div>
                           )}
                         </td>
+                        {txType === "in" && (
+                          <td>{Array.from(new Set(txLines(tx).map((line) => itemTypeLabel(line.category)))).join(", ")}</td>
+                        )}
                         <td>
                           {tx.lines ? (
                             tx.lines.map((line) => (
@@ -6129,12 +6333,12 @@ function HomeTab({
                                 </div>
                               ))
                             : tx.type === "in"
-                            ? `+${tx.qty}`
+                            ? `${tx.qty}`
                             : tx.type === "out"
                             ? `${tx.qty}`
                             : `${tx.qty}`}
                         </td>
-                        {txType !== "out" && (
+                        {txType === "all" && (
                         <td>
                           <span
                             className={`${styles.txTypeText} ${
@@ -7248,14 +7452,63 @@ function StockDetailsTab({
       )}
       {stockTab === "other" && (
         <StockTable
-          title="Electrical Accessories"
+          title="Electrical Item"
           items={others}
           warehouses={tableWarehouses}
           query={query}
         />
       )}
       {stockTab === "mounting" && <MountingStructureSection warehouses={tableWarehouses} />}
+      {stockTab === "special" && <SpecialMaterialSection warehouses={tableWarehouses} />}
     </section>
+  );
+}
+
+// Special materials for commercial jobs (the stock out "Special Material" list). No stock
+// counts are loaded for them yet, so every quantity shows as —.
+function SpecialMaterialSection({ warehouses }: { warehouses: Array<"JB" | "KL"> }) {
+  return (
+    <>
+      <h2 className={styles.sectionTitle}>Special Material</h2>
+      <p className={styles.kicker}>
+        Used on commercial jobs (Tariff B or Selco). Quantities are not loaded yet and show as —.
+      </p>
+      <div className={styles.tableWrap}>
+        <table className={`${styles.detailTable} ${styles.mountTable}`}>
+          <thead>
+            <tr>
+              <th scope="col">Item</th>
+              {warehouses.map((wh) => (
+                <th key={wh} scope="col" className={styles.num}>
+                  {wh}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {COMMERCIAL_GROUPS.map((group) => (
+              <Fragment key={group.label}>
+                <tr>
+                  <th scope="colgroup" colSpan={warehouses.length + 1} style={{ textAlign: "left" }}>
+                    {group.label}
+                  </th>
+                </tr>
+                {group.parts.map((name) => (
+                  <tr key={name}>
+                    <td>{name}</td>
+                    {warehouses.map((wh) => (
+                      <td key={wh} className={styles.num}>
+                        —
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 

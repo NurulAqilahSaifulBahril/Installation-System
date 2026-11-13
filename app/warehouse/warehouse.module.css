@@ -4693,7 +4693,7 @@ button.typeCard {
 
 @media (min-width: 640px) {
   .balanceGrid {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 }
 
@@ -5351,17 +5351,34 @@ button.typeCard {
   font-size: 8.5px;
 }
 
-/* Big monitors: the page is scaled up (1.2× / 1.45×), but the Customer Details table keeps
-   its real small text size, so the Slot and Customer columns stay small there too. */
-@media (min-width: 1600px) {
-  .desktop.page .arrTable {
-    zoom: 0.8333;
+/* Desktop and monitor: larger text in the Customer Details table (phone keeps the small
+   sizes above). On monitors the table scales up with the rest of the page. */
+@media (min-width: 900px) {
+  .arrTable {
+    font-size: 12px;
   }
-}
 
-@media (min-width: 2200px) {
-  .desktop.page .arrTable {
-    zoom: 0.6897;
+  .arrTable th {
+    font-size: 11px;
+    padding: 7px 10px;
+  }
+
+  .arrTable td {
+    padding: 7px 10px;
+  }
+
+  .arrTable td[data-label="Slot"],
+  .arrTable td[data-label="Customer"] {
+    font-size: 12px;
+  }
+
+  .arrTable td[data-label="Slot"] span,
+  .arrTable td[data-label="Customer"] .arrInvoice {
+    font-size: 11px;
+  }
+
+  .arrBatteryTag {
+    font-size: 10px;
   }
 }
 
@@ -5437,10 +5454,18 @@ button.typeCard {
   font-size: 10px !important;
 }
 
-/* Phone: the "X units" figure on the Today Out / Today In / Today Transfer cards sits on the right */
+/* Phone: the "X units" figure on the Today / Day Out, In and Transfer cards sits on the same
+   row as the title, on the right (as on desktop) */
 @media (max-width: 899px) {
+  .txKpiHeader {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
   .txKpiHeader .txKpiValue {
-    align-self: flex-end;
+    flex: none;
     text-align: right;
   }
 }
@@ -5484,19 +5509,44 @@ button.typeCard {
   font-size: 8px;
 }
 
-/* Big monitors: the page is scaled up (1.2x / 1.45x); the stock out verification tables keep
-   their real small size, the same as the Customer Details table */
-@media (min-width: 1600px) {
-  .desktop.page .soPage .unitScrollTableWrap,
-  .desktop.page .soPage .mountTable {
-    zoom: 0.8333;
+/* Desktop and monitor: larger text in the stock out verification tables (phone keeps the
+   small sizes above). On monitors the tables scale up with the rest of the page. */
+@media (min-width: 640px) {
+  .soPage .unitScrollTableWrap table {
+    font-size: 12px;
   }
-}
 
-@media (min-width: 2200px) {
-  .desktop.page .soPage .unitScrollTableWrap,
-  .desktop.page .soPage .mountTable {
-    zoom: 0.6897;
+  .soPage .unitScrollTableWrap thead th {
+    font-size: 11px;
+    padding: 8px 10px;
+  }
+
+  .soPage .unitScrollTableWrap tbody td {
+    padding: 8px 10px;
+  }
+
+  .soPage .unitScrollTableWrap tbody td div,
+  .soPage .unitScrollTableWrap tbody td strong {
+    font-size: 12px !important;
+  }
+
+  .soPage .unitScrollTableWrap tbody td:first-child {
+    font-size: 11px !important;
+  }
+
+  .soPage .matchPill {
+    font-size: 11px;
+    padding: 3px 8px;
+  }
+
+  .soPage .mountTable,
+  .soPage .mountTable td,
+  .soPage .mountTable input {
+    font-size: 12px;
+  }
+
+  .soPage .mountTable th {
+    font-size: 11px;
   }
 }
 
@@ -5570,6 +5620,7 @@ button.typeCard {
   /* Qty boxes fill their cell instead of a fixed 80-90px that sticks out */
   .soPage .mountTable td:last-child input {
     width: 100% !important;
+    min-width: 0 !important; /* the scan-box style sets a 240px minimum */
     max-width: 72px;
     box-sizing: border-box;
   }
@@ -5854,4 +5905,263 @@ button.typeCard {
   .arrCrew > div {
     flex: none;
   }
+}
+
+/* Stock out verification, Mounting Structure: smaller System, Roof, Orientation and
+   "Runs of panels" boxes (the runs box sets 42px in the code, so !important is needed) */
+.soPage .mountForm {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 160px));
+  gap: 8px;
+  align-items: end; /* boxes line up even when a label wraps to two lines */
+}
+
+.soPage .mountForm label {
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.soPage .mountForm select,
+.soPage .mountForm input {
+  flex: none; /* the scan-box style would stretch or squash it inside the label column */
+  height: 30px !important;
+  min-width: 0 !important;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+}
+
+@media (max-width: 639px) {
+  .soPage .mountForm {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Phone: smaller "Week 9 Nov – 14 Nov 2026" text, in the week picker and the black week bar */
+@media (max-width: 639px) {
+  .arrNav > select {
+    font-size: 10px;
+  }
+
+  .arrWeekBar {
+    font-size: 10px;
+    padding: 5px 10px;
+  }
+}
+
+/* Six stock cards on a row: long names (Mounting Structure, Special Material) wrap instead of being cut off */
+.balanceCard .typeName {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.2;
+}
+
+.balanceCardHeader {
+  align-items: flex-start;
+}
+
+/* Phone: the Stock In / Stock Out tables fit their box: headers and long PO file names wrap */
+@media (max-width: 639px) {
+  .txLedger thead th {
+    white-space: normal;
+  }
+
+  .txLedger .txRefCell .txCustName,
+  .txLedger .txRefCell .txInvoiceNo {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+}
+
+/* Stock In: Item Type dropdown on PO rows (admins), same compact size as the other small boxes */
+.poItemTypeSelect {
+  max-width: 100%;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent; /* same as the table row behind it */
+  color: #000;
+  cursor: pointer;
+}
+
+/* Stock In Verification: the PO file pop-up (wider than the report cards) */
+.poViewCard {
+  max-width: 900px;
+  width: 100%;
+}
+
+.poViewFrame {
+  display: block;
+  width: 100%;
+  height: 72vh;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+@media (max-width: 639px) {
+  .poViewCard {
+    padding: 12px;
+  }
+
+  .poViewFrame {
+    height: 65vh;
+  }
+}
+
+/* ── Sign-in notifications: iPhone lock-screen glass ──────────────────────
+   The notices sit on a soft colour "wallpaper" so the frosted glass shows; each is a
+   translucent blurred card with an app-style icon, small caps type, time, bold title. */
+/* No panel behind the notices: only each notification is glass, straight on the page. */
+.lock .shade {
+  position: relative;
+  margin-top: 28px; /* a few rows of space below the Inventory Management title */
+  margin-bottom: 18px;
+  background: none;
+}
+
+.lock .noticeList {
+  gap: 8px;
+}
+
+.lock .noticeCard {
+  position: relative;
+  padding: 10px 12px 11px;
+  border-radius: 18px;
+  /* Glass on a light page: a light grey tint, a fine edge and a soft shadow keep it visible */
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: linear-gradient(180deg, rgba(242, 242, 247, 0.82) 0%, rgba(229, 229, 234, 0.72) 100%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  backdrop-filter: blur(22px) saturate(180%);
+  box-shadow:
+    0 8px 24px rgba(15, 23, 42, 0.1),
+    0 1px 2px rgba(15, 23, 42, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  color: #1c1c1e;
+}
+
+.lock .noticeTop {
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: rgba(60, 60, 67, 0.75);
+}
+
+.lock .noticeName {
+  gap: 7px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* App-style icon: a small rounded square in the notice's colour */
+.noticeIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.08);
+}
+
+.lock .noticeCard strong {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.lock .noticeCategory {
+  color: rgba(60, 60, 67, 0.7);
+  font-size: 12px;
+}
+
+.lock .detail {
+  color: rgba(28, 28, 30, 0.82);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+/* Desktop: the same stacked glass cards (not the old one-line rows), centred */
+.desktop .lock .shade {
+  width: 100%;
+  max-width: 560px; /* same width as the sign-in card below */
+  box-sizing: border-box;
+  margin: 32px auto 22px;
+}
+
+.desktop .lock .noticeList {
+  max-width: none;
+}
+
+.desktop .lock .noticeCard {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 10px 14px 12px;
+}
+
+.desktop .lock .noticeTop {
+  display: flex;
+}
+
+.desktop .lock .noticeName {
+  flex: none;
+}
+
+.desktop .lock .noticeCard strong {
+  white-space: normal;
+}
+
+.desktop .lock .detail {
+  overflow: visible;
+  white-space: normal;
+}
+
+.desktop .lock .noticeTop > span:last-child {
+  order: 0;
+  font-size: 11px;
+}
+
+/* × on each sign-in notification (top-right, like an iPhone notification's clear button).
+   The time moves left of it. */
+.noticeClose {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(120, 120, 128, 0.2);
+  color: rgba(60, 60, 67, 0.85);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.noticeClose:hover {
+  background: rgba(120, 120, 128, 0.35);
+}
+
+.noticeClose:focus-visible {
+  outline: 2px solid #0a84ff;
+  outline-offset: 1px;
+}
+
+.lock .noticeTop {
+  padding-right: 26px;
 }

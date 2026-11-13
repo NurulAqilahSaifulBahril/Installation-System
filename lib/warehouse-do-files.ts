@@ -6,6 +6,9 @@ import { queryProxy } from "@/lib/proxy-db";
 
 export const DO_MAX_BYTES = 10 * 1024 * 1024;
 
+// Item types a PO can be for (the Stock In "Item Type" column).
+export const PO_ITEM_TYPES = ["panel", "inverter", "battery", "mounting", "electrical", "special", "other"] as const;
+
 let ready: Promise<void> | null = null;
 
 export function ensureDoFilesTable(): Promise<void> {
@@ -25,6 +28,16 @@ export function ensureDoFilesTable(): Promise<void> {
         ")",
       ].join(String.fromCharCode(10)),
     )
+      // The date written on the PO, entered when it is uploaded (added later, so older rows
+      // have none and fall back to their upload day).
+      .then(() => queryProxy("alter table public.warehouse_do_files add column if not exists po_date date"))
+      // What the PO is for (panel, inverter, battery, ...), chosen at upload.
+      .then(() => queryProxy("alter table public.warehouse_do_files add column if not exists item_type text"))
+      // Item lines read from the PO PDF (item code, description, unit, qty). Null = not read yet.
+      .then(() => queryProxy("alter table public.warehouse_do_files add column if not exists po_lines jsonb"))
+      // Stock In verification of the PO: who verified it (every unit scanned) and when.
+      .then(() => queryProxy("alter table public.warehouse_do_files add column if not exists verified_at timestamptz"))
+      .then(() => queryProxy("alter table public.warehouse_do_files add column if not exists verified_by text"))
       .then(() => undefined)
       .catch((error) => {
         ready = null;

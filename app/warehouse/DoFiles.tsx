@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./warehouse.module.css";
 
-// Delivery order (DO) upload and list for the Stock In screen. Uploading is for admins
-// (checked on the server); any signed-in dashboard user can list and open the files.
+// Purchase order (PO) upload for the Stock In screen. Uploaded POs show as rows of the
+// Stock In table. Uploading is for admins (checked on the server); any signed-in
+// dashboard user can list and open the files.
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -16,17 +17,40 @@ export type DoFile = {
   note: string;
   uploadedBy: string;
   uploadedAt: string;
+  // Date written on the PO (YYYY-MM-DD), entered at upload; "" for older uploads.
+  poDate: string;
+  // What the PO is for (panel, inverter, ...), chosen at upload; "" for older uploads.
+  itemType: string;
+  // Item lines read from the PO PDF (empty when the file has no readable lines).
+  poLines: { itemCode: string; description: string; uom: string; qty: number }[];
+  // Stock In verification of the PO ("" until every unit was scanned and Verified pressed).
+  verifiedAt: string;
+  verifiedBy: string;
 };
+
+// Item types a PO can be for, named like the stock cards (Home / Stock Details). Used by the
+// upload box and the Stock In "Item Type" column.
+export const PO_ITEM_TYPE_OPTIONS: [string, string][] = [
+  ["panel", "Panel"],
+  ["inverter", "Inverter"],
+  ["battery", "Battery"],
+  ["mounting", "Mounting Structure"],
+  ["electrical", "Electrical Item"],
+  ["special", "Special Material"],
+];
+
+function todayInMalaysia(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kuala_Lumpur" });
+}
+
+// The day a PO belongs to: its own date, or the upload day for POs uploaded before the date was asked.
+export function poDay(file: DoFile): string {
+  return file.poDate || new Date(file.uploadedAt).toLocaleDateString("en-CA", { timeZone: "Asia/Kuala_Lumpur" });
+}
 
 function formatSize(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
-
-function formatTime(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  return date.toLocaleString("en-GB", { timeZone: "Asia/Kuala_Lumpur", dateStyle: "medium", timeStyle: "short" });
 }
 
 export function useDoFiles(enabled: boolean) {
@@ -39,15 +63,16 @@ export function useDoFiles(enabled: boolean) {
     try {
       const response = await fetch("/api/warehouse/do-files", { credentials: "same-origin", cache: "no-store" });
       if (response.status === 401) {
-        setError("Sign in to the dashboard (same browser) to see delivery orders.");
+        setError("Sign in to the dashboard (same browser) to see purchase orders.");
         return;
       }
       const body = (await response.json().catch(() => ({}))) as { files?: DoFile[]; error?: string };
-      if (!response.ok) throw new Error(body.error || "Could not load the delivery orders.");
+      if (!response.ok) throw new Error(body.error || "Could not load the purchase orders.");
       setFiles(body.files ?? []);
       setError(null);
+      return body.files ?? [];
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load the delivery orders.");
+      setError(err instanceof Error ? err.message : "Could not load the purchase orders.");
     }
   }, []);
 
@@ -55,11 +80,12 @@ export function useDoFiles(enabled: boolean) {
     if (enabled) void load();
   }, [enabled, load]);
 
-  async function upload(file: File) {
+  // Resolves to the uploaded PO's day (its own date when the PO shows one), or null on failure.
+  async function upload(file: File): Promise<string | null> {
     setMessage(null);
     if (file.size > MAX_BYTES) {
       setMessage({ ok: false, text: `That file is ${formatSize(file.size)}. The limit is 10 MB.` });
-      return;
+      return null;
     }
     setBusy(true);
     try {
@@ -68,7 +94,7 @@ export function useDoFiles(enabled: boolean) {
       const response = await fetch("/api/warehouse/do-files", { method: "POST", body: form, credentials: "same-origin" });
       const body = (await response.json().catch(() => ({}))) as { error?: string; id?: string };
       if (response.status === 401 || response.status === 403) {
-        throw new Error("Only a signed-in dashboard admin can upload delivery orders.");
+        throw new Error("Only a signed-in dashboard admin can upload purchase orders.");
       }
       if (!response.ok) throw new Error(body.error || "Could not upload the file.");
       setMessage({ ok: true, text: `Uploaded ${file.name}.` });
@@ -81,27 +107,58 @@ export function useDoFiles(enabled: boolean) {
           action: "do_uploaded",
           entityType: "do_file",
           entityId: body.id,
-          summary: `Uploaded delivery order "${file.name}" (${formatSize(file.size)})`,
+          summary: `Uploaded purchase order (PO) "${file.name}" (${formatSize(file.size)})`,
         }),
       }).catch(() => {});
-      await load();
+      const fresh = await load();
+      const saved = fresh?.find((row) => row.id === body.id);
+      return saved ? poDay(saved) : todayInMalaysia();
     } catch (err) {
       setMessage({ ok: false, text: err instanceof Error ? err.message : "Could not upload the file." });
+      return null;
     } finally {
       setBusy(false);
     }
   }
 
-  return { files, error, busy, message, upload };
+  // Change a PO's item type (admins). The row updates at once; a failed save puts it back.
+  async function setItemType(id: string, itemType: string): Promise<void> {
+    const before = files.find((file) => file.id === id)?.itemType ?? "";
+    setFiles((prev) => prev.map((file) => (file.id === id ? { ...file, itemType } : file)));
+    try {
+      const response = await fetch(`/api/warehouse/do-files/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ itemType }),
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || "Could not save the item type.");
+      }
+      setMessage(null);
+    } catch (err) {
+      setFiles((prev) => prev.map((file) => (file.id === id ? { ...file, itemType: before } : file)));
+      setMessage({ ok: false, text: err instanceof Error ? err.message : "Could not save the item type." });
+    }
+  }
+
+  // After a PO is verified on its Stock In Verification page: move its row to Verified.
+  function markVerified(id: string, verifiedAt: string, verifiedBy: string) {
+    setFiles((prev) => prev.map((file) => (file.id === id ? { ...file, verifiedAt, verifiedBy } : file)));
+  }
+
+  return { files, error, busy, message, upload, setItemType, markVerified };
 }
 
-// The Upload DO button (admins): opens the file picker, any file type.
+// The Upload PO button (admins): opens the file picker (any file type). The PO date and item
+// type are read from the PO itself on the server (the type can be changed on the Stock In table).
 export function UploadDoButton({ busy, onFile }: { busy: boolean; onFile: (file: File) => void }) {
   const input = useRef<HTMLInputElement>(null);
   return (
     <>
       <button type="button" className={styles.btnActionGhost} disabled={busy} onClick={() => input.current?.click()}>
-        {busy ? "Uploading…" : "Upload DO"}
+        {busy ? "Uploading…" : "Upload PO"}
       </button>
       <input
         ref={input}
@@ -114,67 +171,5 @@ export function UploadDoButton({ busy, onFile }: { busy: boolean; onFile: (file:
         }}
       />
     </>
-  );
-}
-
-export function DoFileList({
-  files,
-  error,
-  message,
-}: {
-  files: DoFile[];
-  error: string | null;
-  message: { ok: boolean; text: string } | null;
-}) {
-  // Nothing uploaded yet: show nothing (an upload or load message still shows on its own).
-  if (files.length === 0) {
-    const note = message ?? (error ? { ok: false, text: error } : null);
-    if (!note) return null;
-    return (
-      <p className={styles.note} style={{ marginBottom: "16px", color: note.ok ? "var(--green)" : "#b91c1c" }}>
-        {note.text}
-      </p>
-    );
-  }
-
-  return (
-    <div style={{ marginBottom: "16px" }}>
-      <h2 className={styles.sectionTitle} style={{ margin: "0 0 8px" }}>
-        Delivery orders (DO)
-      </h2>
-      {message && (
-        <p className={styles.note} style={{ color: message.ok ? "var(--green)" : "#b91c1c" }}>
-          {message.text}
-        </p>
-      )}
-      {(
-        <div className={styles.tableWrap}>
-          <table className={`${styles.detailTable} ${styles.mountTable}`}>
-            <thead>
-              <tr>
-                <th scope="col">File</th>
-                <th scope="col">Uploaded</th>
-                <th scope="col">By</th>
-                <th scope="col" className={styles.num}>Size</th>
-              </tr>
-            </thead>
-            <tbody>
-              {files.map((file) => (
-                <tr key={file.id}>
-                  <td>
-                    <a href={`/api/warehouse/do-files/${encodeURIComponent(file.id)}`} target="_blank" rel="noopener noreferrer">
-                      {file.fileName}
-                    </a>
-                  </td>
-                  <td style={{ whiteSpace: "nowrap" }}>{formatTime(file.uploadedAt)}</td>
-                  <td>{file.uploadedBy}</td>
-                  <td className={styles.num}>{formatSize(file.sizeBytes)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
   );
 }
