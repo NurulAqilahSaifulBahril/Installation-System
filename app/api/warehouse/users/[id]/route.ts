@@ -4,6 +4,7 @@ import { AuthError } from "@/lib/auth";
 import { requireAdmin } from "@/lib/warehouse-auth";
 import { queryProxy } from "@/lib/proxy-db";
 import { ensureWarehouseUsersTable } from "@/lib/warehouse-users";
+import { querySource } from "@/lib/source-api";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +14,7 @@ export const dynamic = "force-dynamic";
 const patchSchema = z.object({
   username: z.string().min(2).max(50).optional(),
   phone: z.string().min(1).max(50).optional(),
-  pageAccess: z.enum(["admin", "staff"]).optional(),
+  pageAccess: z.enum(["admin", "staff", "loading"]).optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -34,8 +35,26 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
 
   try {
     await ensureWarehouseUsersTable();
-    const target = await queryProxy<{ id: string }>("select id from public.warehouse_users where id = $1", [id]);
+    const target = await queryProxy<{ id: string; name: string; page_access: string }>(
+      "select id, name, page_access from public.warehouse_users where id = $1",
+      [id],
+    );
     if (target.length === 0) return NextResponse.json({ error: "User not found." }, { status: 404 });
+
+    // Staff and Admin must be people in prod_main; only Loading users may be from outside it.
+    const nextAccess = parsed.data.pageAccess;
+    if ((nextAccess === "admin" || nextAccess === "staff") && nextAccess !== target[0].page_access) {
+      const found = await querySource<{ name: string | null }>(
+        'select name from public."user" where lower(trim(name)) = lower($1) limit 1',
+        [target[0].name.trim()],
+      );
+      if (!found[0]?.name) {
+        return NextResponse.json(
+          { error: "This person is not in prod_main, so they can only have Loading access." },
+          { status: 400 },
+        );
+      }
+    }
 
     const sets: string[] = ["updated_at = now()"];
     const params: unknown[] = [id];

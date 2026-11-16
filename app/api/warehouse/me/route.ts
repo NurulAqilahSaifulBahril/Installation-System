@@ -36,7 +36,7 @@ export async function GET() {
     {
       signedIn: true,
       username: user.username || user.displayName,
-      access: user.role === "admin" ? "admin" : "staff",
+      access: user.role === "admin" ? "admin" : user.role === "loading" ? "loading" : "staff",
       phone,
     },
     { headers: { "Cache-Control": "private, no-store" } },

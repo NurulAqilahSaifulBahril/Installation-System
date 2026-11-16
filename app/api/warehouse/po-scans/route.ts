@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { AuthError } from "@/lib/auth";
-import { requireUser } from "@/lib/warehouse-auth";
+import { requireUser, requireWriter } from "@/lib/warehouse-auth";
 import { queryProxy } from "@/lib/proxy-db";
 
 export const dynamic = "force-dynamic";
@@ -85,7 +85,7 @@ const postSchema = z.object({
 export async function POST(request: Request) {
   let user;
   try {
-    user = await requireUser();
+    user = await requireWriter();
   } catch (error) {
     return authFailure(error);
   }
@@ -129,7 +129,7 @@ const deleteSchema = z.object({
 
 export async function DELETE(request: Request) {
   try {
-    await requireUser();
+    await requireWriter();
   } catch (error) {
     return authFailure(error);
   }

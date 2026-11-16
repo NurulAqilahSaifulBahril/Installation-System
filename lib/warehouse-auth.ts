@@ -17,7 +17,8 @@ export type WarehouseSessionUser = {
   id: string;
   username: string;
   displayName: string;
-  role: "admin" | "staff";
+  // "loading": can only view the Loading tabs (Stock Out, Stock Transfer); it cannot save anything.
+  role: "admin" | "staff" | "loading";
 };
 
 let ready: Promise<void> | null = null;
@@ -79,7 +80,7 @@ async function warehouseSessionUser(token: string | undefined): Promise<Warehous
     id: row.id,
     username: row.username || row.name,
     displayName: row.name,
-    role: row.page_access === "admin" ? "admin" : "staff",
+    role: row.page_access === "admin" ? "admin" : row.page_access === "loading" ? "loading" : "staff",
   };
 }
 
@@ -102,6 +103,14 @@ export async function requireWarehouseUser(): Promise<WarehouseSessionUser> {
   const store = await cookies();
   const user = await warehouseSessionUser(store.get(WAREHOUSE_COOKIE)?.value);
   if (!user) throw new AuthError("Not signed in.", 401);
+  return user;
+}
+
+// Signed in and allowed to record things (verify, load, scan, save quantities): everyone except
+// a "loading" user, whose access is view only.
+export async function requireWriter(): Promise<WarehouseSessionUser> {
+  const user = await requireUser();
+  if (user.role === "loading") throw new AuthError("Your access is view only (Loading).", 403);
   return user;
 }
 

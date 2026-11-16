@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { AuthError } from "@/lib/auth";
-import { requireUser } from "@/lib/warehouse-auth";
+import { requireUser, requireWriter } from "@/lib/warehouse-auth";
 import { queryProxy } from "@/lib/proxy-db";
 import { toTitleCase } from "@/lib/title-case";
 import { ensureAuditTable, ensureVerificationsTable, MATERIALS } from "@/lib/warehouse-verifications";
@@ -94,7 +94,7 @@ function auditEntry(material: string, jobRef: string): [string, string, string] 
 export async function POST(request: Request) {
   let user;
   try {
-    user = await requireUser();
+    user = await requireWriter();
   } catch (error) {
     return authFailure(error);
   }

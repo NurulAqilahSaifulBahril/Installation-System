@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AuthError } from "@/lib/auth";
-import { requireAdmin, requireUser } from "@/lib/warehouse-auth";
+import { requireAdmin, requireUser, requireWriter } from "@/lib/warehouse-auth";
 import { queryProxy } from "@/lib/proxy-db";
 import { ensureDoFilesTable, INLINE_SAFE_TYPES, PO_ITEM_TYPES } from "@/lib/warehouse-do-files";
 
@@ -61,7 +61,7 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
   if (typeof body.verified === "boolean") {
     let user;
     try {
-      user = await requireUser();
+      user = await requireWriter();
     } catch (error) {
       const status = error instanceof AuthError ? error.status : 401;
       const message = error instanceof AuthError ? error.message : "Not signed in.";

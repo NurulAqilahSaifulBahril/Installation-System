@@ -43,12 +43,13 @@ const createSchema = z.object({
   name: z.string().min(1).max(100),
   username: z.string().min(2).max(50),
   phone: z.string().max(50).optional(),
-  // Admin: every page. Staff: every page except Admin.
-  pageAccess: z.enum(["admin", "staff"]).optional(),
+  // Admin: every page. Staff: every page except Admin. Loading: the Loading tabs only, view only.
+  pageAccess: z.enum(["admin", "staff", "loading"]).optional(),
 });
 
 // The name has to be one that exists in prod_main's "user" table: checked here on the
-// server, whatever the form sends.
+// server, whatever the form sends. Only a Loading user (view only) may be someone outside
+// prod_main (e.g. a lorry driver or helper); then the typed name and phone number are used.
 export async function POST(request: Request) {
   let admin;
   try {
@@ -68,14 +69,18 @@ export async function POST(request: Request) {
       [parsed.data.name.trim()],
     );
     const person = found[0];
-    if (!person?.name) {
+    const outsideLoading = !person?.name && parsed.data.pageAccess === "loading";
+    if (!person?.name && !outsideLoading) {
       return NextResponse.json(
-        { error: "That name is not in prod_main. Pick a name from the list." },
+        { error: "That name is not in prod_main. Pick a name from the list, or choose Loading access." },
         { status: 400 },
       );
     }
-    const name = toTitleCase(person.name);
-    const phone = (parsed.data.phone ?? person.contact ?? "").trim();
+    const name = toTitleCase(person?.name || parsed.data.name.trim().replace(/ +/g, " "));
+    if (name.length < 2) {
+      return NextResponse.json({ error: "Enter the person's name." }, { status: 400 });
+    }
+    const phone = (parsed.data.phone ?? person?.contact ?? "").trim();
     if (!phone) {
       return NextResponse.json(
         { error: "This person has no phone number in prod_main. Enter the phone number to use for the OTP." },

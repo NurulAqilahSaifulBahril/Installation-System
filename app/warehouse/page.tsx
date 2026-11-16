@@ -1,7 +1,7 @@
 "use client";
 
 import AdminTab from "./AdminTab";
-import { PO_ITEM_TYPE_OPTIONS, UploadDoButton, poDay, useDoFiles } from "./DoFiles";
+import { PO_ITEM_TYPE_OPTIONS, UploadDoButton, poDay, useDoFiles, type DoFile } from "./DoFiles";
 import { cameraErrorMessage, openCameraStream } from "./camera";
 import PoVerificationPage from "./PoVerification";
 import { DownloadReportButton, reportFileName } from "./ReportDownload";
@@ -9,7 +9,7 @@ import { PvDrawingImage } from "./PvDrawingImage";
 import { DateNav } from "./DateNav";
 import { classifyInvoiceLines, parseCountedItem } from "./invoice-lines";
 import { estimateMounting, ROOF_OPTIONS, type MountingSystemId, type Orientation, type RoofType } from "./mounting-estimate";
-import { FormEvent, Fragment, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { FormEvent, Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import {
   INVERTER_TYPES,
   ORDER_MODELS,
@@ -676,6 +676,875 @@ function liveStockOutRows(jobs: ScheduledJobPayload[]): StockTransaction[] {
   return rows;
 }
 
+// ---------------------------------------------------------------------------
+// Last-minute Stock Out: items the PIC took on top of a job (or for no job)
+// ---------------------------------------------------------------------------
+
+type ExtraStockOutRecord = {
+  ref: string;
+  linkedJob: string;
+  customerName: string;
+  takenBy: string;
+  reason: string;
+  note: string;
+  warehouse: string;
+  date: string;
+  lines: { category: StockOutLine["category"]; model: string; qty: number; serials?: string[] }[];
+  createdBy: string;
+  hasPhoto?: boolean;
+};
+
+const EXTRA_REASONS: [string, string][] = [
+  ["extra", "Extra for job"],
+  ["replacement", "Replacement"],
+  ["damaged", "Damaged swap"],
+  ["other", "Other"],
+];
+const extraReasonLabel = (value: string) => EXTRA_REASONS.find(([id]) => id === value)?.[1] ?? value;
+
+// One last-minute record -> a Stock Out row. It reuses the linked job's customer details (so the
+// verification page and report show who it is for), under its own reference "XO-<n>": its
+// verification, Loading and saved quantities are kept apart from the job's own.
+function extraStockOutRow(record: ExtraStockOutRecord, jobRows: StockTransaction[]): StockTransaction {
+  const job = record.linkedJob ? jobRows.find((t) => t.reference === record.linkedJob && !t.extra) : undefined;
+  const serialised = (cat: string) => cat === "panel" || cat === "inverter" || cat === "battery";
+  const lines: StockOutLine[] = record.lines.map((line, n) => ({
+    category: line.category,
+    model: line.model,
+    qty: line.qty,
+    serialised: serialised(line.category),
+    serialCode: serialised(line.category) ? `SN-${record.ref}-${n + 1}` : undefined,
+    // Scanned on the New Stock Out form: the verification page starts with these filled in.
+    serials: serialised(line.category) && line.serials?.length ? line.serials : undefined,
+  }));
+  const customer = job?.party || record.customerName || (record.linkedJob ? `Job ${record.linkedJob}` : "No job");
+  const schedule: StockOutScheduleData = job?.schedule
+    ? { ...job.schedule, jobId: record.ref }
+    : {
+        live: true,
+        jobId: record.ref,
+        customerName: customer,
+        scheduledDate: record.date,
+        installerTeam: "—",
+        allocatedQty: 0,
+        dispatchedQty: 0,
+      };
+  const first = lines[0];
+  return {
+    id: `extra-${record.ref}`,
+    time: record.date,
+    type: "out",
+    category: (first?.category ?? "electrical") as StockTransaction["category"],
+    model: lines.map((line) => line.model).join(" + "),
+    serialCode: `SN-${record.ref}`,
+    qty: lines.filter((line) => line.serialised).reduce((sum, line) => sum + (line.qty ?? 0), 0),
+    warehouse: record.warehouse === "KL" || record.warehouse === "KLG" ? record.warehouse : "JB",
+    reference: record.ref,
+    party: customer,
+    status: "To Verify",
+    schedule,
+    lines,
+    extra: {
+      linkedJob: record.linkedJob,
+      takenBy: record.takenBy,
+      reason: record.reason,
+      note: record.note,
+      createdBy: record.createdBy,
+      hasPhoto: record.hasPhoto === true,
+    },
+  };
+}
+
+// Panel, inverter and battery units are tracked by serial number.
+const isSerialCategory = (cat: string) => cat === "panel" || cat === "inverter" || cat === "battery";
+
+// A taken photo, made smaller (longest side 1280 px, JPEG) so it saves quickly.
+function resizePhoto(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 1280 / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext("2d")?.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL("image/jpeg", 0.75));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Could not read the photo."));
+    };
+    img.src = url;
+  });
+}
+
+// The photo saved with a last-minute Stock Out, loaded only when shown.
+function ExtraStockOutPhoto({ reference }: { reference: string }) {
+  const [photo, setPhoto] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/warehouse/extra-stock-out?photo=${encodeURIComponent(reference)}`, { credentials: "same-origin", cache: "no-store" })
+      .then(async (res) => {
+        const body = (await res.json().catch(() => ({}))) as { photo?: string | null };
+        if (cancelled) return;
+        if (res.ok && body.photo) setPhoto(body.photo);
+        else setFailed(true);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reference]);
+  if (failed) return <span className={styles.note}>Photo could not be loaded.</span>;
+  if (!photo) return <span className={styles.note}>Loading photo…</span>;
+  return (
+    <a href={photo} target="_blank" rel="noreferrer" title="Open the photo">
+      <img src={photo} alt="Items taken" style={{ display: "block", maxWidth: "220px", maxHeight: "220px", borderRadius: "8px", marginTop: "8px" }} />
+    </a>
+  );
+}
+
+// The "+ New Stock Out" form: a last-minute item taken by the PIC. Saving it creates the record
+// and opens its Stock Out Verification page, where the items are scanned / counted as usual.
+function NewStockOutPage({
+  jobs,
+  signedInName,
+  onBack,
+  onCreated,
+}: {
+  // Scheduled jobs (Stock Out rows) the item can be linked to.
+  jobs: StockTransaction[];
+  // The signed-in person: "Taken by (PIC)" starts with this name (it can be changed when
+  // someone else, e.g. the installer, took the item).
+  signedInName: string;
+  onBack: () => void;
+  // Called once the record is saved; it marks it Verified (awaited while "Saving…" shows).
+  onCreated: (record: ExtraStockOutRecord) => Promise<void> | void;
+}) {
+  // serials: scanned on this form (panel / inverter / battery); when there are any, they set the quantity.
+  type Line = { category: StockOutLine["category"]; model: string; qty: string; serials: string[] };
+  const [noJob, setNoJob] = useState(false);
+  const [jobSearch, setJobSearch] = useState("");
+  const [jobRef, setJobRef] = useState("");
+  // The matching jobs drop down under the search box while typing.
+  const [jobListOpen, setJobListOpen] = useState(false);
+  const [takenBy, setTakenBy] = useState(signedInName);
+  const [reason, setReason] = useState("extra");
+  const [note, setNote] = useState("");
+  const [warehouse, setWarehouse] = useState<WarehouseCode>("JB");
+  // The date is today's (Malaysia time), set automatically.
+  const date = isoToday();
+  const [lines, setLines] = useState<Line[]>([{ category: "panel", model: "", qty: "", serials: [] }]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Barcode scanning: which item row is being scanned (laser gun / typing, or the camera).
+  const [scanRow, setScanRow] = useState<number | null>(null);
+  const [scanInput, setScanInput] = useState("");
+  const [scanMsg, setScanMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [cameraOn, setCameraOn] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const scanInputRef = useRef<HTMLInputElement>(null);
+  // Photo of the items taken (optional).
+  const [photo, setPhoto] = useState<string | null>(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+
+  // Add one scanned serial to the row being scanned (not twice, on any row).
+  const linesRef = useRef(lines);
+  linesRef.current = lines;
+  const scanRowRef = useRef<number | null>(null);
+  scanRowRef.current = scanRow;
+  const addSerial = (raw: string) => {
+    const code = raw.trim();
+    const row = scanRowRef.current;
+    if (!code || row === null) return;
+    if (linesRef.current.some((line) => line.serials.some((serial) => serial.toLowerCase() === code.toLowerCase()))) {
+      setScanMsg({ ok: false, text: `⚠️ Duplicate Scan: S/N ${code} was already recorded!` });
+      return;
+    }
+    const line = linesRef.current[row];
+    setScanMsg({ ok: true, text: `✅ Recorded S/N ${code}${line?.model ? ` as ${line.model}` : ""} (${(line?.serials.length ?? 0) + 1})` });
+    setLines((prev) => prev.map((line, i) => (i === row ? { ...line, serials: [...line.serials, code] } : line)));
+  };
+
+  // Camera scanning for the row being scanned; stopped when closed or another row is picked.
+  useEffect(() => {
+    if (!cameraOn || scanRow === null) return;
+    let stream: MediaStream | null = null;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    let cancelled = false;
+    let lastCode = "";
+    if (typeof navigator === "undefined" || typeof navigator.mediaDevices?.getUserMedia !== "function") {
+      setCameraError(cameraErrorMessage(null));
+      return;
+    }
+    openCameraStream()
+      .then((s) => {
+        if (cancelled) {
+          s.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        stream = s;
+        if (videoRef.current) {
+          videoRef.current.srcObject = s;
+          videoRef.current.play().catch(() => {});
+        }
+        setCameraError(null);
+        if (!("BarcodeDetector" in window)) {
+          setCameraError("This browser cannot read barcodes from the camera. Use the barcode gun or type the serial.");
+          return;
+        }
+        // @ts-expect-error - standard browser BarcodeDetector API
+        const detector = new window.BarcodeDetector({ formats: ["code_128", "qr_code", "ean_13", "data_matrix"] });
+        timer = setInterval(async () => {
+          if (!videoRef.current || videoRef.current.readyState < 2) return;
+          try {
+            const found = await detector.detect(videoRef.current);
+            const code = found?.[0]?.rawValue as string | undefined;
+            // The same barcode stays in view for a while: add it once.
+            if (code && code !== lastCode) {
+              lastCode = code;
+              addSerial(code);
+            }
+          } catch {}
+        }, 400);
+      })
+      .catch((err) => {
+        if (!cancelled) setCameraError(cameraErrorMessage(err));
+      });
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+      stream?.getTracks().forEach((t) => t.stop());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraOn, scanRow]);
+
+  function openScan(index: number) {
+    setScanRow(index);
+    setScanMsg(null);
+    setScanInput("");
+    setCameraError(null);
+    // Ready for the laser gun on a computer (not on phones: it pops up the keyboard).
+    setTimeout(() => {
+      if (window.matchMedia("(pointer: fine)").matches) scanInputRef.current?.focus();
+    }, 50);
+  }
+
+  async function takePhoto(file: File | undefined) {
+    if (!file) return;
+    setPhotoBusy(true);
+    try {
+      setPhoto(await resizePhoto(file));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not read the photo.");
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
+  // One entry per job reference (newest install date first), searchable by customer or number.
+  const jobOptions = useMemo(() => {
+    const seen = new Set<string>();
+    return jobs
+      .filter((t) => t.type === "out" && !t.extra && t.schedule)
+      .sort((a, b) => (b.schedule?.scheduledDate ?? "").localeCompare(a.schedule?.scheduledDate ?? ""))
+      .filter((t) => (seen.has(t.id) ? false : (seen.add(t.id), true)));
+  }, [jobs]);
+  const q = jobSearch.trim().toLowerCase();
+  const shownJobs = jobOptions
+    .filter((t) => !q || t.party.toLowerCase().includes(q) || t.reference.toLowerCase().includes(q))
+    .slice(0, 30);
+  const pickedJob = jobOptions.find((t) => t.id === jobRef);
+
+  const MODEL_SUGGESTIONS: Record<StockOutLine["category"], string[]> = {
+    panel: PANEL_MODELS,
+    inverter: Object.values(INVERTER_MODELS).flat(),
+    battery: BATTERY_MODELS,
+    mounting: MOUNTING_SYSTEMS.flatMap((system) => system.groups.flatMap((group) => group.parts.map((part) => part.name))),
+    electrical: ELECTRICAL_GROUPS.flatMap((group) => group.parts),
+  };
+
+  const setLine = (index: number, patch: Partial<Line>) =>
+    setLines((prev) => prev.map((line, i) => (i === index ? { ...line, ...patch } : line)));
+
+  // Rows in use (a model, a quantity or a scan). Panels / inverters / batteries need every unit
+  // scanned (the quantity, or the scans when no quantity is typed); other items need a quantity.
+  const usedLines = lines.filter((line) => line.model.trim() || line.qty.trim() || line.serials.length > 0);
+  const stillToDo = usedLines.reduce((sum, line) => {
+    if (isSerialCategory(line.category)) {
+      const target = Math.max(Number(line.qty) || 0, line.serials.length);
+      return sum + (target === 0 ? 1 : Math.max(0, target - line.serials.length));
+    }
+    return sum + (Number(line.qty) >= 1 ? 0 : 1);
+  }, 0);
+  const allDone = usedLines.length > 0 && stillToDo === 0 && usedLines.every((line) => line.model.trim());
+
+  async function save() {
+    setError(null);
+    if (!noJob && !pickedJob) return setError("Pick the job this item is for, or tick “No job”.");
+    if (!takenBy.trim()) return setError("Enter who took the item (PIC).");
+    const cleanLines = lines
+      .map((line) => {
+        const serials = isSerialCategory(line.category) ? line.serials : [];
+        return {
+          category: line.category,
+          model: line.model.trim(),
+          // Scanned units set the quantity.
+          qty: serials.length > 0 ? Math.max(Number(line.qty) || 0, serials.length) : Number(line.qty),
+          ...(serials.length > 0 ? { serials } : {}),
+        };
+      })
+      .filter((line) => line.model || line.qty);
+    if (cleanLines.length === 0) return setError("Add at least one item.");
+    if (cleanLines.some((line) => !line.model || !Number.isInteger(line.qty) || line.qty < 1)) {
+      return setError("Every item needs a model and a whole-number quantity of 1 or more.");
+    }
+    setSaving(true);
+    try {
+      const response = await fetch("/api/warehouse/extra-stock-out", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          linkedJob: noJob ? "" : pickedJob?.reference,
+          customerName: noJob ? "" : pickedJob?.party,
+          takenBy: takenBy.trim(),
+          reason,
+          note: note.trim(),
+          warehouse,
+          date,
+          lines: cleanLines,
+          ...(photo ? { photo } : {}),
+        }),
+      });
+      const body = (await response.json().catch(() => ({}))) as { record?: ExtraStockOutRecord; error?: string };
+      if (!response.ok || !body.record) throw new Error(body.error || "Could not save. Try again.");
+      await onCreated(body.record);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const label: CSSProperties = { fontWeight: 700, fontSize: "13px", color: "#000", marginBottom: "4px", display: "block" };
+  const input: CSSProperties = {
+    width: "100%",
+    padding: "8px 10px",
+    border: "1px solid #cbd5e1",
+    borderRadius: "8px",
+    fontSize: "14px",
+    background: "#fff",
+    color: "#000",
+    boxSizing: "border-box",
+  };
+  const field: CSSProperties = { marginBottom: "14px" };
+
+  return (
+    <section className={`${styles.screen} ${styles.soPage}`} aria-labelledby="new-stock-out-title">
+      <div className={styles.inspectTopBar}>
+        <button className={styles.back} type="button" onClick={onBack} style={{ marginBottom: 0 }}>
+          Back
+        </button>
+      </div>
+      <h1 id="new-stock-out-title" className={styles.inspectHeroTitle} style={{ margin: "0 0 4px" }}>
+        New Stock Out
+      </h1>
+      <p className={styles.note} style={{ margin: "0 0 16px" }}>
+        Last-minute item taken by the PIC. After saving, scan or count the items and press Verified as usual.
+      </p>
+
+      <div className={styles.inspectCard} style={{ marginBottom: "16px" }}>
+        <div style={field}>
+          <span style={label}>Job / customer</span>
+          <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", marginBottom: "8px" }}>
+            <input type="checkbox" checked={noJob} onChange={(e) => setNoJob(e.target.checked)} />
+            No job (other reason)
+          </label>
+          {!noJob &&
+            (pickedJob ? (
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                <strong style={{ fontSize: "14px" }}>
+                  {pickedJob.party} · #{pickedJob.reference}
+                  {pickedJob.schedule?.scheduledDate ? ` · ${isoDateLabel(pickedJob.schedule.scheduledDate)}` : ""}
+                </strong>
+                <button type="button" className={styles.btnActionGhost} onClick={() => setJobRef("")}>
+                  Change
+                </button>
+              </div>
+            ) : (
+              <div style={{ position: "relative" }}>
+                <input
+                  style={input}
+                  type="search"
+                  role="combobox"
+                  aria-expanded={jobListOpen && jobSearch.trim() !== ""}
+                  aria-controls="xo-job-list"
+                  autoComplete="off"
+                  placeholder="Type customer name or invoice number"
+                  value={jobSearch}
+                  onChange={(e) => {
+                    setJobSearch(e.target.value);
+                    setJobListOpen(true);
+                  }}
+                  onFocus={() => setJobListOpen(true)}
+                  onBlur={() => setJobListOpen(false)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setJobListOpen(false);
+                    // Enter picks the first match.
+                    if (e.key === "Enter" && shownJobs[0]) {
+                      e.preventDefault();
+                      setJobRef(shownJobs[0].id);
+                      setJobListOpen(false);
+                    }
+                  }}
+                />
+                {jobListOpen && jobSearch.trim() !== "" && (
+                  <div
+                    id="xo-job-list"
+                    role="listbox"
+                    style={{
+                      position: "absolute",
+                      top: "calc(100% + 4px)",
+                      left: 0,
+                      right: 0,
+                      zIndex: 20,
+                      maxHeight: "260px",
+                      overflowY: "auto",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "8px",
+                      background: "#fff",
+                      boxShadow: "0 8px 24px rgba(15, 23, 42, 0.15)",
+                    }}
+                  >
+                    {shownJobs.length === 0 ? (
+                      <p className={styles.note} style={{ margin: "8px 10px" }}>
+                        No scheduled job matches.
+                      </p>
+                    ) : (
+                      shownJobs.map((t) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          role="option"
+                          aria-selected={false}
+                          // Keep the search box focused until the click lands.
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            setJobRef(t.id);
+                            setJobListOpen(false);
+                          }}
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            textAlign: "left",
+                            padding: "8px 10px",
+                            border: "none",
+                            borderBottom: "1px solid #f1f5f9",
+                            background: "#fff",
+                            cursor: "pointer",
+                            fontSize: "13px",
+                            color: "#000",
+                          }}
+                        >
+                          <strong>{t.party}</strong> · #{t.reference}
+                          {t.schedule?.scheduledDate ? ` · ${isoDateLabel(t.schedule.scheduledDate)}` : ""}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+        </div>
+
+        <div style={field}>
+          <label style={label} htmlFor="xo-taken-by">
+            Taken by (PIC)
+          </label>
+          <input id="xo-taken-by" style={input} value={takenBy} onChange={(e) => setTakenBy(e.target.value)} placeholder="Name" />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "12px" }}>
+          <div style={field}>
+            <label style={label} htmlFor="xo-reason">
+              Reason
+            </label>
+            <select id="xo-reason" style={input} value={reason} onChange={(e) => setReason(e.target.value)}>
+              {EXTRA_REASONS.map(([id, text]) => (
+                <option key={id} value={id}>
+                  {text}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div style={field}>
+            <span style={label}>Warehouse</span>
+            <div className={styles.filterRow} role="group" aria-label="Warehouse">
+              {(["JB", "KL", "KLG"] as WarehouseCode[]).map((wh) => (
+                <button
+                  key={wh}
+                  type="button"
+                  className={`${styles.filterBtn} ${warehouse === wh ? styles.filterActive : ""}`}
+                  onClick={() => setWarehouse(wh)}
+                >
+                  {WH_BUTTON_LABEL[wh]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={field}>
+            <span style={label}>Date</span>
+            <span style={{ display: "block", padding: "8px 0", fontSize: "14px", color: "#000" }}>{isoDateLabel(date)} (today)</span>
+          </div>
+        </div>
+
+        <div style={field}>
+          <label style={label} htmlFor="xo-note">
+            Note (optional)
+          </label>
+          <input id="xo-note" style={input} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. roof needed 2 more panels" />
+        </div>
+      </div>
+
+      <div className={styles.inspectCard} style={{ marginBottom: "16px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+          <h2 className={styles.inspectCardTitle} style={{ margin: 0 }}>
+            Items
+          </h2>
+          <button
+            type="button"
+            className={styles.btnActionGhost}
+            onClick={() => setLines((prev) => [...prev, { category: "electrical", model: "", qty: "", serials: [] }])}
+          >
+            + Add item
+          </button>
+        </div>
+        <datalist id="xo-models-panel">{MODEL_SUGGESTIONS.panel.map((m) => <option key={m} value={m} />)}</datalist>
+        <datalist id="xo-models-inverter">{MODEL_SUGGESTIONS.inverter.map((m) => <option key={m} value={m} />)}</datalist>
+        <datalist id="xo-models-battery">{MODEL_SUGGESTIONS.battery.map((m) => <option key={m} value={m} />)}</datalist>
+        <datalist id="xo-models-mounting">{Array.from(new Set(MODEL_SUGGESTIONS.mounting)).map((m) => <option key={m} value={m} />)}</datalist>
+        <datalist id="xo-models-electrical">{Array.from(new Set(MODEL_SUGGESTIONS.electrical)).map((m) => <option key={m} value={m} />)}</datalist>
+        {lines.map((line, index) => (
+          <div key={index} style={{ marginBottom: "10px", paddingBottom: "10px", borderBottom: "1px solid #f1f5f9" }}>
+          <div
+            style={{ display: "grid", gridTemplateColumns: "minmax(110px, 0.8fr) minmax(140px, 2fr) 80px auto", gap: "8px", alignItems: "center" }}
+          >
+            <select
+              aria-label="Item type"
+              style={input}
+              value={line.category}
+              onChange={(e) => {
+                const category = e.target.value as StockOutLine["category"];
+                // Only panels, inverters and batteries keep scanned serials.
+                setLine(index, { category, serials: isSerialCategory(category) ? line.serials : [] });
+                if (!isSerialCategory(category) && scanRow === index) {
+                  setScanRow(null);
+                  setCameraOn(false);
+                }
+              }}
+            >
+              <option value="panel">Panel</option>
+              <option value="inverter">Inverter</option>
+              <option value="battery">Battery</option>
+              <option value="mounting">Mounting Structure</option>
+              <option value="electrical">Electrical Item</option>
+            </select>
+            <input
+              aria-label="Model"
+              style={input}
+              list={`xo-models-${line.category}`}
+              placeholder="Model / item"
+              value={line.model}
+              onChange={(e) => setLine(index, { model: e.target.value })}
+            />
+            <input
+              aria-label="Quantity"
+              style={input}
+              type="number"
+              min={Math.max(1, line.serials.length)}
+              step={1}
+              inputMode="numeric"
+              placeholder="Qty"
+              value={line.qty === "" && line.serials.length > 0 ? String(line.serials.length) : line.qty}
+              title={line.serials.length > 0 ? `${line.serials.length} scanned` : undefined}
+              onChange={(e) => setLine(index, { qty: e.target.value })}
+            />
+            <button
+              type="button"
+              className={styles.btnActionGhost}
+              aria-label="Remove item"
+              disabled={lines.length === 1}
+              onClick={() => {
+                setLines((prev) => prev.filter((_, i) => i !== index));
+                setScanRow(null);
+                setCameraOn(false);
+              }}
+            >
+              ✕
+            </button>
+          </div>
+          {/* Panel / inverter / battery: the same scanner as Stock Out Verification */}
+          {isSerialCategory(line.category) &&
+            (() => {
+              // One row per unit to take (the quantity, or more if more were scanned).
+              const target = Math.max(Number(line.qty) || 0, line.serials.length);
+              const progress = target > 0 ? Math.min(100, Math.round((line.serials.length / target) * 100)) : 0;
+              const open = scanRow === index;
+              return (
+                <div style={{ marginTop: "8px" }}>
+                  {!open ? (
+                    <button type="button" className={styles.scannerBtnScan} onClick={() => openScan(index)}>
+                      <span>🔍</span> Scan barcode{line.serials.length > 0 ? ` (${line.serials.length}/${target} scanned)` : ""}
+                    </button>
+                  ) : (
+                    <div className={styles.scannerCard} style={{ margin: 0 }}>
+                      <div className={styles.scannerHeader}>
+                        <div>
+                          <h2 className={styles.scannerTitle}>
+                            <span>🔍</span> Barcode &amp; Serial Scanner
+                          </h2>
+                          <p className={styles.scannerHelpText}>
+                            Scan each {line.model || "unit"} with the mobile camera or handheld laser gun.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className={styles.btnActionGhost}
+                          onClick={() => {
+                            setScanRow(null);
+                            setCameraOn(false);
+                          }}
+                        >
+                          Done
+                        </button>
+                      </div>
+
+                      {/* Camera viewfinder */}
+                      {cameraOn && (
+                        <div className={styles.cameraViewfinder}>
+                          <button
+                            type="button"
+                            className={styles.cameraCloseBtn}
+                            onClick={() => setCameraOn(false)}
+                            aria-label="Close camera"
+                            title="Close camera"
+                          >
+                            ✕
+                          </button>
+                          <div className={styles.cameraScanLine} />
+                          <video ref={videoRef} className={styles.videoCameraActive} playsInline autoPlay muted />
+                          {cameraError && (
+                            <div style={{ padding: "12px 14px", background: "rgba(0,0,0,0.65)", borderRadius: "6px", margin: "8px" }}>
+                              <div style={{ fontSize: "22px", marginBottom: "2px" }}>📸</div>
+                              <strong style={{ color: "#f87171", fontSize: "12px" }}>Camera Notice:</strong>
+                              <div style={{ fontSize: "11px", color: "#e2e8f0", marginTop: "2px" }}>{cameraError}</div>
+                            </div>
+                          )}
+                          <div style={{ padding: "8px 12px", background: "rgba(0,0,0,0.55)", borderRadius: "6px", marginTop: "6px" }}>
+                            <span style={{ fontSize: "11px", color: "#e2e8f0" }}>🎯 Camera auto-detects the barcode.</span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Barcode input: an empty box opens the camera */}
+                      <form
+                        className={styles.scannerInputRow}
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          addSerial(scanInput);
+                          setScanInput("");
+                        }}
+                      >
+                        <input
+                          ref={scanInputRef}
+                          type="text"
+                          className={styles.scannerInput}
+                          placeholder="Scan barcode or type unit serial number..."
+                          value={scanInput}
+                          onChange={(e) => setScanInput(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className={styles.scannerBtnScan}
+                          title="Records the typed serial; with an empty box it opens the camera scanner"
+                          onClick={() => {
+                            if (scanInput.trim()) {
+                              addSerial(scanInput);
+                              setScanInput("");
+                            } else setCameraOn(true);
+                          }}
+                        >
+                          <span>⚡</span> Scan / Match
+                        </button>
+                      </form>
+
+                      {/* Scan feedback */}
+                      {scanMsg && (
+                        <div
+                          className={`${styles.scanFeedback} ${scanMsg.ok ? styles.scanFeedbackSuccess : styles.scanFeedbackWarning}`}
+                        >
+                          <span>{scanMsg.text}</span>
+                          <button
+                            type="button"
+                            style={{ border: 0, background: "transparent", cursor: "pointer", color: "inherit", fontWeight: 700 }}
+                            onClick={() => setScanMsg(null)}
+                          >
+                            &times;
+                          </button>
+                        </div>
+                      )}
+
+                      <hr style={{ border: 0, borderTop: "1px solid var(--line)", margin: "18px 0" }} />
+                      <div className={styles.skuProgressHeader}>
+                        <div>
+                          <p className={styles.itemDesc}>Serial codes are recorded as each unit is scanned.</p>
+                        </div>
+                        <div className={styles.skuOverallStats}>
+                          Scanned: <strong>{line.serials.length}</strong> / {target} ({progress}%)
+                        </div>
+                      </div>
+                      <div className={styles.progressBarContainer}>
+                        <div
+                          className={`${styles.progressBarFill} ${progress < 100 ? styles.progressBarFillWarning : ""}`}
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
+
+                      {/* Units table */}
+                      <div className={styles.unitScrollTableWrap}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th scope="col" style={{ width: "50px" }}>No.</th>
+                              <th scope="col" style={{ minWidth: "180px" }}>Serial Code</th>
+                              <th scope="col">Description / Model</th>
+                              <th scope="col" style={{ width: "150px" }}>Match Status</th>
+                              <th scope="col" style={{ width: "40px" }} aria-label="Remove" />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {Array.from({ length: target }, (_, n) => {
+                              const serial = line.serials[n] ?? null;
+                              return (
+                                <tr key={n} className={serial ? styles.unitRowVerified : undefined}>
+                                  <td style={{ color: "var(--muted)", fontSize: "11px", fontWeight: 600 }}>
+                                    #{String(n + 1).padStart(2, "0")}
+                                  </td>
+                                  <td>
+                                    <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: "13px", letterSpacing: "0.03em" }}>
+                                      {serial ?? "—"}
+                                    </div>
+                                  </td>
+                                  <td>
+                                    <strong style={{ fontSize: "13px" }}>{line.model || "—"}</strong>
+                                  </td>
+                                  <td>
+                                    {serial ? (
+                                      <span className={`${styles.matchPill} ${styles.matchPillComplete}`}>✅ Scanned</span>
+                                    ) : (
+                                      <span className={`${styles.matchPill} ${styles.matchPillPending}`}>⏳ Pending Scan</span>
+                                    )}
+                                  </td>
+                                  <td>
+                                    {serial && (
+                                      <button
+                                        type="button"
+                                        aria-label={`Remove ${serial}`}
+                                        title="Remove this scan"
+                                        style={{ border: "none", background: "none", cursor: "pointer", color: "#64748b" }}
+                                        onClick={() => setLine(index, { serials: line.serials.filter((x) => x !== serial) })}
+                                      >
+                                        ✕
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                            {target === 0 && (
+                              <tr>
+                                <td colSpan={5} style={{ color: "var(--muted)", fontSize: "12px" }}>
+                                  Enter the quantity, or just scan: each scan adds a unit.
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        ))}
+        <p className={styles.note} style={{ margin: "6px 0 0" }}>
+          Scan panels, inverters and batteries here (or on the next page). Other items are counted on the next page.
+        </p>
+
+        {/* Photo of the items taken (optional) */}
+        <div style={{ marginTop: "14px", paddingTop: "12px", borderTop: "1px solid #f1f5f9" }}>
+        <span style={{ fontWeight: 700, fontSize: "13px", color: "#000", display: "block", marginBottom: "8px" }}>
+          Photo (optional)
+        </span>
+        <div style={{ display: "flex", gap: "12px", alignItems: "flex-start", flexWrap: "wrap" }}>
+          <label className={styles.btnActionGhost} style={{ cursor: "pointer" }}>
+            {photoBusy ? "Reading…" : photo ? "📷 Retake photo" : "📷 Take photo"}
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                void takePhoto(e.target.files?.[0]);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          {photo && (
+            <div>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={photo} alt="Items taken" style={{ display: "block", maxWidth: "220px", maxHeight: "220px", borderRadius: "8px" }} />
+              <button type="button" className={styles.btnActionGhost} style={{ marginTop: "6px" }} onClick={() => setPhoto(null)}>
+                Remove photo
+              </button>
+            </div>
+          )}
+        </div>
+        </div>
+      </div>
+
+      {error && (
+        <p className={styles.note} style={{ color: "#b91c1c", margin: "0 0 12px" }}>
+          {error}
+        </p>
+      )}
+      <div className={styles.inspectActionGroup} style={{ display: "flex", justifyContent: "flex-end" }}>
+        <button
+          type="button"
+          className={`${styles.btnActionPrimary} ${allDone ? styles.btnVerifiedGlow : styles.btnVerifiedLocked}`}
+          disabled={!allDone || saving}
+          onClick={() => void save()}
+          title="All items scanned and verified for dispatch"
+        >
+          {saving
+            ? "Saving…"
+            : allDone
+              ? "✓ Verified (Ready for Installation Dispatch)"
+              : `🔒 Verified (${stillToDo} more to scan or enter)`}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function Dashboard({
   phone,
   username,
@@ -727,6 +1596,8 @@ function Dashboard({
   const [transactions, setTransactions] = useState<StockTransaction[]>(STOCK_TRANSACTIONS);
   // Saved verification records: which job and material, and who completed it.
   const [verifications, setVerifications] = useState<VerificationRecord[]>([]);
+  // "+ New Stock Out" form (last-minute item taken by the PIC) is open.
+  const [newStockOutOpen, setNewStockOutOpen] = useState(false);
 
   // Record that a material was completed (or the whole job verified) by the signed-in person.
   // It is saved on the server (survives a reload) and written to the Inventory Management
@@ -773,10 +1644,22 @@ function Dashboard({
           // Verification records unavailable: jobs show as To Verify.
         }
         if (cancelled) return;
+        // Last-minute Stock Outs (each under its own XO- reference), shown with the jobs.
+        let extras: StockTransaction[] = [];
+        try {
+          const saved = await fetch("/api/warehouse/extra-stock-out", { credentials: "same-origin", cache: "no-store" });
+          if (saved.ok) {
+            const list = ((await saved.json()) as { records?: ExtraStockOutRecord[] }).records ?? [];
+            extras = list.map((record) => extraStockOutRow(record, live));
+          }
+        } catch {
+          // Not available: only the scheduled jobs show.
+        }
+        if (cancelled) return;
         const verifiedJobs = new Set(records.filter((r) => r.material === "job").map((r) => r.jobRef));
         setVerifications(records);
         setTransactions((prev) => [
-          ...live.map((tx) => (verifiedJobs.has(tx.reference) ? { ...tx, status: "Verified" as const } : tx)),
+          ...[...extras, ...live].map((tx) => (verifiedJobs.has(tx.reference) ? { ...tx, status: "Verified" as const } : tx)),
           ...prev.filter((t) => t.type !== "out"),
         ]);
       })
@@ -818,6 +1701,46 @@ function Dashboard({
         />
       );
     }
+  }
+
+  // "+ New Stock Out": pressing Verified saves it and marks it Verified straight away, with the same
+  // records as the Stock Out Verification page (who prepared each item, the job verified, and
+  // the quantities of the counted items). Then the Stock Out list opens on Verified.
+  if (newStockOutOpen) {
+    return (
+      <NewStockOutPage
+        jobs={transactions}
+        signedInName={username}
+        onBack={() => setNewStockOutOpen(false)}
+        onCreated={async (record) => {
+          const row = { ...extraStockOutRow(record, transactions), status: "Verified" as const };
+          // Counted items (mounting, electrical): their quantities, as the verification page saves them.
+          const bulk = (row.lines ?? []).filter((line) => !line.serialised && (line.qty ?? 0) > 0);
+          if (bulk.length > 0) {
+            await fetch("/api/warehouse/entries", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              credentials: "same-origin",
+              body: JSON.stringify({
+                job: record.ref,
+                kinds: ["bulk_line"],
+                entries: bulk.map((line) => ({ kind: "bulk_line", key: line.model, value: String(line.qty) })),
+              }),
+            }).catch(() => {});
+          }
+          const materials = Array.from(new Set((row.lines ?? []).map((line) => line.category))) as VerificationMaterial[];
+          await Promise.all(materials.map((material) => recordVerification(record.ref, material)));
+          await recordVerification(record.ref, "job");
+          setTransactions((prev) => [row, ...prev]);
+          setHomeTxType("out");
+          setHomeShowsTx(true);
+          setHomeTxStatusTab("verified");
+          setHomeDay(record.date);
+          setTab("home");
+          setNewStockOutOpen(false);
+        }}
+      />
+    );
   }
 
   // ----- Inverter drill-down screens (rendered without tab bar) -----
@@ -936,6 +1859,41 @@ function Dashboard({
     );
   }
 
+  // "Loading" access: only the Loading tab of Stock Out and Stock Transfer, view only.
+  if (access === "loading") {
+    return (
+      <>
+        <div className={`${styles.screen} ${styles.head}`}>
+          <div>
+            <h1 id="warehouse-home">Inventory Management</h1>
+          </div>
+        </div>
+        <HomeTab
+          transactions={transactions}
+          onInspectTx={() => {}}
+          onSignOut={onSignOut}
+          onInverterOpen={() => {}}
+          showTx
+          onShowTx={() => {}}
+          txType={homeTxType === "transfer" ? "transfer" : "out"}
+          setTxType={setHomeTxType}
+          txCat={homeTxCat}
+          setTxCat={setHomeTxCat}
+          txStatusTab="loading"
+          setTxStatusTab={setHomeTxStatusTab}
+          selectedDay={homeDay}
+          setSelectedDay={setHomeDay}
+          onOpenTransfer={() => {}}
+          onNewStockOut={() => {}}
+          onOpenStock={() => {}}
+          canUpload={false}
+          verifications={verifications}
+          loadingOnly
+        />
+      </>
+    );
+  }
+
   // ----- Tab bar + active tab content -----
 
   return (
@@ -988,6 +1946,7 @@ function Dashboard({
           selectedDay={homeDay}
           setSelectedDay={setHomeDay}
           onOpenTransfer={() => setTab("transfer")}
+          onNewStockOut={() => setNewStockOutOpen(true)}
           onOpenStock={(item, wh) => {
             setStockFocus({ item, wh });
             setTab("stock");
@@ -1047,11 +2006,12 @@ function catClass(cat: string): string {
   return styles.tag;
 }
 
-// Warehouse filter buttons on every page: All, JB, KL and Kluang (code KLG). Kluang has no
+// Warehouse filter buttons on every page: JB, KL and Kluang (code KLG). There is no "All"
+// button: clicking the active warehouse again turns it off and shows all warehouses. Kluang has no
 // stock counts yet, so it shows "—" / 0 until real figures are added.
 type WarehouseCode = "JB" | "KL" | "KLG";
 type WhFilter = "all" | WarehouseCode;
-const WH_FILTERS: WhFilter[] = ["all", "JB", "KL", "KLG"];
+const WH_FILTERS: WarehouseCode[] = ["JB", "KL", "KLG"];
 const WH_BUTTON_LABEL: Record<WhFilter, string> = { all: "All", JB: "JB", KL: "KL", KLG: "Kluang" };
 
 const WH_SPLIT: Record<string, { JB: number; KL: number; KLG?: number }> = {
@@ -2936,7 +3896,13 @@ function StockOutVerificationPage({
   const bulkLines = useMemo(() => lines.filter((line) => !line.serialised), [lines]);
 
   const [scans, setScans] = useState<{ serial: string; lineIdx: number }[]>(() => {
-    if (tx.status !== "Verified") return [];
+    // Not verified yet, or a last-minute Stock Out: start with the serials scanned on the New
+    // Stock Out form (the real ones, also once it is Verified).
+    if (tx.status !== "Verified" || tx.extra) {
+      return serialLines.flatMap((line, lineIdx) =>
+        (line.serials ?? []).slice(0, line.qty ?? 0).map((serial) => ({ serial, lineIdx })),
+      );
+    }
     // Already verified (sample data): show a full set so the page reads as complete.
     return serialLines.flatMap((line, lineIdx) =>
       generateStockOutSerialList({
@@ -3419,6 +4385,25 @@ function StockOutVerificationPage({
       <h1 id="stockout-verify-title" className={styles.inspectHeroTitle} style={{ margin: "0 0 12px" }}>
         Stock Out Verification
       </h1>
+
+      {/* Last-minute Stock Out: what it is for, who took it and why */}
+      {tx.extra && (
+        <div
+          className={styles.inspectCard}
+          style={{ marginBottom: "16px", borderColor: "#bf9000", background: "#fffbeb", fontSize: "13px", color: "#000" }}
+        >
+          <strong style={{ display: "block", marginBottom: "4px" }}>
+            Last-minute item · #{tx.reference}
+            {tx.extra.linkedJob ? ` · for Job #${tx.extra.linkedJob}` : " · No job"}
+          </strong>
+          <span>
+            Taken by <strong>{tx.extra.takenBy}</strong> · {extraReasonLabel(tx.extra.reason)} · {WH_BUTTON_LABEL[tx.warehouse]} warehouse
+            {tx.extra.note ? ` · ${tx.extra.note}` : ""}
+            {tx.extra.createdBy ? ` · added by ${tx.extra.createdBy}` : ""}
+          </span>
+          {tx.extra.hasPhoto && <ExtraStockOutPhoto reference={tx.reference} />}
+        </div>
+      )}
 
       {/* 1. Scheduling System Record (also shown in the report) */}
       {renderSchedulingRecord(false)}
@@ -4003,40 +4988,50 @@ function StockOutVerificationPage({
         <p className={`${styles.note} ${styles.footerTip}`}>
           💡 <strong>Warehouse Tip:</strong> Scan physical barcodes of panels / inverters loaded onto installer lorry to register serial numbers for Job #{schedule?.jobId ?? tx.reference}. When all {totalRequired} units reach 100%, the <strong>Verified</strong> button unlocks.
         </p>
+        {/* One button for the tab the job is on: To Verify → Verified; Verified → Loading
+            (moves the job to the Loading tab, saved with who pressed it); Loading → a greyed
+            "Loaded" label. */}
         <div className={styles.inspectActionGroup}>
-          <button
-            className={`${styles.btnActionPrimary} ${
-              isAllVerified ? styles.btnVerifiedGlow : styles.btnVerifiedLocked
-            }`}
-            type="button"
-            disabled={!isAllVerified && tx.status !== "Verified"}
-            onClick={() => {
-              onRecord("job");
-              onUpdateStatus("Verified");
-              onBack();
-            }}
-            title="All items scanned and verified for dispatch"
-          >
-            {isAllVerified
-              ? "✓ Verified (Ready for Installation Dispatch)"
-              : `🔒 Verified (${stillToDo} more to scan or enter)`}
-          </button>
-          {/* Loading: the verified job's items are moved to the customer's house. It moves the
-              job from the Verified tab to the Loading tab, saved with who pressed it. */}
-          <button
-            className={`${styles.btnActionPrimary} ${
-              tx.status === "Verified" && !loaded ? styles.btnVerifiedGlow : styles.btnVerifiedLocked
-            }`}
-            type="button"
-            disabled={tx.status !== "Verified" || loaded}
-            onClick={() => {
-              onRecord("loaded");
-              onBack();
-            }}
-            title="Items already moved to the customer's house"
-          >
-            {loaded ? "🚚 Loaded (at customer's house)" : tx.status === "Verified" ? "🚚 Loading (moved to customer's house)" : "🔒 Loading (verify first)"}
-          </button>
+          {tx.status !== "Verified" ? (
+            <button
+              className={`${styles.btnActionPrimary} ${
+                isAllVerified ? styles.btnVerifiedGlow : styles.btnVerifiedLocked
+              }`}
+              type="button"
+              disabled={!isAllVerified}
+              onClick={() => {
+                onRecord("job");
+                onUpdateStatus("Verified");
+                onBack();
+              }}
+              title="All items scanned and verified for dispatch"
+            >
+              {isAllVerified
+                ? "✓ Verified (Ready for Installation Dispatch)"
+                : `🔒 Verified (${stillToDo} more to scan or enter)`}
+            </button>
+          ) : !loaded ? (
+            <button
+              className={`${styles.btnActionPrimary} ${styles.btnVerifiedGlow}`}
+              type="button"
+              onClick={() => {
+                onRecord("loaded");
+                onBack();
+              }}
+              title="Items moved to the customer's house"
+            >
+              🚚 Loading (moved to customer&apos;s house)
+            </button>
+          ) : (
+            <button
+              className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`}
+              type="button"
+              disabled
+              title="Items already moved to the customer's house"
+            >
+              🚚 Loaded (at customer&apos;s house)
+            </button>
+          )}
         </div>
       </div>
 
@@ -5723,6 +6718,8 @@ function HomeTab({
   showTx,
   onShowTx,
   onOpenTransfer,
+  onNewStockOut,
+  loadingOnly = false,
   onOpenStock,
   canUpload,
   verifications,
@@ -5751,6 +6748,11 @@ function HomeTab({
   showTx: boolean;
   onShowTx: (show: boolean) => void;
   onOpenTransfer: () => void;
+  // Stock Out: open the "+ New Stock Out" form (last-minute item taken by the PIC).
+  onNewStockOut: () => void;
+  // "Loading" access: only the Loading tab of Stock Out / Stock Transfer, view only (no Back,
+  // no other tabs, no buttons, rows do not open).
+  loadingOnly?: boolean;
   onOpenStock: (item: StockItemTab, wh: WhFilter) => void;
   canUpload: boolean;
   verifications: VerificationRecord[];
@@ -5768,11 +6770,6 @@ function HomeTab({
   const isToday = selectedDay === isoToday();
   const dayLabel = getDayLabel(selectedDay);
   const inSelectedDay = (tx: StockTransaction) => txDate(tx) === selectedDay;
-  // Week totals follow the selected Inverter / Panel / Battery card
-  const kpiQty = (b: { total: number; inverter: number; panel: number; battery: number; mounting: number; electrical: number }) =>
-    txCat === "inverter" || txCat === "panel" || txCat === "battery" || txCat === "mounting" || txCat === "electrical"
-      ? b[txCat]
-      : b.total;
 
   const STATUS_PRIORITY: Record<string, number> = {
     "To Verify": 1,
@@ -5851,8 +6848,13 @@ function HomeTab({
     : baseTx.filter((t) => !isVerifiedTx(t.status)).length + poRows.filter((file) => !file.verifiedAt).length;
   const loadingCount = baseTx.filter(isLoadedTx).length;
   const verifiedCount = baseTx.length + poRows.length - toVerifyCount - loadingCount;
-  const statusTab =
-    !showLoading && txStatusTab === "loading" ? "verified" : isTransferList && txStatusTab === "toVerify" ? "verified" : txStatusTab;
+  const statusTab: TxStatusTab = loadingOnly
+    ? "loading"
+    : !showLoading && txStatusTab === "loading"
+      ? "verified"
+      : isTransferList && txStatusTab === "toVerify"
+        ? "verified"
+        : txStatusTab;
   const filteredTx = baseTx.filter((t) =>
     statusTab === "loading"
       ? isLoadedTx(t)
@@ -5981,31 +6983,17 @@ function HomeTab({
   // The day's verified customers, in loading order (one line each in Mounting Structure).
   const prepCustomers = Array.from(new Set(prepRows.map((r) => r.customer)));
 
-  // Category breakdown for This Week In
-  const inBreakdown = useMemo(() => {
-    const inTx = whTx.filter((t) => t.type === "in" && t.status === "Verified");
-    return {
-      total: inTx.reduce((sum, t) => sum + t.qty, 0),
-      inverter: inTx.reduce((sum, t) => sum + txCategoryQty(t, "inverter"), 0),
-      panel: inTx.reduce((sum, t) => sum + txCategoryQty(t, "panel"), 0),
-      battery: inTx.reduce((sum, t) => sum + txCategoryQty(t, "battery"), 0),
-      mounting: inTx.reduce((sum, t) => sum + txCategoryQty(t, "mounting"), 0),
-      electrical: inTx.reduce((sum, t) => sum + txCategoryQty(t, "electrical"), 0),
-    };
-  }, [whTx]);
-
-  // Category breakdown for This Week Out
-  const outBreakdown = useMemo(() => {
-    const outTx = whTx.filter((t) => t.type === "out" && t.status === "Verified");
-    return {
-      total: outTx.reduce((sum, t) => sum + t.qty, 0),
-      inverter: outTx.reduce((sum, t) => sum + txCategoryQty(t, "inverter"), 0),
-      panel: outTx.reduce((sum, t) => sum + txCategoryQty(t, "panel"), 0),
-      battery: outTx.reduce((sum, t) => sum + txCategoryQty(t, "battery"), 0),
-      mounting: outTx.reduce((sum, t) => sum + txCategoryQty(t, "mounting"), 0),
-      electrical: outTx.reduce((sum, t) => sum + txCategoryQty(t, "electrical"), 0),
-    };
-  }, [whTx]);
+  // The Stock In / Stock Out / Stock Transfer cards count how many were done (verified) on the
+  // selected day, not units. With an Inverter / Panel / ... card picked, only records holding
+  // that item count. Stock In rows are uploaded POs (on their PO date, as in the table); POs
+  // carry no warehouse, so they count whichever warehouse button is on (the table shows them too).
+  const doneCount = (type: "in" | "out" | "transfer") =>
+    whTx.filter((t) => t.type === type && t.status === "Verified" && (txCat === "all" || txHasCategory(t, txCat))).length +
+    (type === "in"
+      ? doFiles.files.filter(
+          (file) => !!file.verifiedAt && poDay(file) === selectedDay && (txCat === "all" || file.itemType === txCat),
+        ).length
+      : 0);
 
 
 
@@ -6024,7 +7012,7 @@ function HomeTab({
     <section className={styles.screen} aria-labelledby="warehouse-home">
       <div className={styles.head}>
         <div>
-          {showTx && (
+          {showTx && !loadingOnly && (
             <button
             className={styles.back}
             type="button"
@@ -6037,7 +7025,7 @@ function HomeTab({
             </button>
           )}
         </div>
-        {showTx && (
+        {showTx && !loadingOnly && (
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
             {txType === "in" && canUpload && (
               <UploadDoButton
@@ -6066,6 +7054,17 @@ function HomeTab({
                 + New Transfer
               </button>
             )}
+            {/* Stock Out: a last-minute item taken by the PIC (any signed-in user), beside Report */}
+            {txType === "out" && (
+              <button
+                type="button"
+                className={styles.btnActionGhost}
+                style={{ background: "#bf9000", borderColor: "#bf9000", color: "#fff", fontWeight: 700 }}
+                onClick={onNewStockOut}
+              >
+                + New Stock Out
+              </button>
+            )}
             <button type="button" className={styles.btnActionGhost} onClick={() => setPrepReportOpen(true)}>
               Report
             </button>
@@ -6076,15 +7075,15 @@ function HomeTab({
       {!showTx && (
         <>
       {/* Warehouse filter selector for Home */}
-      {/* Same All / JB / KL buttons as Stock Details */}
-      <div className={styles.filterRow} style={{ width: "66%", minWidth: "230px", marginLeft: "auto" }}>
+      {/* Same JB / KL / Kluang buttons as Stock Details */}
+      <div className={styles.filterRow} style={{ width: "50%", minWidth: "175px", marginLeft: "auto" }}>
         {WH_FILTERS.map((value) => (
           <button
             key={value}
             type="button"
             className={`${styles.filterBtn} ${whFilter === value ? styles.filterActive : ""}`}
             style={{ fontSize: "11px", padding: "3px 4px" }}
-            onClick={() => setWhFilter(value)}
+            onClick={() => setWhFilter((cur) => (cur === value ? "all" : value))}
           >
             {WH_BUTTON_LABEL[value]}
           </button>
@@ -6157,15 +7156,15 @@ function HomeTab({
           {txType === "in" ? "Stock In" : txType === "out" ? "Stock Out" : txType === "transfer" ? "Stock Transfer" : "Stock Transactions"}{txCat !== "all" ? ` · ${CAT_LABEL[txCat] === "Inv." ? "Inverter" : CAT_LABEL[txCat] === "Batt." ? "Battery" : CAT_LABEL[txCat] === "Mounting" ? "Mounting Structure" : CAT_LABEL[txCat] === "Electrical" ? "Electrical Item" : (CAT_LABEL[txCat] ?? txCat)}` : ""}
         </h2>
             </div>
-            {/* Same All / JB / KL buttons as the Home page */}
-            <div className={styles.filterRow} role="group" aria-label="Warehouse filter" style={{ width: "66%", minWidth: "230px", marginLeft: "auto" }}>
+            {/* Same JB / KL / Kluang buttons as the Home page */}
+            <div className={styles.filterRow} role="group" aria-label="Warehouse filter" style={{ width: "50%", minWidth: "175px", marginLeft: "auto" }}>
               {WH_FILTERS.map((wh) => (
                 <button
                   key={wh}
                   type="button"
                   className={`${styles.filterBtn} ${whFilter === wh ? styles.filterActive : ""}`}
                   style={{ fontSize: "11px", padding: "3px 4px" }}
-                  onClick={() => setWhFilter(wh)}
+                  onClick={() => setWhFilter((cur) => (cur === wh ? "all" : wh))}
                 >
                   {WH_BUTTON_LABEL[wh]}
                 </button>
@@ -6182,8 +7181,8 @@ function HomeTab({
                       <small className={styles.txKpiSub}>Inter-WH rebalance</small>
                     </div>
                     <span className={`${styles.txKpiValue} ${styles.txQtyTransfer}`}>
-                      {whTx.filter((t) => t.type === "transfer" && t.status === "Verified").reduce((sum, t) => sum + t.qty, 0)}{" "}
-                      <span className={styles.txKpiUnit}>units</span>
+                      {doneCount("transfer")}{" "}
+                      <span className={styles.txKpiUnit}>{doneCount("transfer") === 1 ? "transfer" : "transfers"}</span>
                     </span>
                   </div>
                 </div>
@@ -6199,7 +7198,7 @@ function HomeTab({
                       </small>
                     </div>
                     <span className={`${styles.txKpiValue} ${styles.txKpiIn}`}>
-                      +{kpiQty(inBreakdown)} <span className={styles.txKpiUnit}>units</span>
+                      {doneCount("in")} <span className={styles.txKpiUnit}>{doneCount("in") === 1 ? "PO" : "POs"}</span>
                     </span>
                   </div>
                 </div>
@@ -6216,7 +7215,7 @@ function HomeTab({
                       </small>
                     </div>
                     <span className={`${styles.txKpiValue} ${styles.txKpiOut}`}>
-                      -{kpiQty(outBreakdown)} <span className={styles.txKpiUnit}>units</span>
+                      {doneCount("out")} <span className={styles.txKpiUnit}>{doneCount("out") === 1 ? "job" : "jobs"}</span>
                     </span>
                   </div>
                 </div>
@@ -6240,6 +7239,22 @@ function HomeTab({
 
             {/* Status tabs + search on one row */}
             <div className={styles.txTabsSearchRow}>
+            {loadingOnly ? (
+            <div className={styles.txFilterPills} role="tablist" aria-label="Loading list">
+              {(["out", "transfer"] as const).map((type) => (
+                <button
+                  key={type}
+                  type="button"
+                  role="tab"
+                  aria-selected={txType === type}
+                  className={`${styles.txPill} ${txType === type ? styles.txPillActive : ""}`}
+                  onClick={() => setTxType(type)}
+                >
+                  {type === "out" ? "Stock Out" : "Stock Transfer"} · Loading{txType === type ? ` (${loadingCount})` : ""}
+                </button>
+              ))}
+            </div>
+            ) : (
             <div className={styles.txFilterPills} role="tablist" aria-label="Transaction status">
               {!isTransferList && (
                 <button
@@ -6278,6 +7293,7 @@ function HomeTab({
                 </button>
               )}
             </div>
+            )}
 
               <input
                 type="search"
@@ -6392,9 +7408,11 @@ function HomeTab({
                         key={tx.id}
                         className={styles.txRowClickable}
                         tabIndex={0}
-                        onClick={() => onInspectTx(tx.id)}
+                        onClick={() => {
+                          if (!loadingOnly) onInspectTx(tx.id);
+                        }}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
+                          if (!loadingOnly && (e.key === "Enter" || e.key === " ")) {
                             e.preventDefault();
                             onInspectTx(tx.id);
                           }
@@ -6417,8 +7435,22 @@ function HomeTab({
                             </>
                           ) : (
                             <>
-                              <span className={styles.txCustName}>{tx.party}</span>
-                              <span className={`${styles.txParty} ${styles.txInvoiceNo}`}>{tx.reference}</span>
+                              <span className={styles.txCustName}>
+                                {tx.party}
+                                {tx.extra && (
+                                  <span
+                                    className={`${styles.tag} ${styles.order}`}
+                                    style={{ marginLeft: "6px", fontSize: "10px", padding: "1px 6px", verticalAlign: "middle" }}
+                                    title={`Last-minute item taken by ${tx.extra.takenBy}`}
+                                  >
+                                    Extra
+                                  </span>
+                                )}
+                              </span>
+                              <span className={`${styles.txParty} ${styles.txInvoiceNo}`}>
+                                {tx.reference}
+                                {tx.extra?.linkedJob ? ` · for #${tx.extra.linkedJob}` : ""}
+                              </span>
                             </>
                           )}
                           {tx.status === "Inspected" && tx.issueRemark && (
@@ -6958,9 +7990,8 @@ function StockTransferTab({
             </div>
             <span className={`${styles.txKpiValue} ${styles.txQtyTransfer}`}>
               {transactions
-                .filter((t) => t.type === "transfer" && t.status === "Verified" && txDate(t) === isoToday())
-                .reduce((sum, t) => sum + t.qty, 0)}{" "}
-              <span className={styles.txKpiUnit}>units</span>
+                .filter((t) => t.type === "transfer" && t.status === "Verified" && txDate(t) === isoToday()).length}{" "}
+              <span className={styles.txKpiUnit}>transfers</span>
             </span>
           </div>
         </div>
@@ -7556,14 +8587,14 @@ function StockDetailsTab({
       </div>
 
       {/* Warehouse filter: same size as the Home page buttons */}
-      <div className={styles.filterRow} style={{ width: "66%", minWidth: "230px", marginLeft: "auto" }}>
+      <div className={styles.filterRow} style={{ width: "50%", minWidth: "175px", marginLeft: "auto" }}>
         {WH_FILTERS.map((value) => (
           <button
             key={value}
             type="button"
             className={`${styles.filterBtn} ${whFilter === value ? styles.filterActive : ""}`}
             style={{ fontSize: "11px", padding: "3px 4px" }}
-            onClick={() => setWhFilter(value)}
+            onClick={() => setWhFilter((cur) => (cur === value ? "all" : value))}
           >
             {WH_BUTTON_LABEL[value]}
           </button>

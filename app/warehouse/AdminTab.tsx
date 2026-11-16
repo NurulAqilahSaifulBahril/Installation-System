@@ -11,10 +11,12 @@ import styles from "./warehouse.module.css";
 // own (/api/warehouse/audit), separate from the Scheduling Operation system's. Both check
 // for a signed-in admin on the server, so nothing here grants access by itself.
 
-// Admin can open every page; Staff can open every page except Admin.
+// Admin can open every page; Staff can open every page except Admin; Loading can only view the
+// Loading tabs of Stock Out and Stock Transfer (and cannot save anything).
 const PRESET_OPTIONS = [
   { value: "admin", label: "Admin" },
   { value: "staff", label: "Staff" },
+  { value: "loading", label: "Loading" },
 ] as const;
 
 type AuditEntry = {
@@ -106,8 +108,18 @@ export default function AdminTab() {
   async function addUser(event: FormEvent) {
     event.preventDefault();
     setFormMessage(null);
-    if (!picked) {
-      setFormMessage({ ok: false, text: "Pick a name from the list. Only names in prod_main can be added." });
+    // Loading access (view only) may be someone outside prod_main: then the typed name is used.
+    const typedName = nameQuery.trim().replace(/ +/g, " ");
+    const name = picked?.name ?? (pageAccess === "loading" ? typedName : "");
+    if (!name) {
+      setFormMessage({
+        ok: false,
+        text: "Pick a name from the list. Only names in prod_main can be added (or choose Loading access for someone outside prod_main).",
+      });
+      return;
+    }
+    if (name.length < 2) {
+      setFormMessage({ ok: false, text: "Enter the person's name." });
       return;
     }
     if (username.trim().length < 2) {
@@ -124,14 +136,14 @@ export default function AdminTab() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ name: picked.name, username: username.trim(), phone: phone.trim(), pageAccess }),
+        body: JSON.stringify({ name, username: username.trim(), phone: phone.trim(), pageAccess }),
       });
       const body = (await response.json().catch(() => ({}))) as { error?: string; id?: string };
       if (response.status === 401 || response.status === 403) {
         throw new Error("Only a signed-in dashboard admin can add users.");
       }
       if (!response.ok) throw new Error(body.error || "Could not add the user.");
-      setFormMessage({ ok: true, text: `Added ${toTitleCase(picked.name)}.` });
+      setFormMessage({ ok: true, text: `Added ${toTitleCase(name)}.` });
       // Record it in the Inventory Management audit log (separate from the Scheduling system's).
       void fetch("/api/warehouse/audit", {
         method: "POST",
@@ -141,7 +153,7 @@ export default function AdminTab() {
           action: "user_created",
           entityType: "warehouse_user",
           entityId: typeof body.id === "string" ? body.id : undefined,
-          summary: `Added user "${toTitleCase(picked.name)}" (username ${username.trim()}, ${phone.trim()}, access: ${pageAccess})`,
+          summary: `Added user "${toTitleCase(name)}"${picked ? "" : " (not in prod_main)"} (username ${username.trim()}, ${phone.trim()}, access: ${pageAccess})`,
         }),
       }).catch(() => {});
       setPhone("");
@@ -185,7 +197,7 @@ export default function AdminTab() {
   function startEdit(user: AdminUser) {
     setEditMessage(null);
     setEditingId(user.id);
-    setDraft({ username: user.username, phone: user.phone, pageAccess: user.pageAccess === "admin" ? "admin" : "staff", isActive: user.isActive });
+    setDraft({ username: user.username, phone: user.phone, pageAccess: user.pageAccess === "admin" || user.pageAccess === "loading" ? user.pageAccess : "staff", isActive: user.isActive });
   }
 
   async function saveEdit(user: AdminUser) {
@@ -441,7 +453,7 @@ export default function AdminTab() {
                 className={`${styles.scannerInput} ${styles.transferField} ${styles.adminField}`}
                 style={{ minWidth: 0, height: "42px" }}
                 value={nameQuery}
-                placeholder="Type to search prod_main"
+                placeholder={pageAccess === "loading" ? "Type any name (or search prod_main)" : "Type to search prod_main"}
                 onChange={(e) => {
                   setNameQuery(e.target.value);
                   setPicked(null);
@@ -491,7 +503,9 @@ export default function AdminTab() {
                 {!picked && searching && <span style={{ display: "block", padding: "6px 10px", border: "1px solid var(--line)", borderRadius: "8px", background: "var(--surface)", fontSize: "11px", fontWeight: 500, color: "var(--muted)" }}>Searching…</span>}
                 {!picked && !searching && nameQuery.trim().length >= 2 && suggestions.length === 0 && (
                   <span style={{ display: "block", padding: "6px 10px", border: "1px solid var(--line)", borderRadius: "8px", background: "var(--surface)", fontSize: "11px", fontWeight: 500, color: "var(--muted)" }}>
-                    No matching name in prod_main.
+                    {pageAccess === "loading"
+                      ? "Not in prod_main: will be added as typed (Loading access)."
+                      : "No matching name in prod_main. Choose Loading access to add someone outside prod_main."}
                   </span>
                 )}
               </div>

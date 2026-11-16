@@ -407,6 +407,8 @@ export type StockOutLine = {
   qty: number | null;
   serialised: boolean;
   serialCode?: string;
+  // Serials already scanned (last-minute Stock Out form); the verification page starts with them.
+  serials?: string[];
 };
 
 export type StockTransaction = {
@@ -417,7 +419,7 @@ export type StockTransaction = {
   model: string;
   serialCode: string;
   qty: number;
-  warehouse: "JB" | "KL";
+  warehouse: "JB" | "KL" | "KLG";
   reference: string;
   party: string;
   status: StockTransactionStatus;
@@ -427,6 +429,20 @@ export type StockTransaction = {
   transfer?: StockTransferData;
   // A stock out is one customer's job; its materials are listed here.
   lines?: StockOutLine[];
+  // Last-minute Stock Out (items the PIC took on top of a job, or for no job).
+  extra?: ExtraStockOutInfo;
+};
+
+export type ExtraStockOutInfo = {
+  // Job reference (invoice number) it was taken for; "" when it is for no job.
+  linkedJob: string;
+  takenBy: string;
+  // "extra" | "replacement" | "damaged" | "other"
+  reason: string;
+  note: string;
+  createdBy: string;
+  // A photo of the items was taken (loaded separately when shown).
+  hasPhoto?: boolean;
 };
 
 export const STOCK_TRANSACTIONS: StockTransaction[] = [];
@@ -588,7 +604,7 @@ export function generateStockTransferSerialList(tx: StockTransaction): StockTran
   const qty = tx.qty || 1;
   const baseSerial = tx.serialCode || "SN-TRF-001";
   const cat = tx.category;
-  const fromWh = tx.transfer?.fromWarehouse ?? (tx.warehouse || "JB");
+  const fromWh = tx.transfer?.fromWarehouse ?? (tx.warehouse === "KL" ? "KL" : "JB");
   const toWh = tx.transfer?.toWarehouse ?? (fromWh === "JB" ? "KL" : "JB");
 
   let powerWatts = 620;

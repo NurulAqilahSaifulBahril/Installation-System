@@ -36,7 +36,7 @@ export async function POST(request: Request) {
     const token = await createWarehouseSession(user.id);
     const response = NextResponse.json({
       username: user.username || user.name,
-      access: user.page_access === "admin" ? "admin" : "staff",
+      access: user.page_access === "admin" ? "admin" : user.page_access === "loading" ? "loading" : "staff",
     });
     const secure = (request.headers.get("x-forwarded-proto") ?? new URL(request.url).protocol.replace(":", "")) === "https";
     response.cookies.set(WAREHOUSE_COOKIE, token, {
