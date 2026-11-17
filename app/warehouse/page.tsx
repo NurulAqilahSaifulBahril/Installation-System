@@ -5,6 +5,11 @@ import { PO_ITEM_TYPE_OPTIONS, UploadDoButton, poDay, useDoFiles, type DoFile } 
 import { cameraErrorMessage, openCameraStream } from "./camera";
 import PoVerificationPage from "./PoVerification";
 import { DownloadReportButton, reportFileName } from "./ReportDownload";
+import { DeliveryOrderDialog } from "./DeliveryOrder";
+import { LorryTimeline, type TimelineRun } from "./LorryTimeline";
+
+// The Loading page's lorry timeline (LorryTimeline) is hidden for now.
+const SHOW_LORRY_TIMELINE = false;
 import { PvDrawingImage } from "./PvDrawingImage";
 import { DateNav } from "./DateNav";
 import { classifyInvoiceLines, parseCountedItem } from "./invoice-lines";
@@ -371,7 +376,8 @@ type VerificationMaterial =
   | "arrived";
 type VerificationRecord = { jobRef: string; material: string; by: string };
 // Transactions table tabs. Loading (Stock Out only): verified jobs already moved to the customer's house.
-type TxStatusTab = "toVerify" | "verified" | "loading";
+// "loading" / "siteCheck": the Loading page's two tabs, also on the Stock Out list.
+type TxStatusTab = "toVerify" | "verified" | "loading" | "siteCheck";
 
 type StockItemTab = "panel" | "inverter" | "battery" | "other" | "mounting" | "special";
 
@@ -669,14 +675,16 @@ function detectInverterBrand(text: string): string {
   return "—";
 }
 
-const TEST_VERIFIED_DATE = "2026-10-24";
+// TEST ONLY: every job installed on this day counts as Verified (with sample scans below), so the
+// Verified, Loading and on-site scan steps can be tried. Remove once real verification is in use.
+const TEST_VERIFIED_DATE = "2026-10-23";
 const SAMPLE_BOX_SIZE = 36;
+// Test-day jobs left in Preparing (to be verified for real): CHEW YOON MOI.
+const TEST_PREPARING_JOBS = new Set(["INV-1010698"]);
 
-// TEST ONLY: sample warehouse scans for the jobs on TEST_VERIFIED_DATE (shown as Verified), so a
-// verified job looks scanned the way it really leaves the warehouse: panels by box (one box
+// TEST ONLY: sample warehouse scans for the TEST_VERIFIED_DATE jobs: panels by box (one box
 // barcode per box of up to 36; the last box holds the remainder) with 2 loose panels on top, and
-// one serial per inverter / battery.
-// Used only while nothing has been saved for the job.
+// one serial per inverter / battery. Used only while nothing has been saved for the job.
 function sampleWarehouseScans(
   tx: StockTransaction,
   serialLines: StockOutLine[],
@@ -704,6 +712,30 @@ function sampleWarehouseScans(
   });
   return { boxes, scans };
 }
+
+// TEST ONLY: "Prepared by" / "Packed by" for the TEST_VERIFIED_DATE jobs, which have no saved
+// records (the names on the company DO: Material Planner and Warehouse Manager).
+function testPreparedBy(tx: StockTransaction): Record<string, string> {
+  if (!tx.id.startsWith("live-") || tx.time !== TEST_VERIFIED_DATE || tx.status !== "Verified") return {};
+  const prepared = "Jia Keat";
+  const packed = "Wei Hao";
+  return {
+    job: prepared,
+    panel: prepared,
+    inverter: prepared,
+    battery: prepared,
+    electrical: prepared,
+    commercial: prepared,
+    mounting: packed,
+    mounting_rail: packed,
+    mounting_hook: packed,
+  };
+}
+
+// TEST ONLY: a dummy lorry (plate and a drawn photo) for trying the Stock Out lorry fields.
+const DUMMY_LORRY_PLATE = "JMG 8811";
+// A photo-style picture of a loaded lorry (pallets of panel cartons, inverters, rails), in /public.
+const DUMMY_LORRY_PHOTO = "/dummy-lorry-load.jpg";
 
 function liveStockOutRows(jobs: ScheduledJobPayload[]): StockTransaction[] {
   const rows: StockTransaction[] = [];
@@ -806,9 +838,8 @@ function liveStockOutRows(jobs: ScheduledJobPayload[]): StockTransaction[] {
       warehouse: "JB",
       reference: job.jobId,
       party: job.customerName,
-      // TEST ONLY: every job installed on 24 Oct 2026 counts as verified, so the verified views
-      // (counts, Report) can be tried. Remove this once verification is saved for real.
-      status: job.installationDate === TEST_VERIFIED_DATE ? "Verified" : "To Verify",
+      // TEST ONLY: jobs on TEST_VERIFIED_DATE count as Verified.
+      status: job.installationDate === TEST_VERIFIED_DATE && !TEST_PREPARING_JOBS.has(job.jobId) ? "Verified" : "To Verify",
       schedule,
       lines,
     });
@@ -1822,11 +1853,15 @@ function Dashboard({
         <TransactionInspectionPage
           tx={activeTx}
           viewOnly={access === "loading"}
-          onRecord={(material) => void recordVerification(activeTx.reference, material)}
+          onRecord={(material) => recordVerification(activeTx.reference, material)}
           loaded={verifications.some((r) => r.jobRef === activeTx.reference && r.material === "loaded")}
-          preparedBy={Object.fromEntries(
-            verifications.filter((r) => r.jobRef === activeTx.reference).map((r) => [r.material, r.by]),
-          )}
+          preparedBy={{
+            // TEST ONLY: dummy names for the test-day jobs; saved names win.
+            ...testPreparedBy(activeTx),
+            ...Object.fromEntries(
+              verifications.filter((r) => r.jobRef === activeTx.reference).map((r) => [r.material, r.by]),
+            ),
+          }}
           onBack={() => setInspectTxId(null)}
           onUpdateStatus={(newStatus, remark) => {
             setTransactions((prev) =>
@@ -1877,7 +1912,7 @@ function Dashboard({
           setTransactions((prev) => [row, ...prev]);
           setHomeTxType("out");
           setHomeShowsTx(true);
-          setHomeTxStatusTab("verified");
+          setHomeTxStatusTab("loading");
           setHomeDay(record.date);
           setTab("home");
           setNewStockOutOpen(false);
@@ -2054,7 +2089,8 @@ function Dashboard({
       </div>
 
       <nav className={styles.tabBar} aria-label="Warehouse sections">
-        {TABS.filter((t) => t.id !== "admin" || isAdmin).map((t) => (
+        {/* The Loading page is for Loading-access users only (they get it as their whole view, above). */}
+        {TABS.filter((t) => t.id !== "loading" && (t.id !== "admin" || isAdmin)).map((t) => (
           <button
             key={t.id}
             type="button"
@@ -2130,6 +2166,7 @@ function Dashboard({
             setTab("home");
           }}
           onNewTransfer={(newTx) => setTransactions((prev) => [newTx, ...prev])}
+          preparedByName={username}
           onGoToTransactions={() => {
             setHomeTxType("transfer");
             setHomeShowsTx(true);
@@ -2230,6 +2267,21 @@ function mondayOfIso(iso: string): string {
 
 // A transaction's real date. Real jobs carry an ISO date; the sample rows carry
 // text like "Today, 10:30 AM", "Yesterday, 4:20 PM" or "14 Oct, 03:50 PM".
+// Search box match for a Stock In / Out / Transfer row (customer, reference, model, serial, …).
+function txMatchesSearch(tx: StockTransaction, search: string): boolean {
+  const q = search.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    tx.model.toLowerCase().includes(q) ||
+    tx.reference.toLowerCase().includes(q) ||
+    tx.party.toLowerCase().includes(q) ||
+    tx.serialCode.toLowerCase().includes(q) ||
+    tx.status.toLowerCase().includes(q) ||
+    (tx.transfer?.transferNo ?? "").toLowerCase().includes(q) ||
+    (tx.transfer?.driverName ?? "").toLowerCase().includes(q)
+  );
+}
+
 function txDate(tx: StockTransaction): string | null {
   const text = tx.time.trim();
   if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10);
@@ -4017,7 +4069,7 @@ function StockOutVerificationPage({
   viewOnly = false,
 }: {
   tx: StockTransaction;
-  onRecord: (material: VerificationMaterial) => void;
+  onRecord: (material: VerificationMaterial) => void | Promise<boolean>;
   loaded: boolean;
   // Loading access: no Verified button; only Loading on a verified job.
   viewOnly?: boolean;
@@ -4089,7 +4141,7 @@ function StockOutVerificationPage({
 
   // Warehouse scans of single units (loose panels, inverters, batteries). They start with any
   // serials scanned on the New Stock Out form; the saved scans are added when the page opens.
-  // TEST ONLY: sample box / loose scans for the 24 Oct 2026 verified jobs (see sampleWarehouseScans).
+  // TEST ONLY: sample box / loose scans for the TEST_VERIFIED_DATE jobs (see sampleWarehouseScans).
   const sample = useMemo(() => sampleWarehouseScans(tx, serialLines), [tx, serialLines]);
   const [scans, setScans] = useState<{ serial: string; lineIdx: number }[]>(() =>
     sample
@@ -4117,7 +4169,7 @@ function StockOutVerificationPage({
         const saved = data.scans ?? [];
         const units = saved.filter((x) => x.stage === "warehouse" && x.kind === "serial" && serialLines[x.lineIdx]);
         setSiteScans(saved.filter((x) => x.stage === "site").map((x) => x.code));
-        // Sample job with nothing saved at the warehouse: keep the sample boxes and serials.
+        // Test job with nothing saved at the warehouse: keep the sample boxes and serials.
         if (sample && !saved.some((x) => x.stage === "warehouse")) return;
         if (sample) setScans([]);
         setScans((prev) => {
@@ -4247,6 +4299,7 @@ function StockOutVerificationPage({
     message: string;
   } | null>(null);
 
+  const [doOpen, setDoOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   // The report shows the drawing too, so load it when the report opens.
   useEffect(() => {
@@ -4254,8 +4307,10 @@ function StockOutVerificationPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reportOpen, jobSourceId]);
   const [sldOpen, setSldOpen] = useState(false);
-  const [vehiclePlate, setVehiclePlate] = useState("");
-  const [lorryPhoto, setLorryPhoto] = useState<string | null>(null);
+  // TEST ONLY: dummy lorry plate and photo for CHEOK GEOK LIAN.
+  const dummyLorry = /cheok\s+geok\s+lian/i.test(schedule?.customerName ?? tx.party);
+  const [vehiclePlate, setVehiclePlate] = useState(dummyLorry ? DUMMY_LORRY_PLATE : "");
+  const [lorryPhoto, setLorryPhoto] = useState<string | null>(dummyLorry ? DUMMY_LORRY_PHOTO : null);
   const [checklist, setChecklist] = useState({
     condition: false,
     serialMatch: false,
@@ -4349,6 +4404,7 @@ function StockOutVerificationPage({
   // On site: every panel scanned one by one.
   const panelTotal = serialLines.filter((line) => line.category === "panel").reduce((sum, line) => sum + (line.qty ?? 0), 0);
   const siteDone = panelTotal > 0 && siteScans.length >= panelTotal;
+  const siteProgress = panelTotal > 0 ? Math.min(100, Math.round((siteScans.length / panelTotal) * 100)) : 0;
   const progressPercent = totalRequired > 0 ? Math.min(100, Math.round((totalScanned / totalRequired) * 100)) : 0;
   const bulkMissing = bulkLines.filter(
     (line, i) => !listFilled(line.category) && (bulkQty[i] ?? "").trim() === "",
@@ -4374,7 +4430,38 @@ function StockOutVerificationPage({
     }),
   );
   const isSerialTab = tab === "panel" || tab === "inverter" || tab === "battery";
+  // Loaded job, Panel tab: the scanner card is the on-site panel check (driver scans each panel).
+  const onSitePanels = loaded && tab === "panel" && panelTotal > 0;
   const tabSlots = slots.filter((slot) => slot.line.category === tab);
+  // On site, each panel row pairs the Stock Out scan with the on-site scan:
+  // - a loose panel matches its own serial (the same code scanned at the warehouse);
+  // - a boxed panel is matched by count: the box fills as many rows as panels it holds, and each
+  //   row takes the next on-site serial that is not a loose panel's.
+  // A scan that fits nowhere else goes into a loose row and is flagged as a different serial.
+  const siteRows = (() => {
+    if (!onSitePanels) return [];
+    const remaining = [...siteScans];
+    const take = (code: string) => {
+      const i = remaining.findIndex((x) => x.toLowerCase() === code.toLowerCase());
+      return i >= 0 ? remaining.splice(i, 1)[0] : null;
+    };
+    const rows = tabSlots.map((slot) => ({
+      slot,
+      boxNo: slot.box && slot.serial ? boxes.findIndex((b) => b.code === slot.serial) + 1 : 0,
+      site: !slot.box && slot.serial ? take(slot.serial) : (null as string | null),
+      mismatch: false,
+    }));
+    rows.forEach((row) => {
+      if (row.slot.box && remaining.length) row.site = remaining.shift() ?? null;
+    });
+    rows.forEach((row) => {
+      if (!row.slot.box && !row.site && remaining.length) {
+        row.site = remaining.shift() ?? null;
+        row.mismatch = !!row.slot.serial;
+      }
+    });
+    return rows;
+  })();
   const tabRequired = tabSlots.length;
   const tabScanned = tabSlots.filter((slot) => slot.serial !== null).length;
   const tabProgress = tabRequired > 0 ? Math.min(100, Math.round((tabScanned / tabRequired) * 100)) : 0;
@@ -4606,20 +4693,16 @@ function StockOutVerificationPage({
     });
   }
 
-  // On site: once every panel is scanned, record "Arrived safely" (once).
-  const arrivedRecorded = useRef(false);
-  useEffect(() => {
-    if (!loaded || !siteDone || arrivedRecorded.current || preparedBy.arrived) return;
-    arrivedRecorded.current = true;
-    onRecord("arrived");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, siteDone]);
+  // On site: "arrived" is saved when Verified is pressed (after every panel is scanned).
+  const [arrivedNow, setArrivedNow] = useState(false);
+  const siteVerified = arrivedNow || !!preparedBy.arrived;
 
   // The Scheduling System Record card: shown on the page and again in the report.
   const renderSchedulingRecord = (forReport: boolean) => (
         <div
           className={styles.inspectCard}
-          style={{ marginBottom: "16px", ...(forReport ? { border: "none", background: "none", padding: 0 } : {}) }}
+          // No box background or outline (on the page and in the report)
+          style={{ marginBottom: "16px", border: "none", background: "none", boxShadow: "none", padding: forReport ? 0 : "0 0 4px" }}
         >
           <div
             className={styles.inspectCardHeader}
@@ -4630,7 +4713,6 @@ function StockOutVerificationPage({
                 <h2 className={styles.inspectCardTitle} style={{ margin: 0, color: "#000000", fontWeight: 700 }}>
                   <span>📅</span> Customer Details &middot; #{schedule?.jobId ?? tx.reference}
                 </h2>
-                <span className={`${styles.tag} ${styles.ok}`}>Live Scheduling System</span>
               </div>
 
               {/* Customer with Address & Agent directly underneath, plus Phone */}
@@ -4721,14 +4803,19 @@ function StockOutVerificationPage({
           >
             PV Drawing
           </button>
+          {/* Delivery Order for this job, before Report */}
+          <button type="button" className={styles.btnActionGhost} onClick={() => setDoOpen(true)} title="Delivery Order">
+            DO
+          </button>
           <button type="button" className={styles.btnActionGhost} onClick={() => setReportOpen(true)}>
             Report
           </button>
         </div>
       </div>
 
+      {/* Titled by the Stock Out tab the job is in: Preparing -> Loading -> Site Check */}
       <h1 id="stockout-verify-title" className={styles.inspectHeroTitle} style={{ margin: "0 0 12px" }}>
-        Stock Out Verification
+        {tx.status !== "Verified" ? "Stock Out - Preparing" : loaded ? "Stock Out - Site Check" : "Stock Out - Loading"}
       </h1>
 
       {/* Last-minute Stock Out: what it is for, who took it and why */}
@@ -4752,144 +4839,6 @@ function StockOutVerificationPage({
 
       {/* 1. Scheduling System Record (also shown in the report) */}
       {renderSchedulingRecord(false)}
-
-      {/* Loading tab: the driver scans each panel at the customer's house */}
-      {loaded && panelTotal > 0 && (
-        <div className={styles.scannerCard} style={{ marginBottom: "16px" }}>
-          <div className={styles.scannerHeader}>
-            <div>
-              <h2 className={styles.scannerTitle}>
-                <span>📍</span> On-site Panel Check (at customer&apos;s house)
-              </h2>
-              <p className={styles.scannerHelpText}>
-                Open the boxes and scan each panel&apos;s serial to confirm everything arrived safely.
-              </p>
-            </div>
-            {siteDone && <span className={`${styles.matchPill} ${styles.matchPillComplete}`}>✅ Arrived safely</span>}
-          </div>
-          {cameraActive && (
-            <div className={styles.cameraViewfinder}>
-              <button
-                type="button"
-                className={styles.cameraCloseBtn}
-                onClick={() => setCameraActive(false)}
-                aria-label="Close camera"
-                title="Close camera"
-              >
-                ✕
-              </button>
-              <div className={styles.cameraScanLine} />
-              <video ref={videoRef} className={styles.videoCameraActive} playsInline autoPlay muted />
-              {cameraError && (
-                <div style={{ padding: "12px 14px", background: "rgba(0,0,0,0.65)", borderRadius: "6px", margin: "8px" }}>
-                  <strong style={{ color: "#f87171", fontSize: "12px" }}>Camera Notice:</strong>
-                  <div style={{ fontSize: "11px", color: "#e2e8f0", marginTop: "2px" }}>{cameraError}</div>
-                </div>
-              )}
-            </div>
-          )}
-          {!siteDone && (
-            <form
-              className={styles.scannerInputRow}
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleScan();
-              }}
-            >
-              <input
-                ref={barcodeInputRef}
-                type="text"
-                className={styles.scannerInput}
-                placeholder="Scan panel barcode or type its serial number..."
-                value={barcodeInput}
-                onChange={(e) => setBarcodeInput(e.target.value)}
-              />
-              <button
-                type="button"
-                className={styles.scannerBtnScan}
-                title="Records the typed serial; with an empty box it opens the camera scanner"
-                onClick={() => {
-                  if (barcodeInput.trim()) handleScan();
-                  else setCameraActive(true);
-                }}
-              >
-                <span>⚡</span> Scan / Match
-              </button>
-            </form>
-          )}
-          {feedback && (
-            <div
-              className={`${styles.scanFeedback} ${
-                feedback.type === "success"
-                  ? styles.scanFeedbackSuccess
-                  : feedback.type === "warning"
-                    ? styles.scanFeedbackWarning
-                    : styles.scanFeedbackError
-              }`}
-            >
-              <span>{feedback.message}</span>
-              <button
-                type="button"
-                style={{ border: 0, background: "transparent", cursor: "pointer", color: "inherit", fontWeight: 700 }}
-                onClick={() => setFeedback(null)}
-              >
-                &times;
-              </button>
-            </div>
-          )}
-          <div className={styles.skuProgressHeader} style={{ marginTop: "14px" }}>
-            <div>
-              <p className={styles.itemDesc}>Panels scanned on site.</p>
-            </div>
-            <div className={styles.skuOverallStats}>
-              Arrived: <strong>{siteScans.length}</strong> / {panelTotal} (
-              {Math.min(100, Math.round((siteScans.length / panelTotal) * 100))}%)
-            </div>
-          </div>
-          <div className={styles.progressBarContainer}>
-            <div
-              className={`${styles.progressBarFill} ${siteDone ? "" : styles.progressBarFillWarning}`}
-              style={{ width: `${Math.min(100, Math.round((siteScans.length / panelTotal) * 100))}%` }}
-            />
-          </div>
-          <div className={styles.unitScrollTableWrap}>
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col" style={{ width: "50px" }}>No.</th>
-                  <th scope="col" style={{ minWidth: "200px" }}>Panel Serial</th>
-                  <th scope="col" style={{ width: "160px" }}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Array.from({ length: panelTotal }, (_, n) => {
-                  const serial = siteScans[n] ?? null;
-                  return (
-                    <tr key={n} className={serial ? styles.unitRowVerified : undefined}>
-                      <td style={{ color: "var(--muted)", fontSize: "11px", fontWeight: 600 }}>#{String(n + 1).padStart(2, "0")}</td>
-                      <td>
-                        <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: "13px" }}>{serial ?? "—"}</div>
-                      </td>
-                      <td>
-                        {serial ? (
-                          <span className={`${styles.matchPill} ${styles.matchPillComplete}`}>✅ Arrived</span>
-                        ) : (
-                          <span className={`${styles.matchPill} ${styles.matchPillPending}`}>⏳ To scan</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          {preparedBy.arrived && (
-            <p style={{ textAlign: "right", margin: "16px 0 0", fontSize: "13px", color: "var(--green)", fontWeight: 700 }}>
-              Checked on site by: <strong>{preparedBy.arrived}</strong>
-            </p>
-          )}
-        </div>
-      )}
 
       {/* Item cards: how many of each item this customer needs */}
       <div className={styles.soCards}>
@@ -4953,9 +4902,14 @@ function StockOutVerificationPage({
                   <span>🔍</span> Barcode &amp; Serial Scanner for Verification
                 </h2>
                 <p className={styles.scannerHelpText}>
-                  Scan physical barcode using live mobile camera or handheld laser gun to record each unit before installer pickup.
+                  {onSitePanels
+                    ? "📍 On-site Panel Check (at customer's house): open the boxes and scan each panel's serial to confirm everything arrived safely."
+                    : "Scan physical barcode using live mobile camera or handheld laser gun to record each unit before installer pickup."}
                 </p>
               </div>
+              {onSitePanels && siteDone && (
+                <span className={`${styles.matchPill} ${styles.matchPillComplete}`}>✅ Arrived safely</span>
+              )}
             </div>
 
             {/* Panels: by box (box barcode covers the panels inside) or one loose panel at a time */}
@@ -4998,8 +4952,8 @@ function StockOutVerificationPage({
               </div>
             )}
 
-            {/* Camera Viewfinder (on the Loading tab it is in the On-site card) */}
-            {cameraActive && !loaded && (
+            {/* Camera Viewfinder (warehouse scan, or the on-site panel check once loaded) */}
+            {cameraActive && (!loaded || onSitePanels) && (
               <div className={styles.cameraViewfinder}>
                 <button
                   type="button"
@@ -5040,18 +4994,32 @@ function StockOutVerificationPage({
         {/* Barcode Input Form (not once verified: panels are scanned again on site) */}
         <form
           className={styles.scannerInputRow}
-          style={tx.status === "Verified" || loaded ? { display: "none" } : undefined}
+          style={
+            onSitePanels
+              ? siteDone
+                ? { display: "none" }
+                : undefined
+              : tx.status === "Verified" || loaded
+                ? { display: "none" }
+                : undefined
+          }
           onSubmit={(e) => {
             e.preventDefault();
             handleScan();
           }}
         >
           <input
-            ref={loaded ? undefined : barcodeInputRef}
+            ref={barcodeInputRef}
             type="text"
             className={styles.scannerInput}
+            // Black outline so the scan box stands out
+            style={{ border: "1.5px solid #000" }}
             placeholder={
-              tab === "panel" && panelMode === "box" ? "Scan the panel box barcode..." : "Scan barcode or type unit serial number..."
+              onSitePanels
+                ? "Scan panel barcode or type its serial number..."
+                : tab === "panel" && panelMode === "box"
+                  ? "Scan the panel box barcode..."
+                  : "Scan barcode or type unit serial number..."
             }
             value={barcodeInput}
             onChange={(e) => setBarcodeInput(e.target.value)}
@@ -5096,11 +5064,21 @@ function StockOutVerificationPage({
         <div className={styles.skuProgressHeader}>
           <div>
             <p className={styles.itemDesc}>
-              Quantities come from the invoice. Serial codes are recorded as each unit is scanned.
+              {onSitePanels
+                ? "Panels leave the warehouse by box; on site each panel is scanned one by one."
+                : "Quantities come from the invoice. Serial codes are recorded as each unit is scanned."}
             </p>
           </div>
           <div className={styles.skuOverallStats}>
-            Scanned: <strong>{tabScanned}</strong> / {tabRequired} ({tabProgress}%) &middot; All items: {totalScanned} / {totalRequired}
+            {onSitePanels ? (
+              <>
+                Arrived on site: <strong>{siteScans.length}</strong> / {panelTotal} ({siteProgress}%)
+              </>
+            ) : (
+              <>
+                Scanned: <strong>{tabScanned}</strong> / {tabRequired} ({tabProgress}%) &middot; All items: {totalScanned} / {totalRequired}
+              </>
+            )}
           </div>
         </div>
 
@@ -5108,9 +5086,9 @@ function StockOutVerificationPage({
         <div className={styles.progressBarContainer}>
           <div
             className={`${styles.progressBarFill} ${
-              tabProgress < 100 ? styles.progressBarFillWarning : ""
+              (onSitePanels ? siteProgress : tabProgress) < 100 ? styles.progressBarFillWarning : ""
             }`}
-            style={{ width: `${tabProgress}%` }}
+            style={{ width: `${onSitePanels ? siteProgress : tabProgress}%` }}
           />
         </div>
 
@@ -5120,13 +5098,21 @@ function StockOutVerificationPage({
             <thead>
               <tr>
                 <th scope="col" style={{ width: "50px" }}>No.</th>
-                <th scope="col" style={{ minWidth: "220px" }}>Serial Code</th>
+                <th scope="col" style={{ minWidth: onSitePanels ? "170px" : "220px" }}>
+                  {onSitePanels ? "Stock Out Scan" : "Serial Code"}
+                </th>
                 <th scope="col">Description / Model</th>
+                {onSitePanels && (
+                  <th scope="col" style={{ minWidth: "170px" }}>
+                    On-site Scan
+                  </th>
+                )}
                 <th scope="col" style={{ width: "180px" }}>Match Status</th>
               </tr>
             </thead>
             <tbody>
               {tab === "panel" &&
+                !onSitePanels &&
                 boxes.map((box, n) => (
                   <tr key={`box-${box.code}`} className={styles.unitRowVerified}>
                     <td style={{ color: "var(--muted)", fontSize: "11px", fontWeight: 600 }}>📦{n + 1}</td>
@@ -5154,14 +5140,60 @@ function StockOutVerificationPage({
                     </td>
                   </tr>
                 ))}
-              {tab === "panel" && boxExtra > 0 && (
+              {tab === "panel" && boxExtra > 0 && !onSitePanels && (
                 <tr>
                   <td colSpan={4} style={{ fontSize: "12px", color: "#b45309" }}>
                     ⚠️ The boxes hold {boxExtra} more panel{boxExtra === 1 ? "" : "s"} than this job needs.
                   </td>
                 </tr>
               )}
-              {tabSlots.filter((slot) => !slot.box).map((slot, n) => {
+              {siteRows.map((row, n) => (
+                <tr
+                  key={`site-${row.slot.key}`}
+                  className={row.site && !row.mismatch ? styles.unitRowVerified : undefined}
+                >
+                  <td style={{ color: "var(--muted)", fontSize: "11px", fontWeight: 600 }}>
+                    #{String(n + 1).padStart(2, "0")}
+                  </td>
+                  <td>
+                    <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: "13px", letterSpacing: "0.03em" }}>
+                      {row.slot.box ? `📦 ${row.slot.serial}` : (row.slot.serial ?? "—")}
+                    </div>
+                    {row.slot.box && (
+                      <div style={{ fontSize: "11px", color: "var(--muted)" }}>
+                        Box {row.boxNo || ""}
+                        {row.boxNo ? ` · ${boxes[row.boxNo - 1]?.qty ?? ""} panels` : ""}
+                      </div>
+                    )}
+                  </td>
+                  <td>
+                    <strong style={{ fontSize: "13px" }}>{row.slot.line.model}</strong>
+                  </td>
+                  <td>
+                    <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: "13px", letterSpacing: "0.03em" }}>
+                      {row.site ?? "—"}
+                    </div>
+                  </td>
+                  <td>
+                    {!row.site ? (
+                      <span className={`${styles.matchPill} ${styles.matchPillPending}`}>⏳ To scan on site</span>
+                    ) : row.mismatch ? (
+                      <span
+                        className={`${styles.matchPill} ${styles.matchPillPending}`}
+                        style={{ color: "#b45309" }}
+                        title="This loose panel was scanned with a different serial at the warehouse"
+                      >
+                        ⚠️ Different serial
+                      </span>
+                    ) : (
+                      <span className={`${styles.matchPill} ${styles.matchPillComplete}`}>
+                        {row.slot.box ? "✅ Arrived (qty matched)" : "✅ Matched"}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {!onSitePanels && tabSlots.filter((slot) => !slot.box).map((slot, n) => {
                 const isVerified = slot.serial !== null;
                 return (
                   <tr key={slot.key} className={isVerified ? styles.unitRowVerified : undefined}>
@@ -5547,11 +5579,18 @@ function StockOutVerificationPage({
       {/* 5. Footer Action Bar */}
       <div className={styles.inspectFooterBar}>
         <p className={`${styles.note} ${styles.footerTip}`}>
-          💡 <strong>Warehouse Tip:</strong> Scan physical barcodes of panels / inverters loaded onto installer lorry to register serial numbers for Job #{schedule?.jobId ?? tx.reference}. When all {totalRequired} units reach 100%, the <strong>Verified</strong> button unlocks.
+          💡 <strong>Warehouse Tip:</strong> Scan physical barcodes of panels / inverters loaded onto installer lorry to register serial numbers for Job #{schedule?.jobId ?? tx.reference}. When all {totalRequired} units reach 100%, the <strong>Submit</strong> button unlocks.
         </p>
         {/* One button for the tab the job is on: To Verify → Verified; Verified → Loading
             (moves the job to the Loading tab, saved with who pressed it); Loading → a greyed
             "Loaded" label. */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px" }}>
+        {/* Site Check: who checked the panels on site, above Submit */}
+        {tx.status === "Verified" && loaded && (
+          <p style={{ margin: 0, fontSize: "13px", color: "var(--green)", fontWeight: 700 }}>
+            Checked on site by: <strong>{preparedBy.arrived || "—"}</strong>
+          </p>
+        )}
         <div className={styles.inspectActionGroup}>
           {tx.status !== "Verified" ? (
             viewOnly ? null : (
@@ -5562,15 +5601,16 @@ function StockOutVerificationPage({
               type="button"
               disabled={!isAllVerified}
               onClick={() => {
-                onRecord("job");
+                // Submit on Preparing: the job is verified and moves to Loading.
+                void onRecord("job");
                 onUpdateStatus("Verified");
                 onBack();
               }}
-              title="All items scanned and verified for dispatch"
+              title="All items scanned and verified: moves the job to Loading"
             >
               {isAllVerified
-                ? "✓ Verified (Ready for Installation Dispatch)"
-                : `🔒 Verified (${stillToDo} more to scan or enter)`}
+                ? "✓ Submit"
+                : "🔒 Submit"}
             </button>
             )
           ) : !loaded ? (
@@ -5581,24 +5621,37 @@ function StockOutVerificationPage({
                 onRecord("loaded");
                 onBack();
               }}
-              title="Items moved to the customer's house"
+              title="Loaded onto the lorry: moves the job to Site Check"
             >
-              🚚 Loading (moved to customer&apos;s house)
+              ✓ Submit
+            </button>
+          ) : siteVerified ? (
+            // Loading Verification, done: greyed.
+            <button className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`} type="button" disabled title="Arrived safely">
+              ✓ Submitted
             </button>
           ) : (
+            // Loading Verification: Verified unlocks once every panel is scanned on site (jobs
+            // without panels can be verified straight away); pressing it moves the job to Site Check.
             <button
-              className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`}
+              className={`${styles.btnActionPrimary} ${
+                siteDone || panelTotal === 0 ? styles.btnVerifiedGlow : styles.btnVerifiedLocked
+              }`}
               type="button"
-              disabled
-              title="Items already moved to the customer's house"
+              disabled={!(siteDone || panelTotal === 0)}
+              onClick={() => {
+                setArrivedNow(true);
+                onRecord("arrived");
+                onBack();
+              }}
+              title="All panels scanned on site: confirm the delivery arrived safely"
             >
-              {siteDone || preparedBy.arrived
-                ? "✓ Arrived safely (all panels scanned on site)"
-                : panelTotal > 0
-                  ? `🚚 Loaded · ${siteScans.length}/${panelTotal} panels scanned on site`
-                  : "🚚 Loaded (at customer's house)"}
+              {siteDone || panelTotal === 0
+                ? "✓ Submit"
+                : "🔒 Submit"}
             </button>
           )}
+        </div>
         </div>
       </div>
 
@@ -5683,6 +5736,16 @@ function StockOutVerificationPage({
       )}
 
       {/* Dispatch Report (job summary and the Scheduling System Record) */}
+      {doOpen && (
+        <DeliveryOrderDialog
+          schedule={schedule}
+          reference={tx.reference}
+          lines={lines}
+          partQty={partQty}
+          elecQty={elecQty}
+          onClose={() => setDoOpen(false)}
+        />
+      )}
       {reportOpen && (
         <div className={styles.bankingReceiptBackdrop} onClick={() => setReportOpen(false)}>
           <div
@@ -5864,7 +5927,7 @@ function StockTransferVerificationPage({
   onBack: () => void;
   onUpdateStatus: (newStatus: StockTransactionStatus, remark?: string) => void;
   // Loading: the transfer was moved to the other warehouse (Stock Transfer's Loading tab).
-  onRecord: (material: VerificationMaterial) => void;
+  onRecord: (material: VerificationMaterial) => void | Promise<boolean>;
   loaded: boolean;
   // Loading access: look only, no buttons.
   viewOnly?: boolean;
@@ -6527,80 +6590,132 @@ function StockTransferVerificationPage({
         </div>
       </div>
 
-      {/* Transfer Report (includes the Physical Inspection & Inter-Warehouse Transit Checklist) */}
+      {/* Transfer Report: laid out like the Stock Out report (one A4 page): logo and "Report",
+          the transfer details, the items moved, and the transit checklist. */}
       {reportOpen && (
         <div className={styles.bankingReceiptBackdrop} onClick={() => setReportOpen(false)}>
           <div
-            className={styles.transferReportCard}
+            className={`${styles.transferReportCard} ${styles.a4Report}`}
             role="dialog"
             aria-modal="true"
             aria-label="Transfer report"
             onClick={(e) => e.stopPropagation()}
           >
             <div className={styles.transferReportHead}>
-              <h2 className={styles.bankingCardTitle}>Transfer Report</h2>
-              <div style={{ display: "flex", gap: "8px" }}>
-                <DownloadReportButton fileName={reportFileName("Transfer-Report", transfer?.transferNo ?? tx.reference)} />
+              <div style={{ display: "flex", gap: "8px", marginLeft: "auto" }}>
+                <DownloadReportButton fileName={reportFileName("Transfer-Report", transfer?.transferNo ?? tx.reference)} onePage />
                 <button type="button" className={styles.btnActionGhost} onClick={() => setReportOpen(false)}>
                   Close
                 </button>
               </div>
             </div>
-            <div className={styles.bankingReceiptDetails}>
-              <div className={styles.bankingReceiptRow}>
-                <span className={styles.bankingReceiptRowLabel}>Reference</span>
-                <span className={styles.bankingReceiptRowVal}>#{transfer?.transferNo ?? tx.reference}</span>
-              </div>
-              <div className={styles.bankingReceiptRow}>
-                <span className={styles.bankingReceiptRowLabel}>Route</span>
-                <span className={styles.bankingReceiptRowVal}>{fromLabel} ➔ {toLabel}</span>
-              </div>
-              <div className={styles.bankingReceiptRow}>
-                <span className={styles.bankingReceiptRowLabel}>Equipment</span>
-                <span className={styles.bankingReceiptRowVal}>{tx.model} &middot; {totalRequired} {tx.category === "panel" ? "panels" : "units"}</span>
-              </div>
-              <div className={styles.bankingReceiptRow}>
-                <span className={styles.bankingReceiptRowLabel}>Scanned</span>
-                <span className={styles.bankingReceiptRowVal}>{totalScanned} / {totalRequired} ({progressPercent}%)</span>
-              </div>
+            {/* Logo on the left, "Report" on the right: same as the Stock Out report */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "40px", margin: "0 0 28px" }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={`${typeof window !== "undefined" ? window.location.origin : ""}${LOGO_SRC}`}
+                alt="Eternalgy"
+                width={1332}
+                height={176}
+                style={{ display: "block", height: "24px", width: "auto", flex: "none" }}
+              />
+              <span style={{ fontSize: "20px", fontWeight: 700, color: "#000" }}>Report</span>
             </div>
-        <div className={styles.inspectChecklistCard}>
-          <h3 className={styles.inspectChecklistTitle}>Physical Inspection &amp; Inter-Warehouse Transit Checklist</h3>
-          <div className={styles.inspectChecklist}>
-            <label className={styles.inspectCheckItem}>
-              <input
-                type="checkbox"
-                checked={checklist.condition}
-                onChange={(e) => setChecklist((prev) => ({ ...prev, condition: e.target.checked }))}
-              />
-              <span>Physical packaging inspected (cartons intact, weather shrink-wrapped, pallets strapped)</span>
-            </label>
-            <label className={styles.inspectCheckItem}>
-              <input
-                type="checkbox"
-                checked={checklist.serialMatch}
-                onChange={(e) => setChecklist((prev) => ({ ...prev, serialMatch: e.target.checked }))}
-              />
-              <span>All {totalRequired} unit barcodes physically scanned &amp; verified against Transfer Manifest</span>
-            </label>
-            <label className={styles.inspectCheckItem}>
-              <input
-                type="checkbox"
-                checked={checklist.lorryLoaded}
-                onChange={(e) => setChecklist((prev) => ({ ...prev, lorryLoaded: e.target.checked }))}
-              />
-              <span>Loaded onto transfer vehicle ({vehiclePlate}) with driver endorsement</span>
-            </label>
-            <label className={styles.inspectCheckItem}>
-              <input
-                type="checkbox"
-                checked={checklist.handoverSigned}
-                onChange={(e) => setChecklist((prev) => ({ ...prev, handoverSigned: e.target.checked }))}
-              />
-              <span>Digital Goods In-Transit Acknowledgment dispatched to {toLabel}</span>
-            </label>
-          </div>
-        </div>
+
+            {/* Transfer details, as the Stock Out report's customer details */}
+            <h2 className={styles.inspectCardTitle} style={{ margin: "0 0 8px", color: "#000", fontWeight: 700 }}>
+              <span>🔄</span> Transfer Details &middot; #{transfer?.transferNo ?? tx.reference}
+            </h2>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "max-content max-content 1fr",
+                columnGap: "6px",
+                rowGap: "4px",
+                fontSize: "13px",
+                color: "#000",
+                marginBottom: "16px",
+              }}
+            >
+              {(
+                [
+                  ["Transfer No.", transfer?.transferNo ?? tx.reference],
+                  ["From", fromLabel],
+                  ["To", toLabel],
+                  ["Date", isoDateLabel(tx.time)],
+                  ["Driver", transfer?.driverName || "—"],
+                  ["Lorry No.", transfer?.vehiclePlate || "—"],
+                  ["Total Units", `${totalRequired}`],
+                  ["Scanned", `${totalScanned} / ${totalRequired} (${progressPercent}%)`],
+                ] as [string, string][]
+              ).map(([label, value]) => (
+                <div key={label} style={{ display: "contents" }}>
+                  <span style={{ fontWeight: 700 }}>{label}</span>
+                  <span style={{ fontWeight: 700 }}>:</span>
+                  <span>{value}</span>
+                </div>
+              ))}
+              {transfer?.notes && (
+                <div style={{ display: "contents" }}>
+                  <span style={{ fontWeight: 700 }}>Notes</span>
+                  <span style={{ fontWeight: 700 }}>:</span>
+                  <span>{transfer.notes}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Items moved, as a table */}
+            <div style={{ fontWeight: 700, color: "#000", marginBottom: "8px" }}>Items</div>
+            <table style={{ border: "1px solid #000", borderCollapse: "collapse", width: "100%", fontSize: "12.5px", color: "#000" }}>
+              <thead>
+                <tr>
+                  {["Item", "Model", "Qty", "Serial Number"].map((h) => (
+                    <th key={h} style={{ border: "1px solid #000", padding: "4px 8px", textAlign: h === "Qty" ? "right" : "left", fontWeight: 700 }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {txLines(tx).map((line, i) => (
+                  <tr key={`${line.model}-${i}`}>
+                    <td style={{ border: "1px solid #000", padding: "4px 8px", textTransform: "capitalize" }}>{line.category}</td>
+                    <td style={{ border: "1px solid #000", padding: "4px 8px" }}>{line.model}</td>
+                    <td style={{ border: "1px solid #000", padding: "4px 8px", textAlign: "right" }}>{line.qty ?? "—"}</td>
+                    <td style={{ border: "1px solid #000", padding: "4px 8px", fontFamily: "monospace", fontSize: "11px", wordBreak: "break-all" }}>
+                      {line.serialCode || "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            {/* Transit checklist */}
+            <div style={{ fontWeight: 700, color: "#000", margin: "16px 0 8px" }}>Physical Inspection &amp; Inter-Warehouse Transit Checklist</div>
+            <div style={{ display: "grid", gap: "6px", fontSize: "12.5px", color: "#000" }}>
+              {(
+                [
+                  ["condition", "Physical packaging inspected (cartons intact, weather shrink-wrapped, pallets strapped)"],
+                  ["serialMatch", `All ${totalRequired} unit barcodes physically scanned & verified against Transfer Manifest`],
+                  ["lorryLoaded", `Loaded onto transfer vehicle (${vehiclePlate || "—"}) with driver endorsement`],
+                  ["handoverSigned", `Digital Goods In-Transit Acknowledgment dispatched to ${toLabel}`],
+                ] as [keyof typeof checklist, string][]
+              ).map(([key, text]) => (
+                <label key={key} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+                  <input
+                    type="checkbox"
+                    checked={checklist[key]}
+                    onChange={(e) => setChecklist((prev) => ({ ...prev, [key]: e.target.checked }))}
+                  />
+                  <span>{text}</span>
+                </label>
+              ))}
+            </div>
+
+            {/* Prepared by: who made the transfer, as on the Stock Out report */}
+            <p style={{ textAlign: "right", margin: "24px 0 0", fontSize: "13px", color: "#000", fontWeight: 700 }}>
+              Prepared by: <strong>{transfer?.requestedBy || "—"}</strong>
+            </p>
           </div>
         </div>
       )}
@@ -6815,7 +6930,7 @@ function TransactionInspectionPage({
   viewOnly = false,
 }: {
   tx: StockTransaction;
-  onRecord: (material: VerificationMaterial) => void;
+  onRecord: (material: VerificationMaterial) => void | Promise<boolean>;
   loaded?: boolean;
   // Loading access: look only; the one button left is Loading on a verified Stock Out job.
   viewOnly?: boolean;
@@ -7337,7 +7452,7 @@ function HomeTab({
   const [prepReportOpen, setPrepReportOpen] = useState(false);
   const doFiles = useDoFiles(showTx && txType === "in");
   const prepSheetRef = useRef<HTMLDivElement>(null);
-  const [checkedBy, setCheckedBy] = useState("");
+  const [checkedBy, setCheckedBy] = useState<string | null>(null);
   const txSectionRef = useRef<HTMLDivElement>(null);
   const txTableRef = useRef<HTMLDivElement>(null);
   // Stock In: the PO whose Stock In Verification page is open (tapped on its row).
@@ -7345,6 +7460,22 @@ function HomeTab({
   const isToday = selectedDay === isoToday();
   const dayLabel = getDayLabel(selectedDay);
   const inSelectedDay = (tx: StockTransaction) => txDate(tx) === selectedDay;
+
+  // Rows passing the warehouse / type / item filters (any day).
+  const passesFilters = (tx: StockTransaction) => {
+    if (whFilter !== "all") {
+      if (tx.type === "transfer" && tx.transfer) {
+        if (tx.transfer.fromWarehouse !== whFilter && tx.transfer.toWarehouse !== whFilter && tx.warehouse !== whFilter) {
+          return false;
+        }
+      } else if (tx.warehouse !== whFilter) {
+        return false;
+      }
+    }
+    if (txType !== "all" && tx.type !== txType) return false;
+    if (txCat !== "all" && !txHasCategory(tx, txCat)) return false;
+    return true;
+  };
 
   const STATUS_PRIORITY: Record<string, number> = {
     "To Verify": 1,
@@ -7368,18 +7499,7 @@ function HomeTab({
       }
       if (txType !== "all" && tx.type !== txType) return false;
       if (txCat !== "all" && !txHasCategory(tx, txCat)) return false;
-      if (txSearch.trim()) {
-        const q = txSearch.trim().toLowerCase();
-        const match =
-          tx.model.toLowerCase().includes(q) ||
-          tx.reference.toLowerCase().includes(q) ||
-          tx.party.toLowerCase().includes(q) ||
-          tx.serialCode.toLowerCase().includes(q) ||
-          tx.status.toLowerCase().includes(q) ||
-          (tx.transfer?.transferNo ?? "").toLowerCase().includes(q) ||
-          (tx.transfer?.driverName ?? "").toLowerCase().includes(q);
-        if (!match) return false;
-      }
+      if (txSearch.trim() && !txMatchesSearch(tx, txSearch)) return false;
       return true;
     })
     .sort((a, b) => {
@@ -7415,6 +7535,10 @@ function HomeTab({
   // Stock Transfer: Verified and Loading only (a transfer is verified when it is made); a
   // transfer marked Loading has been moved to the other warehouse.
   const isTransferList = txType === "transfer";
+  // Stock Out list: Preparing (to verify) -> Loading -> Site Check. Pressing Verified sends a job
+  // to Loading; a verified job not yet sent (older ones, test data) also shows under Loading, with
+  // its 🚚 Loading button.
+  const outTabs = txType === "out" && !loadingOnly;
   const showLoading = loadingOnly || txType === "out" || isTransferList;
   const isLoadedTx = (t: StockTransaction) =>
     showLoading && (t.type === "out" ? isVerifiedTx(t.status) : t.type === "transfer") && loadedJobs.has(t.reference);
@@ -7423,25 +7547,136 @@ function HomeTab({
     : baseTx.filter((t) => !isVerifiedTx(t.status)).length + poRows.filter((file) => !file.verifiedAt).length;
   const loadingCount = baseTx.filter(isLoadedTx).length;
   const verifiedCount = baseTx.length + poRows.length - toVerifyCount - loadingCount;
-  // Loading page: "Loading" tab = verified Stock Out jobs not loaded yet (each has a Loading
-  // button); "Site Check" tab = Stock Out and Stock Transfer already moved out.
+  // Loading page:
+  // - "Loading" tab: Stock Out jobs whose 🚚 Loading (moved to customer's house) was pressed on
+  //   Stock Out › Verified, still waiting for every panel to be scanned on site. A job that is
+  //   only verified stays on Stock Out › Verified and is not here.
+  // - "Site Check" tab: Stock Out jobs whose panels were all scanned on site (arrived), and
+  //   Stock Transfers marked Loading (moved to the other warehouse; no site scan).
+  const arrivedJobs = new Set(verifications.filter((r) => r.material === "arrived").map((r) => r.jobRef));
+  // Loading page: each job's ETA at the customer's house, from its run on the Delivery Schedule
+  // (matched by invoice number).
+  const [deliveryRuns, setDeliveryRuns] = useState<TimelineRun[]>([]);
+  useEffect(() => {
+    if (!loadingOnly) return;
+    let cancelled = false;
+    fetch("/api/warehouse/delivery", { credentials: "same-origin", cache: "no-store" })
+      .then(async (res) => (res.ok ? ((await res.json()) as { runs?: typeof deliveryRuns }) : null))
+      .then((data) => {
+        if (!cancelled && data?.runs) setDeliveryRuns(data.runs);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [loadingOnly]);
+  const etaByInvoice = useMemo(() => {
+    const map: Record<string, { date: string; time: string }> = {};
+    // Runs come oldest first, so a later run overwrites an earlier one.
+    deliveryRuns.forEach((run) =>
+      run.customers.forEach((c) => {
+        const key = c.invoice.replace(/\D/g, "");
+        if (key) map[key] = { date: c.etaDate, time: c.etaTime };
+      }),
+    );
+    return map;
+  }, [deliveryRuns]);
+  // Lorry timeline: the day's runs, and which of their jobs have left / arrived.
+  const dayRuns = deliveryRuns.filter((run) => run.deliveryDate === selectedDay);
+  const loadedInvoices = new Set(Array.from(loadedJobs).map((ref) => ref.replace(/\D/g, "")).filter(Boolean));
+  const arrivedInvoices = new Set(Array.from(arrivedJobs).map((ref) => ref.replace(/\D/g, "")).filter(Boolean));
+  const etaOf = (tx: StockTransaction) =>
+    tx.type === "out" ? etaByInvoice[(tx.extra?.linkedJob ?? tx.reference).replace(/\D/g, "")] : undefined;
   const [loadingView, setLoadingView] = useState<"ready" | "loaded">("ready");
   const isReadyToLoad = (t: StockTransaction) => t.type === "out" && isVerifiedTx(t.status) && !isLoadedTx(t);
+  const isSiteCheckTx = (t: StockTransaction) => isLoadedTx(t);
   const readyCount = baseTx.filter(isReadyToLoad).length;
+  const siteCheckCount = baseTx.filter(isSiteCheckTx).length;
+  // Stock Out list's Loading tab: the same as the Loading page's.
+  const isOutLoading = isReadyToLoad;
+  const outLoadingCount = baseTx.filter(isOutLoading).length;
+
+  // Search: when the customer (or reference) is not on the day shown, go to the day it is on
+  // (the one nearest today) and to the tab that holds it.
+  const [searchJump, setSearchJump] = useState<string | null>(null);
+  useEffect(() => {
+    const q = txSearch.trim();
+    if (q.length < 2) {
+      setSearchJump(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const hits = transactions.filter(
+        (tx) =>
+          passesFilters(tx) &&
+          txMatchesSearch(tx, q) &&
+          !!txDate(tx) &&
+          // Only rows this page lists: the Loading page has Loading / Site Check jobs; other
+          // pages hide loaded jobs.
+          (loadingOnly ? isReadyToLoad(tx) || isLoadedTx(tx) : outTabs || !isLoadedTx(tx)),
+      );
+      const poHits =
+        txType === "in"
+          ? doFiles.files.filter((file) => {
+              const ql = q.toLowerCase();
+              return (
+                file.fileName.toLowerCase().includes(ql) ||
+                file.uploadedBy.toLowerCase().includes(ql) ||
+                (file.poLines ?? []).some(
+                  (line) => line.itemCode.toLowerCase().includes(ql) || line.description.toLowerCase().includes(ql),
+                )
+              );
+            })
+          : [];
+      const days = [...hits.map((tx) => txDate(tx) as string), ...poHits.map((file) => poDay(file))].filter(Boolean);
+      if (days.length === 0 || days.includes(selectedDay)) {
+        setSearchJump(null);
+        return;
+      }
+      const today = isoToday();
+      const distance = (day: string) => Math.abs(new Date(`${day}T00:00:00Z`).getTime() - new Date(`${today}T00:00:00Z`).getTime());
+      const day = [...days].sort((a, b) => distance(a) - distance(b) || b.localeCompare(a))[0];
+      setSelectedDay(day);
+      setSearchJump(day);
+      // Open the tab that holds the first match on that day.
+      const tx = hits.find((t) => txDate(t) === day);
+      if (loadingOnly) {
+        if (tx) setLoadingView(isReadyToLoad(tx) ? "ready" : "loaded");
+      } else if (tx && outTabs && isVerifiedTx(tx.status)) {
+        setTxStatusTab(isSiteCheckTx(tx) ? "siteCheck" : "loading");
+      } else if (tx) {
+        setTxStatusTab(isVerifiedTx(tx.status) || tx.type === "transfer" ? "verified" : "toVerify");
+      } else {
+        const file = poHits.find((f) => poDay(f) === day);
+        if (file) setTxStatusTab(file.verifiedAt ? "verified" : "toVerify");
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+    // Runs when the search text changes; the day / tab it sets must not re-run it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txSearch, txType, whFilter, txCat]);
   const statusTab: TxStatusTab = loadingOnly
     ? loadingView === "ready"
       ? "verified"
       : "loading"
-    : txStatusTab === "loading"
-      ? "verified" // loaded jobs are shown on the Loading page only
+    : (txStatusTab === "loading" || txStatusTab === "siteCheck") && !outTabs
+      ? "verified" // other lists: loaded jobs are shown on the Loading page only
+      : outTabs && txStatusTab === "verified"
+      ? "loading" // Stock Out has no Verified tab
       : isTransferList && txStatusTab === "toVerify"
         ? "verified"
         : txStatusTab;
   const filteredTx = baseTx.filter((t) =>
     loadingOnly && loadingView === "ready"
       ? isReadyToLoad(t)
+      : statusTab === "siteCheck"
+      ? isSiteCheckTx(t)
       : statusTab === "loading"
-      ? isLoadedTx(t)
+      ? loadingOnly
+        ? isSiteCheckTx(t)
+        : outTabs
+          ? isOutLoading(t)
+          : isLoadedTx(t)
       : statusTab === "verified"
         ? (isTransferList || isVerifiedTx(t.status)) && !isLoadedTx(t)
         : !isVerifiedTx(t.status),
@@ -7463,13 +7698,15 @@ function HomeTab({
     ).length;
 
   // Warehouse Preparation Record: verified Stock Out only, one row per customer + loading date
+  // The Report covers the day's verified Stock Transfers on the Stock Transfer list, else Stock Out.
+  const prepType: "out" | "transfer" = txType === "transfer" ? "transfer" : "out";
   const prepRows = useMemo(() => {
     const map = new Map<
       string,
       { customer: string; jobId: string; date: string; team: string; items: { model: string; qty: number | null }[] }
     >();
     whTx
-      .filter((t) => t.type === "out" && t.status === "Verified")
+      .filter((t) => t.type === prepType && t.status === "Verified")
       .forEach((t) => {
         const customer = t.schedule?.customerName ?? t.party;
         const date = (t.schedule?.scheduledDate ?? t.time).replace(/\s*\(.*?\)\s*$/, "");
@@ -7481,7 +7718,8 @@ function HomeTab({
         map.set(key, row);
       });
     return Array.from(map.values());
-  }, [whTx]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [whTx, prepType]);
   const prepCustomerCount = new Set(prepRows.map((r) => r.customer)).size;
   // The mounting parts loaded for the day's verified jobs (saved quantities), added up per part.
   const [prepEntries, setPrepEntries] = useState<{ job: string; kind: string; key: string; value: string }[]>([]);
@@ -7532,9 +7770,42 @@ function HomeTab({
           .map((r) => r.by),
       ),
     ).join(", ");
-  // Prepared By / Packed By: starts from who completed that item, and can be edited.
-  const [byOverrides, setByOverrides] = useState<Record<string, string>>({});
-  const byValue = (id: string) => byOverrides[`${selectedDay}|${id}`] ?? namesFor([id]);
+  // Prepared By / Packed By: starts from who completed that item on Stock Out Verification
+  // (mounting is packed in two parts: rail, and hook & bracket), else who verified the job; on the
+  // Stock Transfer list, who made the transfers holding that item. Can be edited.
+  const transferNamesFor = (item: string) =>
+    Array.from(
+      new Set(
+        whTx
+          .filter(
+            (t) =>
+              t.type === "transfer" &&
+              t.status === "Verified" &&
+              txLines(t).some((line) => line.category === item) &&
+              !!t.transfer?.requestedBy,
+          )
+          .map((t) => t.transfer?.requestedBy as string),
+      ),
+    ).join(", ");
+  const byValue = (id: string) =>
+    prepType === "transfer"
+      ? transferNamesFor(id)
+      : namesFor(id === "mounting" ? ["mounting", "mounting_rail", "mounting_hook"] : [id]) || namesFor(["job"]);
+  // Checked by: who pressed 🚚 Loading on the day's verified jobs (Stock Out) or transfers.
+  const checkedByDefault = Array.from(
+    new Set(
+      verifications
+        .filter(
+          (r) =>
+            r.material === "loaded" &&
+            !!r.by &&
+            (prepType === "transfer"
+              ? whTx.some((t) => t.type === "transfer" && t.reference === r.jobRef && t.status === "Verified")
+              : prepJobIds.has(r.jobRef)),
+        )
+        .map((r) => r.by),
+    ),
+  ).join(", ");
   // One section per item for the day's verified jobs. An item nobody has (for example no
   // battery) is left out. Panel, inverter and battery show the number of units; mounting
   // structure and electrical accessories have no quantity on the invoice, so they show how
@@ -7547,7 +7818,7 @@ function HomeTab({
       { id: "mounting", label: "Mounting Structure", icon: "📦", bulk: true },
       { id: "electrical", label: "Electrical Item", icon: "🔌", bulk: true },
     ];
-    const verifiedOut = whTx.filter((t) => t.type === "out" && t.status === "Verified");
+    const verifiedOut = whTx.filter((t) => t.type === prepType && t.status === "Verified");
     return defs
       .map((def) => {
         let units = 0;
@@ -7580,6 +7851,10 @@ function HomeTab({
       : 0);
 
 
+
+  // Stock Out card: every verified Stock Out job, whatever day is picked (the warehouse and
+  // item filters still apply).
+  const totalOut = transactions.filter((t) => t.type === "out" && t.status === "Verified" && passesFilters(t)).length;
 
   const openPo = openPoId ? doFiles.files.find((file) => file.id === openPoId) : undefined;
   if (openPo) {
@@ -7806,18 +8081,24 @@ function HomeTab({
                 <div className={styles.txKpiCard}>
                   <div className={styles.txKpiHeader}>
                     <div className={styles.txKpiTitles}>
-                      <span className={styles.txKpiLabel}>{isToday ? "Today Out" : "Day Out"}</span>
+                      <span className={styles.txKpiLabel}>Total Out</span>
                       <small className={styles.txKpiSub}>
-                        Dispatched for installs
+                        Dispatched for installs (all dates)
                       </small>
                     </div>
                     <span className={`${styles.txKpiValue} ${styles.txKpiOut}`}>
-                      {doneCount("out")} <span className={styles.txKpiUnit}>{doneCount("out") === 1 ? "job" : "jobs"}</span>
+                      {totalOut} <span className={styles.txKpiUnit}>{totalOut === 1 ? "job" : "jobs"}</span>
                     </span>
                   </div>
                 </div>
               )}
             </div>
+
+            {/* Loading page: a delivery-app style lorry tracker per run of the day, above the date.
+                Hidden for now: set SHOW_LORRY_TIMELINE to true to bring it back. */}
+            {SHOW_LORRY_TIMELINE && loadingOnly && (
+              <LorryTimeline runs={dayRuns} loaded={loadedInvoices} arrived={arrivedInvoices} />
+            )}
 
             <div className={styles.balanceHeaderRow}>
               <div>
@@ -7844,7 +8125,7 @@ function HomeTab({
                 aria-selected={loadingView === "ready"}
                 className={`${styles.txPill} ${loadingView === "ready" ? styles.txPillActive : ""}`}
                 onClick={() => setLoadingView("ready")}
-                title="Verified Stock Out jobs waiting to be loaded"
+                title="Verified Stock Out jobs to load onto the lorry (Submit moves them to Site Check)"
               >
                 Loading ({readyCount})
               </button>
@@ -7854,9 +8135,9 @@ function HomeTab({
                 aria-selected={loadingView === "loaded"}
                 className={`${styles.txPill} ${loadingView === "loaded" ? styles.txPillActive : ""}`}
                 onClick={() => setLoadingView("loaded")}
-                title="Stock Out and Stock Transfer already moved out"
+                title="Loaded Stock Out jobs (scan each panel on site, then Submit), and Stock Transfers moved out"
               >
-                Site Check ({loadingCount})
+                Site Check ({siteCheckCount})
               </button>
             </div>
             ) : (
@@ -7869,18 +8150,45 @@ function HomeTab({
                   className={`${styles.txPill} ${txStatusTab === "toVerify" ? styles.txPillActive : ""}`}
                   onClick={() => setTxStatusTab("toVerify")}
                 >
-                  To Verify ({toVerifyCount})
+                  {outTabs ? "Preparing" : "To Verify"} ({toVerifyCount})
                 </button>
               )}
-              <button
-                type="button"
-                role="tab"
-                aria-selected={statusTab === "verified"}
-                className={`${styles.txPill} ${statusTab === "verified" ? styles.txPillActive : ""}`}
-                onClick={() => setTxStatusTab("verified")}
-              >
-                Verified ({verifiedCount})
-              </button>
+              {/* Stock Out has no Verified tab: Verified sends a job to Loading */}
+              {!outTabs && (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={statusTab === "verified"}
+                  className={`${styles.txPill} ${statusTab === "verified" ? styles.txPillActive : ""}`}
+                  onClick={() => setTxStatusTab("verified")}
+                >
+                  Verified ({verifiedCount})
+                </button>
+              )}
+              {outTabs && (
+                <>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={statusTab === "loading"}
+                    className={`${styles.txPill} ${statusTab === "loading" ? styles.txPillActive : ""}`}
+                    onClick={() => setTxStatusTab("loading")}
+                    title="Verified Stock Out jobs to load onto the lorry (Submit moves them to Site Check)"
+                  >
+                    Loading ({outLoadingCount})
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={statusTab === "siteCheck"}
+                    className={`${styles.txPill} ${statusTab === "siteCheck" ? styles.txPillActive : ""}`}
+                    onClick={() => setTxStatusTab("siteCheck")}
+                    title="Loaded Stock Out jobs: scan each panel on site, then Submit"
+                  >
+                    Site Check ({siteCheckCount})
+                  </button>
+                </>
+              )}
             </div>
             )}
 
@@ -7893,6 +8201,11 @@ function HomeTab({
                 aria-label="Search transactions"
               />
             </div>
+            {searchJump && searchJump === selectedDay && txSearch.trim() && (
+              <p className={styles.note} style={{ margin: "0 0 8px" }}>
+                Found on {getDayLabel(searchJump)}: moved to that day.
+              </p>
+            )}
 
             {/* Transaction Ledger Table */}
             {filteredTx.length === 0 && shownPoRows.length === 0 ? (
@@ -7907,7 +8220,8 @@ function HomeTab({
                       <th scope="col">{txType === "in" ? "Item Code" : "Model / Serial"}</th>
                       <th scope="col" className={styles.num}>Qty</th>
                       {txType === "all" && <th scope="col">Type</th>}
-                      <th scope="col">{loadingOnly || txType === "in" || txType === "transfer" ? "Date" : "Installation Date"}</th>
+                      {loadingOnly && <th scope="col">ETA</th>}
+                      <th scope="col">Installation Date</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -8104,6 +8418,25 @@ function HomeTab({
                           </span>
                         </td>
                         )}
+                        {loadingOnly && (
+                          <td style={{ whiteSpace: "nowrap", fontSize: "12px", color: "#000" }}>
+                            {(() => {
+                              const eta = etaOf(tx);
+                              if (!eta?.date) return "—";
+                              const m = eta.time.match(/^(\d{1,2}):(\d{2})/);
+                              const h = m ? Number(m[1]) : 0;
+                              const time = m
+                                ? `${h % 12 === 0 ? 12 : h % 12}${m[2] === "00" ? "" : `.${m[2]}`}${h >= 12 ? "pm" : "am"}`
+                                : eta.time;
+                              return (
+                                <>
+                                  {isoDateLabel(eta.date)}
+                                  {time && <div style={{ color: "#555" }}>{time}</div>}
+                                </>
+                              );
+                            })()}
+                          </td>
+                        )}
                         <td style={{ whiteSpace: "nowrap", fontSize: "12px", color: "#000" }}>
                           {isoDateLabel(tx.time)}
                         </td>
@@ -8190,7 +8523,11 @@ function HomeTab({
               <hr style={{ border: 0, borderTop: "1px solid #bdbdbd", margin: "20px 0 0" }} />
               <h2 className={styles.prepHeading}>1. MATERIAL PREPARATION &amp; RESPONSIBILITY</h2>
               {/* One block per item the day's verified jobs have: Qty and who prepared or packed it */}
-              {prepItems.length === 0 && <p className={styles.note}>No verified stock out on this day.</p>}
+              {prepItems.length === 0 && (
+                <p className={styles.note}>
+                  {prepType === "transfer" ? "No verified stock transfer on this day." : "No verified stock out on this day."}
+                </p>
+              )}
               {prepItems.map((item) => (
                 <div key={item.id} className={`${styles.prepBlock} pb`}>
                   <strong>
@@ -8200,15 +8537,7 @@ function HomeTab({
                     Qty: {item.bulk ? `${item.jobs} ${item.jobs === 1 ? "set" : "sets"}` : item.units}
                   </div>
                   <div>
-                    {item.id === "mounting" ? "Packed By" : "Prepared By"}:{" "}
-                    <input
-                      type="text"
-                      className={styles.prepCheckedInput}
-                      value={byValue(item.id)}
-                      placeholder="Type name"
-                      aria-label={`${item.label} ${item.id === "mounting" ? "packed by" : "prepared by"}`}
-                      onChange={(e) => setByOverrides((prev) => ({ ...prev, [`${selectedDay}|${item.id}`]: e.target.value }))}
-                    />
+                    {item.id === "mounting" ? "Packed By" : "Prepared By"}: <strong>{byValue(item.id) || "—"}</strong>
                   </div>
                   {item.id === "mounting" && (
                     <>
@@ -8245,7 +8574,7 @@ function HomeTab({
                 <input
                   type="text"
                   className={styles.prepCheckedInput}
-                  value={checkedBy}
+                  value={checkedBy ?? checkedByDefault}
                   onChange={(e) => setCheckedBy(e.target.value)}
                   placeholder="Type name"
                   aria-label="Checked by"
@@ -8300,6 +8629,7 @@ function StockTransferTab({
   onNewTransfer,
   onGoToTransactions,
   onBack,
+  preparedByName = "",
 }: {
   transactions: StockTransaction[];
   onInspectTx: (id: string) => void;
@@ -8307,6 +8637,8 @@ function StockTransferTab({
   onBack: () => void;
   onNewTransfer: (newTx: StockTransaction) => void;
   onGoToTransactions?: () => void;
+  // Signed-in user: saved as who prepared the transfer (shown on the Stock Transfer report).
+  preparedByName?: string;
 }) {
   // 1. Warehouse Route (From Warehouse A -> To Warehouse B)
   const [fromWh, setFromWh] = useState<"JB" | "KL">("JB");
@@ -8510,7 +8842,7 @@ function StockTransferTab({
         transferNo: trNum,
         fromWarehouse: fromWh,
         toWarehouse: toWh,
-        requestedBy: "Wei Hao (Ops Admin)",
+        requestedBy: preparedByName || "Ops Admin",
         driverName,
         vehiclePlate,
         dispatchedDate: "Today (Just now)",
