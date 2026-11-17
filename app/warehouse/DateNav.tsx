@@ -4,7 +4,7 @@ import { useRef } from "react";
 import styles from "./warehouse.module.css";
 
 // The date control used on every page:  ‹  [calendar]  ›
-// ‹ and › step back and forward (a day, or a week on the Installation Schedule); the calendar
+// ‹ and › step back and forward (a day, or a week on the Project Team page); the calendar
 // icon opens the browser's date picker. The picked date is shown in the button's tooltip.
 
 export function DateNav({

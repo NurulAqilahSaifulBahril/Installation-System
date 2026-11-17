@@ -74,5 +74,7 @@ export const MATERIALS = [
   "electrical",
   "commercial",
   "loaded",
+  // All panels scanned on site by the driver (Loading tab): arrived safely.
+  "arrived",
 ] as const;
 export type Material = (typeof MATERIALS)[number];

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { AuthError } from "@/lib/auth";
-import { requireUser, requireWriter } from "@/lib/warehouse-auth";
+import { requireUser } from "@/lib/warehouse-auth";
 import { queryProxy } from "@/lib/proxy-db";
 import { toTitleCase } from "@/lib/title-case";
 import { ensureAuditTable, ensureVerificationsTable, MATERIALS } from "@/lib/warehouse-verifications";
@@ -76,6 +76,7 @@ const MATERIAL_LABEL: Record<string, string> = {
   electrical: "Electrical Item",
   commercial: "Special Material",
   loaded: "Loading",
+  arrived: "Arrived safely",
 };
 
 // Stock Transfer numbers look like "TR-2026-5169"; everything else is a Stock Out job.
@@ -88,13 +89,16 @@ function auditEntry(material: string, jobRef: string): [string, string, string] 
   }
   if (material === "job") return ["stock_out_verified", "stock_out", `Verified Stock Out ${jobRef}`];
   if (material === "loaded") return ["stock_out_loaded", "stock_out", `Loaded Stock Out ${jobRef} to the customer's house`];
+  if (material === "arrived") {
+    return ["stock_out_arrived", "stock_out", `All panels of Stock Out ${jobRef} scanned on site: arrived safely`];
+  }
   return ["material_completed", "stock_out", `Completed ${MATERIAL_LABEL[material]} for Stock Out ${jobRef}`];
 }
 
 export async function POST(request: Request) {
   let user;
   try {
-    user = await requireWriter();
+    user = await requireUser();
   } catch (error) {
     return authFailure(error);
   }
@@ -103,9 +107,30 @@ export async function POST(request: Request) {
   if (!parsed.success) return NextResponse.json({ error: "jobRef and material are required." }, { status: 400 });
   const { jobRef, material } = parsed.data;
 
+  // A Loading user (driver) may only mark a verified Stock Out job as Loading, and record that
+  // its panels arrived safely (scanned on site).
+  const loadingUser = user.role === "loading";
+  if (loadingUser && ((material !== "loaded" && material !== "arrived") || isTransferRef(jobRef))) {
+    return NextResponse.json({ error: "Your access is view only (Loading)." }, { status: 403 });
+  }
+
   try {
     await ensureVerificationsTable();
     await ensureAuditTable();
+    if (loadingUser) {
+      // Loading needs the job verified; Arrived needs it loaded.
+      const needed = material === "arrived" ? "loaded" : "job";
+      const before = await queryProxy<{ id: string }>(
+        "select id from public.warehouse_verifications where job_ref = $1 and material = $2 limit 1",
+        [jobRef, needed],
+      );
+      if (before.length === 0) {
+        return NextResponse.json(
+          { error: material === "arrived" ? "This job is not loaded yet." : "This job is not verified yet." },
+          { status: 400 },
+        );
+      }
+    }
 
     // Who: the Inventory Management user for this phone number, else the dashboard account.
     let name = toTitleCase(user.displayName || user.username);
