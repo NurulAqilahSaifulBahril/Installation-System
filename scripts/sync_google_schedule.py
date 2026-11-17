@@ -417,6 +417,9 @@ def parse_customer_cell(cell_text):
             clean_name = parts[0].strip()
             remarks.insert(0, '- ' + parts[1].strip())
 
+    # "(Waiting ATAP)" is a status note on the sheet row, not part of the name;
+    # left in, it overrode prod-main's name ("KOAY HEAN KOON (ATAP)").
+    clean_name = re.sub(r'\(\s*(waiting\s+atap|pending\s+documents?)\s*\)', '', clean_name, flags=re.I)
     clean_name = re.sub(r'\(ATAP\)', '', clean_name, flags=re.I)
     clean_name = re.sub(r'\(SELCO\)', '', clean_name, flags=re.I)
     clean_name = re.sub(r'\(FACTORY\)', '', clean_name, flags=re.I)
@@ -457,6 +460,23 @@ def normalize(str_val):
     if not str_val:
         return ''
     return re.sub(r'[^a-z0-9]', '', str_val.lower())
+
+def base_person_name(name):
+    """The name with sheet/prod-main tags removed, for "same person?" checks.
+
+    Sheet rows carry status notes in brackets ("(PENDING DOCUMENT)", "(NEM)",
+    "(EV Charger)", "(1010583)") and prod-main carries its own ("(ATAP)",
+    "(SHOP LOT)"). Strip both so only the person's name is compared.
+    """
+    n = (name or '').replace('\uff08', '(').replace('\uff09', ')')
+    for _ in range(3):
+        n = re.sub(r'\([^()]*\)', ' ', n)
+    n = re.sub(r'\([^)]*$', ' ', n)
+    n = re.sub(r'\b(INV[-\s]*)?10\d{5}\b', ' ', n, flags=re.I)
+    n = re.sub(r'\s-\s.*$', ' ', n)
+    n = re.sub(r'\bno\.?\s*\d+[a-z-]*\d*\b', ' ', n, flags=re.I)
+    n = re.sub(r'\b(atap|selco|nem|shop-?\s?lot)\b', ' ', n, flags=re.I)
+    return re.sub(r'[^A-Z0-9]', '', n.upper())
 
 def extract_panel_line(text):
     if not text:
@@ -596,10 +616,15 @@ def extract_all_sheet_rows():
                         shared_strings.append(text)
                         elem.clear()
 
-        def parse_worksheet(target_path):
+        def parse_worksheet(target_path, fill_merged_cols=''):
             rows = []
+            merges = []
             with z.open(target_path) as f:
                 for event, elem in ET.iterparse(f):
+                    if elem.tag.endswith('}mergeCell') and fill_merged_cols:
+                        m = re.match(r'^([A-Z]+)(\d+):([A-Z]+)(\d+)$', elem.attrib.get('ref', ''))
+                        if m:
+                            merges.append(m.groups())
                     if elem.tag.endswith('}row'):
                         row_num = int(elem.attrib.get('r'))
                         cells = {}
@@ -617,10 +642,30 @@ def extract_all_sheet_rows():
                         if cells:
                             rows.append({'row': row_num, 'cells': cells})
                         elem.clear()
+
+            # A vertically merged cell only stores its value in the top cell, so
+            # the stops below it read blank. The delivery tab merges the ETA
+            # (col I) across stops that arrive together -- e.g. I181:I183 -- and
+            # without this the lower stops fell back to the lorry's departure
+            # time. Copy the top value down, but only in the listed columns: a
+            # merged col A or B would otherwise invent extra runs or customers.
+            if merges:
+                by_row = {r['row']: r for r in rows}
+                for c1, r1, c2, r2 in merges:
+                    if c1 != c2 or c1 not in fill_merged_cols:
+                        continue
+                    r1, r2 = int(r1), int(r2)
+                    top = by_row.get(r1, {}).get('cells', {}).get(f'{c1}{r1}')
+                    if top is None:
+                        continue
+                    for rn in range(r1 + 1, r2 + 1):
+                        if rn not in by_row:
+                            continue  # nothing else on that row; keep it absent
+                        by_row[rn]['cells'].setdefault(f'{c1}{rn}', top)
             return rows
 
         inst_rows = parse_worksheet(inst_target)
-        del_rows = parse_worksheet(del_target)
+        del_rows = parse_worksheet(del_target, fill_merged_cols='CIJK')
         return inst_rows, del_rows
 
 def sync_schedule():
@@ -1201,6 +1246,23 @@ def sync_schedule():
             updated_at = NOW()
     """, ['default', json.dumps(draft_patch)])
     print("Structure patches saved.")
+
+    # Prod-main owns the customer's name. The sheet's name only stands in when
+    # it is a different person from prod-main's record (prod-main sometimes
+    # holds a placeholder like "Mr" or "Sample Quotation"); when it is the same
+    # person with sheet notes attached -- "(PENDING DOCUMENT)", "(Waiting ATAP)",
+    # "(EV Charger)" -- the note must not replace prod-main's name.
+    kept_sheet_names = 0
+    for jid, patch in job_updates.items():
+        src = source_by_id.get(jid)
+        sheet_name = patch.get('customerName')
+        if not src or not sheet_name:
+            continue
+        if base_person_name(sheet_name) == base_person_name(src.get('customer_name')):
+            patch.pop('customerName', None)
+        else:
+            kept_sheet_names += 1
+    print(f"Kept {kept_sheet_names} sheet names that differ from prod_main; the rest use prod_main's name.")
 
     # 2. Merge jobUpdates in small chunks (e.g. 150 jobs per chunk)
     print("Merging jobUpdates into public.installation_ops_state...")

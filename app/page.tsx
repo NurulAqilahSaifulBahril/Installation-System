@@ -1,5 +1,6 @@
 "use client";
 
+import { cleanDeliveryStockRemark } from "@/lib/delivery-remark";
 import {
   AlertTriangle,
   Briefcase,
@@ -433,6 +434,18 @@ function formatDateOnly(value: string | null | undefined) {
   const date = new Date(`${value}T00:00:00`);
   if (Number.isNaN(date.getTime())) return value;
   return DATE_PLAIN.format(date);
+}
+
+// "14:30" -> "2.30pm", "09:00" -> "9am": the way the Google Sheet's delivery
+// tab writes times ("26 Oct 2026 Mon @ 2.30pm"), so the two read the same.
+function formatSheetClock(value: string | null | undefined) {
+  const m = (value ?? "").match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return "";
+  const hours = Number(m[1]);
+  if (hours > 23) return "";
+  const suffix = hours >= 12 ? "pm" : "am";
+  const h12 = hours % 12 === 0 ? 12 : hours % 12;
+  return m[2] === "00" ? `${h12}${suffix}` : `${h12}.${m[2]}${suffix}`;
 }
 
 function formatAssignmentStamp(value: string) {
@@ -10799,108 +10812,22 @@ function jobFullAddress(job: InstallationJob) {
     .join(", ");
 }
 
-function isDeliveryAddressOrTimestamp(line: string): boolean {
-  const l = line.trim();
-  if (
-    /^(?:no\.?\s*\d+|lot\s*\d+|ptd\s*\d+|\d+,\s*jln|\d+\s+jln)/i.test(l) &&
-    /(?:tmn|taman|jalan|bdr|bandar|johor|selangor|klang|skudai)/i.test(l)
-  ) {
-    return true;
-  }
-  if (/^(?:mon|tue|wed|thu|thur|fri|sat|sun)\s*\d+\s*-\s*\d+(?:am|pm)/i.test(l)) {
-    return true;
-  }
-  return false;
-}
-
-function isPureInverterSpec(line: string): boolean {
-  const l = line.trim();
-  if (!l || l === "+" || l === "&") return true;
-
-  // Operational instructions / locations / actions are NOT pure inverter specs
-  if (
-    /(?:office|car|bring|reach|stage|pass|leaking|done|visit|pending job|check|arrange|stone|cancel|hold|request|delivery on|inform|cable|roof)/i.test(
-      l,
-    )
-  ) {
-    return false;
-  }
-
-  // Stock items like Battery, ATS, Wallbox, Ballast, EV are warehouse stock, NOT inverter
-  if (
-    /(?:battery|base|ats|wallbox|charger|ballast|rccb|bracket|clamp|cable|rail)/i.test(
-      l,
-    )
-  ) {
-    return false;
-  }
-
-  // Pure inverter spec / swap pattern
-  const invSpec =
-    /^(?:[▶️✅❌➡️*#–\-=\s>》])*(?:\d+\s*[xX]\s*)?(?:R[56]|H[123]|M2|SUN2000|SAJ\s+R[56])(?:-[0-9]+[A-Za-z0-9.-]*)?(?:\s+Inverter|\s*\((?:HYBRID|STRING|MICRO)\s+INVERTER\))?(?:\s+(?:Single|Three)\s+phase)?(?:[▶️✅❌➡️*#–\-=\s>》✅❌])*$/i;
-
-  if (invSpec.test(l)) return true;
-
-  // Standalone phrases like "Hybrid Inverter", "String Inverter", "Micro Inverter"
-  if (
-    /^(?:[▶️✅❌➡️*#–\-=\s>》])*(?:Hybrid|String|Micro)\s+Inverter(?:[▶️✅❌➡️*#–\-=\s>》])*$/i.test(
-      l,
-    )
-  ) {
-    return true;
-  }
-
-  // Multi-inverter swap on single line: e.g. "❌1 X R6-8K-T2 =》✅1 X R6-10K-T2"
-  if (
-    l.includes("=>") ||
-    l.includes("=》") ||
-    l.includes("➡️") ||
-    l.includes("->")
-  ) {
-    const parts = l.split(/(?:=>|=》|➡️|->)/);
-    if (
-      parts.length === 2 &&
-      parts.every((p) => invSpec.test(p.trim()) || p.trim() === "")
-    ) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function cleanDeliveryStockRemark(stock: string): string {
-  if (!stock) return "";
-  const lines = stock
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const remainingLines: string[] = [];
-
-  for (const l of lines) {
-    if (isDeliveryAddressOrTimestamp(l)) continue;
-    if (isPureInverterSpec(l)) continue;
-    remainingLines.push(l);
-  }
-
-  const cleaned = remainingLines.filter(
-    (l) => l !== "+" && l !== "&" && l.trim() !== "",
-  );
-  return cleaned.join("\n");
-}
-
 function formatDeliveryWeekLabel(
   weekLabel?: string | null,
   deliveryDate?: string | null,
 ): string {
+  // The run's own date decides the week, the same Mon–Sat week the week picker
+  // filters on. The sheet's label ("23/10 - 30/10/2026") counts its weeks
+  // Friday to Friday, so printing it here put a header that disagreed with the
+  // picker above the very runs the picker had selected.
+  if (deliveryDate && weekBounds(deliveryDate)) {
+    return `DELIVERY~ Week : ${weekRangeLabel(deliveryDate)}`;
+  }
   const raw = (weekLabel || "").trim();
   if (raw) {
     if (/^delivery\s*~/i.test(raw)) return raw;
     if (/^week\b/i.test(raw)) return `DELIVERY~ ${raw}`;
     return `DELIVERY~ Week : ${raw}`;
-  }
-  if (deliveryDate) {
-    return `DELIVERY~ Week : ${weekRangeLabel(deliveryDate)}`;
   }
   return "DELIVERY~ Unscheduled";
 }
@@ -11810,7 +11737,14 @@ function DeliveryPlanningView({
                               <Pin size={14} />
                             )}
                           </button>
-                          <span className="schedule-band-week">
+                          <span
+                            className="schedule-band-week"
+                            title={
+                              run.weekLabel
+                                ? `Google Sheet: ${run.weekLabel}`
+                                : undefined
+                            }
+                          >
                             {formatDeliveryWeekLabel(run.weekLabel, run.deliveryDate)}
                           </span>
                         </div>
@@ -11995,6 +11929,18 @@ function DeliveryPlanningView({
                         job.installationDate ||
                         job.visits?.[0]?.date ||
                         null;
+                      // Only show a time that belongs to the date shown: a visit
+                      // on that day, else the agreed slot when it is that day.
+                      // A group or proposal can move the date without a time.
+                      const instDay = instDate ? instDate.slice(0, 10) : "";
+                      const instTime = instDay
+                        ? job.visits?.find((v) => v.date === instDay)?.time ||
+                          (job.preferredInstallationDate?.slice(0, 10) === instDay
+                            ? job.preferredInstallationTime
+                            : null) ||
+                          null
+                        : null;
+                      const instTimeLabel = formatSheetClock(instTime);
                       const rowRemark = cleanDeliveryStockRemark(
                         job.stockDetails || "",
                       );
@@ -12373,7 +12319,9 @@ function DeliveryPlanningView({
                                 <Calendar size={12} />
                                 <span className="rti-inst-date-text">
                                   {instDate
-                                    ? formatDateOnly(instDate)
+                                    ? `${formatDateOnly(instDate)}${
+                                        instTimeLabel ? ` @ ${instTimeLabel}` : ""
+                                      }`
                                     : isJobWarehouse
                                     ? "N/A"
                                     : "Unassigned"}
