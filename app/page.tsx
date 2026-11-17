@@ -11058,6 +11058,28 @@ function DeliveryPlanningView({
   const [pinnedWeekKeys, setPinnedWeekKeys] = useState<Set<string>>(new Set());
   const [activeAddRunId, setActiveAddRunId] = useState<string | null>(null);
 
+  // While scrolling, the week bar, the Delivery PIC bar and the column header
+  // stack at the top in that order. Each sticks below the ones above it, so the
+  // offsets are the bars' real heights (the PIC bar's height changes with its
+  // inputs and any route note), measured here and handed to the CSS.
+  const deliveryTableRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const wrap = deliveryTableRef.current;
+    if (!wrap || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const week = wrap.querySelector<HTMLElement>("tr.rti-team-band-sub");
+      const run = wrap.querySelector<HTMLElement>("tr.delivery-run-band");
+      if (week) wrap.style.setProperty("--dw-week-h", `${week.offsetHeight}px`);
+      if (run) wrap.style.setProperty("--dw-run-h", `${run.offsetHeight}px`);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    wrap.querySelectorAll("tr.rti-team-band-sub, tr.delivery-run-band").forEach((row) =>
+      observer.observe(row),
+    );
+    return () => observer.disconnect();
+  });
+
   const [periodFilter, setPeriodFilter] = useState("");
   const [customerQuery, setCustomerQuery] = useState("");
   const deferredCustomerQuery = useDeferredValue(customerQuery);
@@ -11660,7 +11682,10 @@ function DeliveryPlanningView({
           </div>
         </div>
       <section className="planning-group">
-        <div className="table-wrap rti-team unified-team-table delivery-schedule-table">
+        <div
+          ref={deliveryTableRef}
+          className="table-wrap rti-team unified-team-table delivery-schedule-table"
+        >
           <table>
             <colgroup>
               <col className="rti-col-date" />
