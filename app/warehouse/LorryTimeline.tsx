@@ -14,7 +14,16 @@ export type TimelineRun = {
   warehouse: string;
   deliveryPic: string;
   contactNumber: string;
-  customers: { jobId: string; invoice: string; name: string; etaDate: string; etaTime: string }[];
+  customers: {
+    jobId: string;
+    invoice: string;
+    name: string;
+    etaDate: string;
+    etaTime: string;
+    // Installation day and time from the schedule (the Loading table shows the time).
+    installDate?: string;
+    installTime?: string;
+  }[];
 };
 
 const GREEN = "#16a34a";

@@ -2035,6 +2035,49 @@ button.typeCard {
   transform: translateY(-1px);
 }
 
+/* Stock Out: Panel / Inverter / Battery / Mounting / Electrical cards, under the Preparing /
+   Loading / Site Check tabs, with a clear gap above (the tabs row) and below (the table). */
+.outItemGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin: 6px 0 16px;
+  width: 100%;
+  box-sizing: border-box;
+}
+@media (min-width: 900px) {
+  .outItemGrid {
+    gap: 12px;
+    margin: 8px 0 18px;
+  }
+}
+/* Name and count on one line: "Panel  12 units". On a narrow phone card the count drops to the
+   next line instead of being cut off. */
+.outItemCard {
+  font: inherit;
+  color: #000;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  column-gap: 4px;
+  row-gap: 1px;
+}
+.outItemCard .txKpiCatValOut {
+  margin-top: 0;
+}
+/* All text on these cards in black: name, number and unit. */
+.outItemCard .txKpiCatName,
+.outItemCard .txKpiCatValOut,
+.outItemCard .txKpiUnit {
+  color: #000;
+}
+@media (min-width: 900px) {
+  .outItemCard {
+    padding: 10px 8px;
+  }
+}
+
 .txKpiCatChipActive {
   background: rgba(28, 110, 140, 0.12) !important;
   border-color: var(--frost) !important;
@@ -6347,17 +6390,29 @@ button.typeCard {
   position: relative;
   display: inline-flex;
 }
-/* The hidden date field sits under the calendar button so the picker opens beside it. */
+/* The invisible date field lies on top of the calendar button, so a tap lands on the field itself.
+   Phones (iPhone Safari especially) only open their date picker for a real tap on the field;
+   opening it from code alone does nothing there. */
 .dateNavInput {
   position: absolute;
-  left: 0;
-  bottom: 0;
+  inset: 0;
+  z-index: 1;
   width: 100%;
   height: 100%;
+  min-width: 0;
   opacity: 0;
-  pointer-events: none;
+  cursor: pointer;
   border: 0;
   padding: 0;
+  margin: 0;
+  font-size: 16px; /* stops iPhone zooming the page when the field is tapped */
+  -webkit-appearance: none;
+  appearance: none;
+}
+/* The field covers the button, so show the button's hover look when the field is hovered. */
+.dateNavCal:hover .dateNavBtn {
+  border-color: #bf9000;
+  color: #8a6d00;
 }
 /* Installation Schedule: the older week-button rules must not resize the ‹ calendar › buttons,
    and on a phone the control sits on the right like on the other pages. */
@@ -6378,4 +6433,74 @@ button.typeCard {
 .soCardActive {
   border-color: #bf9000 !important;
   box-shadow: 0 0 0 2px #bf9000 !important;
+}
+
+/* Loading page and Stock Out's Loading tab: smaller cell text (the column headers keep their
+   size). The ETA / Installation Date cells set 12px inline, hence !important. */
+.txLedgerLoading td,
+.txLedgerLoading td div:not(:has(button)) {
+  font-size: 10px !important;
+}
+.txLedgerLoading .txRefCell .txCustName {
+  font-size: 11px !important;
+}
+.txLedgerLoading .txRefCell .txInvoiceNo,
+.txLedgerLoading .txRefCell .txParty {
+  font-size: 9px !important;
+}
+/* Loading tables: smaller column headers too. */
+.txLedgerLoading th {
+  font-size: 10px !important;
+}
+
+/* Stock Out job › Customer Details: a thin line between the rows (Customer, Phone, Address, …).
+   The grid spans the full width and each cell carries the line, so it runs edge to edge. */
+.custDetailLines {
+  width: 100%;
+  column-gap: 0 !important;
+  row-gap: 0 !important;
+}
+.custDetailLines > div > * {
+  padding: 6px 6px 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+.custDetailLines > div:last-child > * {
+  border-bottom: 0;
+}
+
+/* Loading tables: the Installation Date column a little darker than the rest (like the Delivery
+   Schedule's shaded columns). */
+.instDateCol {
+  background: rgba(0, 0, 0, 0.06);
+}
+th.instDateCol {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+/* Loading jobs: the item cards in one row, equal widths, spanning the full width like the
+   table below, with smaller text. */
+.soCards.soCardsLoading {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  width: 100%;
+  gap: 6px;
+}
+
+.soCardsLoading .soCard {
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.soCardsLoading .soCardLabel {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.soCardsLoading .soCardNumber {
+  font-size: 18px;
+}
+
+.soCardsLoading .soCardSub {
+  font-size: 9px;
 }

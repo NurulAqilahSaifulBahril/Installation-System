@@ -79,11 +79,11 @@ export async function GET(request: NextRequest) {
 const putSchema = z.object({
   job: z.string().min(1).max(100),
   // The full current set for these kinds: anything saved earlier but not listed is removed.
-  kinds: z.array(z.enum(["mounting_part", "bulk_line", "electrical_part", "pv_drawing"])).min(1),
+  kinds: z.array(z.enum(["mounting_part", "mounting_box", "bulk_line", "electrical_part", "pv_drawing"])).min(1),
   entries: z
     .array(
       z.object({
-        kind: z.enum(["mounting_part", "bulk_line", "electrical_part", "pv_drawing"]),
+        kind: z.enum(["mounting_part", "mounting_box", "bulk_line", "electrical_part", "pv_drawing"]),
         key: z.string().min(1).max(1000),
         value: z.string().min(1).max(20),
       }),

@@ -63,17 +63,27 @@ export function DateNav({
             <path d="M7.5 13.5h2M11 13.5h2M14.5 13.5h2M7.5 17h2M11 17h2" />
           </svg>
         </button>
-        {/* The real date field, kept out of sight; the calendar button opens it. */}
+        {/* The real date field, invisible and lying over the calendar button. On a phone the tap
+            opens the phone's own picker; on a computer a click on the field body does not, so
+            open it from code too. The button underneath stays for keyboard use. */}
         <input
           ref={inputRef}
           type="date"
           className={styles.dateNavInput}
           value={value}
+          onClick={(e) => {
+            try {
+              e.currentTarget.showPicker?.();
+            } catch {
+              // Already open, or the browser opens it from the tap by itself.
+            }
+          }}
           onChange={(e) => {
             if (e.target.value) onPick(e.target.value);
           }}
           tabIndex={-1}
           aria-hidden="true"
+          title={pickLabel}
         />
       </span>
       <button type="button" className={styles.dateNavBtn} onClick={onNext} disabled={nextDisabled} aria-label={nextLabel} title={nextLabel}>
