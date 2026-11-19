@@ -6533,7 +6533,7 @@ th.instDateCol {
 /* Small uppercase label, as on the Delivery Schedule band ("DELIVERY PIC") */
 .loadingPicLabel {
   font-size: 8.5px;
-  font-weight: 800;
+  font-weight: 400;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -6553,4 +6553,81 @@ th.instDateCol {
 .loadingPicRow .loadingPicLabel,
 .loadingPicRow .loadingPicValue {
   color: #fff !important;
+}
+
+/* Loading page: a driver row opens that lorry's page */
+.loadingPicRowClickable {
+  cursor: pointer;
+}
+
+.loadingPicRowClickable:hover td {
+  filter: brightness(1.08);
+}
+
+.loadingPicRowClickable:focus-visible {
+  outline: 2px solid #000;
+  outline-offset: -2px;
+}
+
+/* Lorry loading page */
+.lorryCustName {
+  font-size: 15px;
+  font-weight: 700;
+  color: #000;
+}
+
+
+/* Lorry loading page: the customers table */
+.lorryTable td {
+  vertical-align: top;
+  font-size: 12px;
+  color: #000;
+}
+
+.lorryInvoice {
+  font-size: 11px;
+  color: #000;
+}
+
+.lorryAddress {
+  min-width: 180px;
+  max-width: 260px;
+}
+
+/* Loading page: one row per lorry, plain (no gold background), black text */
+.lorryRowsTable .loadingPicRow td {
+  background: transparent;
+  color: #000 !important;
+  font-size: 12px;
+  font-weight: 400;
+  vertical-align: top;
+  border-top: 1px solid var(--line);
+}
+
+.lorryRowsTable .loadingPicRow .loadingPicValue {
+  color: #000 !important;
+}
+
+.lorryRowsTable .loadingPicRowClickable:hover td {
+  filter: none;
+  background: #f8fafc;
+}
+
+/* Lorry page: Submit at the bottom, right-aligned, with the photo count beside it */
+.lorrySubmitRow {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+/* Lorry page: "Checked by" under the customers table */
+.lorryCheckedBy {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--green);
+  font-weight: 700;
+  text-align: right;
 }

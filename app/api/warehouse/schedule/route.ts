@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { GET as getJobs } from "@/app/api/jobs/route";
+import { warehouseJobs } from "@/lib/warehouse-jobs";
 import { AuthError } from "@/lib/auth";
 import { requireUser } from "@/lib/warehouse-auth";
 import { malaysiaToday } from "@/lib/dates";
@@ -67,41 +67,57 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Not signed in." }, { status });
   }
 
-  // Reuse the jobs pipeline (and its short cache) 
-  // Called directly (not over HTTP), so a warehouse session needs no Scheduling cookie.
-  const response = await getJobs(new Request(new URL("/api/jobs", request.url)));
-  if (!response.ok) {
+  // The inventory's copy of the jobs list (see lib/warehouse-jobs), called directly (not over
+  // HTTP), so a warehouse session needs no Scheduling cookie.
+  let allJobs: InstallationJob[];
+  try {
+    allJobs = await warehouseJobs(request.url);
+  } catch {
     return NextResponse.json({ error: "Could not load installation jobs." }, { status: 502 });
   }
-  const data = (await response.json()) as { jobs?: InstallationJob[]; source?: string };
 
   const today = malaysiaToday();
   const from = firstOfPreviousMonth(today);
   const to = shiftDate(today, DAYS_AHEAD);
 
-  const datedJobs = (data.jobs ?? []).filter((job) => {
+  const datedJobs = allJobs.filter((job) => {
     const date = job.installationDate?.slice(0, 10);
     return Boolean(date) && date! >= from && date! <= to;
   });
-  // Leave out jobs whose invoice was deleted in prod_main (e.g. Heah Kee Thin's INV-1011708, a
-  // deleted second invoice whose job stayed in the installation store). If the check fails,
-  // every job is kept.
-  let deletedIds = new Set<string>();
-  try {
-    deletedIds = await fetchDeletedInvoiceIds(datedJobs.map((job) => job.id));
-  } catch (error) {
-    console.error("[warehouse/schedule] could not check for deleted invoices", error);
-  }
+  // Two prod_main reads, run side by side: which invoices were deleted (e.g. Heah Kee Thin's
+  // INV-1011708, a deleted second invoice whose job stayed in the installation store; those jobs
+  // are left out) and each invoice's own item lines (the job's saved text can lack lines, since ops
+  // overwrite it from the schedule sheet). If either read fails, every job / the saved text is used.
+  const ids = datedJobs.map((job) => job.id);
+  const [deletedIds, invoiceLines] = await Promise.all([
+    fetchDeletedInvoiceIds(ids).catch((error) => {
+      console.error("[warehouse/schedule] could not check for deleted invoices", error);
+      return new Set<string>();
+    }),
+    fetchInvoiceItemLines(ids).catch((error) => {
+      console.error("[warehouse/schedule] could not read invoice item lines", error);
+      return {} as Record<string, string[]>;
+    }),
+  ]);
   const windowJobs = datedJobs.filter((job) => !deletedIds.has(job.id));
-
-  // The job's saved text can lack lines (ops overwrite it from the schedule sheet), so the
-  // invoice's own item lines are read directly. If that read fails, the saved text is used.
-  let invoiceLines: Record<string, string[]> = {};
-  try {
-    invoiceLines = await fetchInvoiceItemLines(windowJobs.map((job) => job.id));
-  } catch (error) {
-    console.error("[warehouse/schedule] could not read invoice item lines", error);
-  }
+  // A job made in the Scheduling system without an invoice (e.g. "INV-100" for Ong Kai Ping) has
+  // no agent: use the agent of the same customer's real invoice, when exactly one is named.
+  const nameKey = (name: string) => name.toUpperCase().replace(/\([^)]*\)/g, " ").replace(/\s+/g, " ").trim();
+  const agentsByCustomer = new Map<string, Set<string>>();
+  allJobs.forEach((job) => {
+    const agent = (job.agentName ?? "").trim();
+    if (!agent || agent === "Not available") return;
+    const key = nameKey(job.customerName ?? "");
+    if (!key) return;
+    if (!agentsByCustomer.has(key)) agentsByCustomer.set(key, new Set());
+    agentsByCustomer.get(key)!.add(agent);
+  });
+  const agentFor = (job: InstallationJob) => {
+    const own = (job.agentName ?? "").trim();
+    if (own && own !== "Not available") return own;
+    const named = agentsByCustomer.get(nameKey(job.customerName ?? ""));
+    return named && named.size === 1 ? Array.from(named)[0] : own;
+  };
 
   const jobs: WarehouseScheduledJob[] = windowJobs
     .map((job) => ({
@@ -109,7 +125,7 @@ export async function GET(request: Request) {
       customerName: job.customerName,
       customerPhone: job.customerPhone,
       address: [job.address, job.postcode, job.city, job.state].filter(Boolean).join(", "),
-      agentName: job.agentName,
+      agentName: agentFor(job),
       installationDate: job.installationDate!.slice(0, 10),
       teams: job.teams.map((team) => team.teamName).filter(Boolean),
       packageName: job.packageName,
@@ -136,5 +152,5 @@ export async function GET(request: Request) {
     }))
     .sort((a, b) => a.installationDate.localeCompare(b.installationDate));
 
-  return NextResponse.json({ source: data.source ?? "live", jobs });
+  return NextResponse.json({ source: "live", jobs });
 }

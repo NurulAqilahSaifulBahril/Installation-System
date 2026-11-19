@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { GET as getJobs } from "@/app/api/jobs/route";
+import { warehouseJobs } from "@/lib/warehouse-jobs";
 import { AuthError } from "@/lib/auth";
 import { requireUser } from "@/lib/warehouse-auth";
 import { malaysiaToday } from "@/lib/dates";
@@ -51,8 +51,9 @@ export type DeliveryRunPayload = {
   warehouse: string;
   deliveryPic: string;
   contactNumber: string;
-  // The lorry on the sheet ("Lorry 2"); the sheet has no plate numbers.
+  // The lorry on the sheet ("Lorry 2") and its plate from the run header ("WJX 3918").
   deliveryTeam: string;
+  plateNumber: string;
   isWarehouse: boolean;
   // Colour class of the run band, as on the dashboard ("rti-team-2", "rti-team-warehouse", …).
   teamClass: string;
@@ -71,6 +72,8 @@ type RawRun = {
   deliveryTeam?: string;
   deliveryPic?: string;
   contactNumber?: string;
+  // Lorry plate read from the run header on the sheet ("WJX 3918").
+  plateNumber?: string;
   isWarehouseTransfer?: boolean;
   order?: number;
   jobIds?: string[];
@@ -147,14 +150,15 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Not signed in." }, { status });
   }
 
-  const [{ state }, jobsResponse] = await Promise.all([
-    readOpsState(),
-    getJobs(new Request(new URL("/api/jobs", request.url))),
-  ]);
-  if (!jobsResponse.ok) {
+  // The runs (who is on which lorry, driver, plate) are read fresh from the ops state every time;
+  // customer details come from the inventory's job copy (see lib/warehouse-jobs).
+  let opsAndJobs: [Awaited<ReturnType<typeof readOpsState>>, InstallationJob[]];
+  try {
+    opsAndJobs = await Promise.all([readOpsState(), warehouseJobs(request.url)]);
+  } catch {
     return NextResponse.json({ error: "Could not load jobs." }, { status: 502 });
   }
-  const { jobs = [] } = (await jobsResponse.json()) as { jobs?: InstallationJob[] };
+  const [{ state }, jobs] = opsAndJobs;
   const jobById = new Map(jobs.map((job) => [job.id, job as unknown as Record<string, unknown>]));
   const updates = state.jobUpdates as Record<string, Record<string, unknown>>;
   const groupByJobId = new Map<string, RawGroup>();
@@ -281,6 +285,7 @@ export async function GET(request: Request) {
         deliveryPic: str(run.deliveryPic),
         contactNumber: str(run.contactNumber),
         deliveryTeam: str(run.deliveryTeam),
+        plateNumber: str(run.plateNumber),
         isWarehouse: isWarehouseRun,
         teamClass: isWarehouseRun
           ? "rti-team-warehouse"

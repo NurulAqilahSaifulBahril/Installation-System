@@ -312,7 +312,9 @@ select
   c.city,
   c.state,
   c.postcode,
-  a.name as agent_name,
+  -- The agent's name: matched directly, or through the user the invoice links to (see the
+  -- joins below).
+  coalesce(a.name, user_agent.name, agent_user.name) as agent_name,
   p.package_name,
   inverter_product.name as inverter_name,
   s.seda_status,
@@ -337,6 +339,12 @@ left join customer c on c.customer_id = i.linked_customer
 left join agent a
   on a.linked_user_login = i.linked_agent
   or a.bubble_id = i.linked_agent
+-- A third group (338 live invoices when this was added) store a user's bubble_id that no
+-- agent's linked_user_login matches; that user's linked_agent_profile names the agent (or,
+-- failing that, the user's own name is used). "user".bubble_id is unique, so no row doubles,
+-- and it never changes an agent name the join above already found.
+left join "user" agent_user on agent_user.bubble_id = i.linked_agent
+left join agent user_agent on user_agent.bubble_id = agent_user.linked_agent_profile
 left join package p on p.bubble_id = i.linked_package
 left join product inverter_product on inverter_product.bubble_id = p.inverter_1
 left join seda_registration s on s.bubble_id = i.linked_seda_registration

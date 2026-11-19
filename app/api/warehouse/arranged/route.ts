@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { GET as getJobs } from "@/app/api/jobs/route";
+import { warehouseJobs } from "@/lib/warehouse-jobs";
 import { AuthError } from "@/lib/auth";
 import { requireUser } from "@/lib/warehouse-auth";
 import { malaysiaToday } from "@/lib/dates";
@@ -91,14 +91,13 @@ export async function GET(request: Request) {
   }
 
   // The jobs list is called directly (not over HTTP), so a warehouse session needs no Scheduling cookie.
-  const [{ state }, jobsResponse] = await Promise.all([
-    readOpsState(),
-    getJobs(new Request(new URL("/api/jobs", request.url))),
-  ]);
-  if (!jobsResponse.ok) {
+  let opsAndJobs: [Awaited<ReturnType<typeof readOpsState>>, InstallationJob[]];
+  try {
+    opsAndJobs = await Promise.all([readOpsState(), warehouseJobs(request.url)]);
+  } catch {
     return NextResponse.json({ error: "Could not load installation jobs." }, { status: 502 });
   }
-  const { jobs = [] } = (await jobsResponse.json()) as { jobs?: InstallationJob[] };
+  const [{ state }, jobs] = opsAndJobs;
   const jobById = new Map(jobs.map((job) => [job.id, job]));
   const updates = state.jobUpdates as Record<string, Record<string, unknown>>;
   const teams = state.teamResources as RawTeam[];

@@ -7,6 +7,7 @@ import PoVerificationPage from "./PoVerification";
 import { DownloadReportButton, reportFileName } from "./ReportDownload";
 import { DeliveryOrderDialog } from "./DeliveryOrder";
 import { LorryTimeline, type TimelineRun } from "./LorryTimeline";
+import { watchDeliveryRuns } from "./delivery-feed";
 
 // The Loading page's lorry timeline (LorryTimeline) is hidden for now.
 const SHOW_LORRY_TIMELINE = false;
@@ -708,15 +709,34 @@ const TEST_VERIFIED_DATE = "2026-10-23";
 const SAMPLE_BOX_SIZE = 36;
 // Test-day jobs left in Preparing (to be verified for real): CHEW YOON MOI.
 const TEST_PREPARING_JOBS = new Set(["INV-1010698"]);
+// TEST ONLY: every Stock Out job on a delivery run of this slot day counts as Verified and loaded
+// (shown on Loading › Verified), so that view can be tried. Nothing is saved: the "loaded" marks
+// live in the page only. Remove once real loading is in use.
+const TEST_LOADED_SLOT_DATE = "2026-10-20";
+// The jobs found on those runs (filled in once the Delivery Schedule has loaded).
+const TEST_LOADED_REFS = new Set<string>();
+// TEST ONLY: jobs that count as Verified (not loaded) and sit on Loading › Preparing on the given
+// slot day (their real run is moved to that day in the page only), so Preparing can be tried.
+const TEST_LOADING_PREPARING: Record<string, string> = {
+  "INV-1011113": "2026-10-20", // OOI IN HAN (KHAIRUL's 8am run): left out of the 20 Oct loaded jobs
+};
+// TEST ONLY: a test job (23 Oct installs, or a 20 Oct slot job) that gets sample scans and names.
+function isTestVerifiedJob(tx: StockTransaction): boolean {
+  return (
+    tx.id.startsWith("live-") &&
+    tx.status === "Verified" &&
+    (tx.time === TEST_VERIFIED_DATE || TEST_LOADED_REFS.has(tx.reference) || tx.reference in TEST_LOADING_PREPARING)
+  );
+}
 
-// TEST ONLY: sample warehouse scans for the TEST_VERIFIED_DATE jobs: panels by box (one box
+// TEST ONLY: sample warehouse scans for the test jobs (isTestVerifiedJob): panels by box (one box
 // barcode per box of up to 36; the last box holds the remainder) with 2 loose panels on top, and
 // one serial per inverter / battery. Used only while nothing has been saved for the job.
 function sampleWarehouseScans(
   tx: StockTransaction,
   serialLines: StockOutLine[],
 ): { boxes: { code: string; qty: number }[]; scans: { serial: string; lineIdx: number }[] } | null {
-  if (!tx.id.startsWith("live-") || tx.time !== TEST_VERIFIED_DATE || tx.status !== "Verified") return null;
+  if (!isTestVerifiedJob(tx)) return null;
   const job = tx.reference;
   const boxes: { code: string; qty: number }[] = [];
   const scans: { serial: string; lineIdx: number }[] = [];
@@ -740,10 +760,10 @@ function sampleWarehouseScans(
   return { boxes, scans };
 }
 
-// TEST ONLY: "Prepared by" / "Packed by" for the TEST_VERIFIED_DATE jobs, which have no saved
+// TEST ONLY: "Prepared by" / "Packed by" for the test jobs (isTestVerifiedJob), which have no saved
 // records (the names on the company DO: Material Planner and Warehouse Manager).
 function testPreparedBy(tx: StockTransaction): Record<string, string> {
-  if (!tx.id.startsWith("live-") || tx.time !== TEST_VERIFIED_DATE || tx.status !== "Verified") return {};
+  if (!isTestVerifiedJob(tx)) return {};
   const prepared = "Jia Keat";
   const packed = "Wei Hao";
   return {
@@ -759,10 +779,8 @@ function testPreparedBy(tx: StockTransaction): Record<string, string> {
   };
 }
 
-// TEST ONLY: a dummy lorry (plate and a drawn photo) for trying the Stock Out lorry fields.
+// TEST ONLY: a dummy lorry plate for CHEOK GEOK LIAN's job (not saved).
 const DUMMY_LORRY_PLATE = "JMG 8811";
-// A photo-style picture of a loaded lorry (pallets of panel cartons, inverters, rails), in /public.
-const DUMMY_LORRY_PHOTO = "/dummy-lorry-load.jpg";
 
 function liveStockOutRows(jobs: ScheduledJobPayload[]): StockTransaction[] {
   const rows: StockTransaction[] = [];
@@ -866,7 +884,10 @@ function liveStockOutRows(jobs: ScheduledJobPayload[]): StockTransaction[] {
       reference: job.jobId,
       party: job.customerName,
       // TEST ONLY: jobs on TEST_VERIFIED_DATE count as Verified.
-      status: job.installationDate === TEST_VERIFIED_DATE && !TEST_PREPARING_JOBS.has(job.jobId) ? "Verified" : "To Verify",
+      status:
+        (job.installationDate === TEST_VERIFIED_DATE && !TEST_PREPARING_JOBS.has(job.jobId)) || job.jobId in TEST_LOADING_PREPARING
+          ? "Verified"
+          : "To Verify",
       schedule,
       lines,
     });
@@ -1787,6 +1808,8 @@ function Dashboard({
   const [inverterOpen, setInverterOpen] = useState(false);
   const [inverterType, setInverterType] = useState<InverterTypeId | null>(null);
   const [inspectTxId, setInspectTxId] = useState<string | null>(null);
+  // Loading page: the lorry (driver group) whose page is open.
+  const [lorryView, setLorryView] = useState<{ driver: string; plate: string; txIds: string[]; stage?: "preparing" | "verified"; day?: string } | null>(null);
   // Opening a customer's verification page starts at its header, not at the list's scroll position.
   useEffect(() => {
     if (inspectTxId) window.scrollTo({ top: 0, left: 0, behavior: "auto" });
@@ -1794,6 +1817,33 @@ function Dashboard({
   const [transactions, setTransactions] = useState<StockTransaction[]>(STOCK_TRANSACTIONS);
   // Saved verification records: which job and material, and who completed it.
   const [verifications, setVerifications] = useState<VerificationRecord[]>([]);
+  // TEST ONLY: TEST_LOADED_SLOT_DATE jobs count as Verified and loaded (in the page, not saved).
+  const [testRuns, setTestRuns] = useState<TimelineRun[]>([]);
+  useEffect(() => watchDeliveryRuns<TimelineRun>(setTestRuns), []);
+  useEffect(() => {
+    const lookup = buildEtaLookup(testRuns);
+    const refs = new Set(
+      transactions
+        .filter(
+          (t) =>
+            t.type === "out" &&
+            lookupEta(lookup, t)?.slotDate === TEST_LOADED_SLOT_DATE &&
+            !(t.reference in TEST_LOADING_PREPARING),
+        )
+        .map((t) => t.reference),
+    );
+    if (refs.size === 0) return;
+    refs.forEach((ref) => TEST_LOADED_REFS.add(ref));
+    setTransactions((prev) =>
+      prev.some((t) => refs.has(t.reference) && t.status !== "Verified")
+        ? prev.map((t) => (refs.has(t.reference) ? { ...t, status: "Verified" as const } : t))
+        : prev,
+    );
+    setVerifications((prev) => {
+      const missing = Array.from(refs).filter((ref) => !prev.some((r) => r.jobRef === ref && r.material === "loaded"));
+      return missing.length > 0 ? [...prev, ...missing.map((jobRef) => ({ jobRef, material: "loaded", by: "Wei Hao" }))] : prev;
+    });
+  }, [testRuns, transactions, verifications]);
   // "+ New Stock Out" form (last-minute item taken by the PIC) is open.
   const [newStockOutOpen, setNewStockOutOpen] = useState(false);
 
@@ -1906,6 +1956,31 @@ function Dashboard({
         />
       );
     }
+  }
+
+  // Loading page › a driver row: one page for that lorry's customers.
+  if (lorryView) {
+    return (
+      <LorryLoadingPage
+        driver={lorryView.driver}
+        plate={lorryView.plate}
+        stage={lorryView.stage ?? "preparing"}
+        day={lorryView.day ?? ""}
+        txs={lorryView.txIds
+          .map((id) => transactions.find((t) => t.id === id))
+          .filter((t): t is StockTransaction => Boolean(t))}
+        loadedRefs={new Set(verifications.filter((r) => r.material === "loaded").map((r) => r.jobRef))}
+        loadedBy={Object.fromEntries(
+          verifications.filter((r) => r.material === "loaded" && r.by).map((r) => [r.jobRef, r.by]),
+        )}
+        onSubmitAll={async (lorryTxs) => {
+          // Every customer on the lorry is marked loaded (as the job page's Submit did).
+          const results = await Promise.all(lorryTxs.map((tx) => recordVerification(tx.reference, "loaded")));
+          return results.every(Boolean);
+        }}
+        onBack={() => setLorryView(null)}
+      />
+    );
   }
 
   // "+ New Stock Out": pressing Verified saves it and marks it Verified straight away, with the same
@@ -2234,6 +2309,7 @@ function Dashboard({
           verifications={verifications}
           loadingOnly
           loadingMode="ready"
+          onOpenLorry={setLorryView}
         />
       )}
       {/* Site Check page: the loaded jobs (scan each panel on site), as the Loading page's Site
@@ -2397,9 +2473,9 @@ function buildEtaLookup(runs: TimelineRun[]): EtaLookup {
         installTime: c.installTime ?? "",
         slotDate: run.deliveryDate,
         slotTime: run.departureTime,
-        // The run's driver and lorry on the Delivery Schedule.
+        // The run's driver and lorry plate on the Delivery Schedule.
         driver: run.deliveryPic,
-        lorry: run.deliveryTeam ?? "",
+        lorry: run.plateNumber ?? "",
       };
       const key = c.invoice.replace(/\D/g, "");
       if (key) byInvoice[key] = info;
@@ -2411,10 +2487,17 @@ function buildEtaLookup(runs: TimelineRun[]): EtaLookup {
 }
 function lookupEta(lookup: EtaLookup, tx: StockTransaction): EtaInfo | undefined {
   if (tx.type !== "out") return undefined;
-  return (
+  const info: EtaInfo | undefined =
     lookup.byInvoice[(tx.extra?.linkedJob ?? tx.reference).replace(/\D/g, "")] ??
-    lookup.byName[customerNameKey(tx.schedule?.customerName ?? tx.party)]
-  );
+    lookup.byName[customerNameKey(tx.schedule?.customerName ?? tx.party)];
+  // TEST ONLY: a TEST_LOADING_PREPARING job's slot is moved to its test day.
+  const testDay = TEST_LOADING_PREPARING[tx.reference];
+  if (testDay) {
+    return info
+      ? { ...info, slotDate: testDay }
+      : { date: "", time: "", installDate: "", installTime: "", slotDate: testDay, slotTime: "", driver: "", lorry: "" };
+  }
+  return info;
 }
 // "14:30" -> "2.30pm", "09:00" -> "9am" (the ETA column's style).
 function etaClock(time: string): string {
@@ -4424,7 +4507,6 @@ function StockOutVerificationPage({
   const [vehiclePlate, setVehiclePlate] = useState(dummyLorry ? DUMMY_LORRY_PLATE : "");
   // Lorry driver for this job; saved with the plate (shown on the Loading page).
   const [driverName, setDriverName] = useState("");
-  const [lorryPhoto, setLorryPhoto] = useState<string | null>(dummyLorry ? DUMMY_LORRY_PHOTO : null);
   const [checklist, setChecklist] = useState({
     condition: false,
     serialMatch: false,
@@ -4552,16 +4634,7 @@ function StockOutVerificationPage({
   const [deliveryRuns, setDeliveryRuns] = useState<TimelineRun[]>([]);
   useEffect(() => {
     if (!loadingJob) return;
-    let cancelled = false;
-    fetch("/api/warehouse/delivery", { credentials: "same-origin", cache: "no-store" })
-      .then(async (res) => (res.ok ? ((await res.json()) as { runs?: TimelineRun[] }) : null))
-      .then((data) => {
-        if (!cancelled && data?.runs) setDeliveryRuns(data.runs);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+    return watchDeliveryRuns<TimelineRun>(setDeliveryRuns);
   }, [loadingJob]);
   const jobEta = useMemo(() => lookupEta(buildEtaLookup(deliveryRuns), tx), [deliveryRuns, tx]);
   const tabSlots = slots.filter((slot) => slot.line.category === tab);
@@ -4857,7 +4930,26 @@ function StockOutVerificationPage({
           >
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
-                <h2 className={styles.inspectCardTitle} style={{ margin: 0, color: "#000000", fontWeight: 700 }}>
+                <h2
+                  className={styles.inspectCardTitle}
+                  style={{
+                    margin: 0,
+                    color: "#000000",
+                    fontWeight: 700,
+                    // Preparing and Verified job pages: the title in a grey box, full width (to the
+                    // end of the item cards row, the Special Material card)
+                    ...(!forReport && !loaded
+                      ? {
+                          border: "1px solid var(--line)",
+                          borderRadius: "10px",
+                          background: "#e5e7eb",
+                          padding: "8px 14px",
+                          flex: "1 1 100%",
+                          boxSizing: "border-box" as const,
+                        }
+                      : {}),
+                  }}
+                >
                   <span>📅</span> Customer Details &middot; #{schedule?.jobId ?? tx.reference}
                 </h2>
               </div>
@@ -5001,9 +5093,22 @@ function StockOutVerificationPage({
       </div>
 
       {/* Titled by the Stock Out tab the job is in: Preparing -> Loading -> Site Check */}
-      <h1 id="stockout-verify-title" className={styles.inspectHeroTitle} style={{ margin: "0 0 12px" }}>
-        {tx.status !== "Verified" ? "Stock Out - Preparing" : loaded ? "Stock Out - Site Check" : "Stock Out - Loading"}
-      </h1>
+      {!loaded ? (
+        // Preparing and Verified (not yet loaded): "Stock Out", with "Item List - Preparing" or
+        // "Item List - Verified" on the line below, as the Stock Out tabs are named
+        <div style={{ margin: "0 0 12px" }}>
+          <h1 id="stockout-verify-title" className={styles.inspectHeroTitle} style={{ margin: 0 }}>
+            Stock Out
+          </h1>
+          <p style={{ margin: "12px 0 0", fontSize: "16px", fontWeight: 700, color: "#000" }}>
+            {tx.status !== "Verified" ? "Item List - Preparing" : "Item List - Verified"}
+          </p>
+        </div>
+      ) : (
+        <h1 id="stockout-verify-title" className={styles.inspectHeroTitle} style={{ margin: "0 0 12px" }}>
+          Stock Out - Site Check
+        </h1>
+      )}
 
       {/* Last-minute Stock Out: what it is for, who took it and why */}
       {tx.extra && (
@@ -5755,70 +5860,8 @@ function StockOutVerificationPage({
         )}
       </div>
 
-      {/* Transport & Driver Details (lorry plate number and photo): not on Preparing; shown
-          once the job is verified (Loading / Site Check). */}
-      {tx.status === "Verified" && (
-        <div className={styles.inspectCard} style={{ marginTop: "16px", marginBottom: "16px" }}>
-          {/* Driver and lorry plate side by side, on a phone too */}
-          <div className={`${styles.bankingAmountGrid} ${styles.lorryFieldsRow}`} style={{ marginBottom: "0" }}>
-            <div className={styles.bankingFieldGroup}>
-              <label className={styles.bankingFieldLabel}>Driver Name:</label>
-              <input
-                type="text"
-                className={`${styles.scannerInput} ${styles.transferField}`}
-                style={{ height: "52px", fontSize: "16px", width: "100%", minWidth: 0 }}
-                value={driverName}
-                onChange={(e) => setDriverName(e.target.value)}
-                placeholder="e.g. Ahmad"
-              />
-            </div>
-            <div className={styles.bankingFieldGroup}>
-              <label className={styles.bankingFieldLabel}>Lorry / Transport Plate Number:</label>
-              <input
-                type="text"
-                className={`${styles.scannerInput} ${styles.transferField}`}
-                style={{ height: "52px", fontSize: "16px", width: "100%", minWidth: 0 }}
-                value={vehiclePlate}
-                onChange={(e) => setVehiclePlate(e.target.value)}
-                placeholder="e.g. JTP 4910"
-              />
-            </div>
-          </div>
-
-          <div className={styles.bankingFieldGroup} style={{ marginTop: "16px" }}>
-            <label className={styles.bankingFieldLabel}>Lorry Photo:</label>
-            <label className={styles.lorryPhotoBox}>
-              <input
-                type="file"
-                accept="image/*"
-                capture="environment"
-                className={styles.lorryPhotoInput}
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  e.target.value = "";
-                  if (!file) return;
-                  const reader = new FileReader();
-                  reader.onload = () => setLorryPhoto(typeof reader.result === "string" ? reader.result : null);
-                  reader.readAsDataURL(file);
-                }}
-              />
-              {lorryPhoto ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={lorryPhoto} alt="Lorry" className={styles.lorryPhotoImg} />
-              ) : (
-                <span className={styles.lorryPhotoEmpty}>📷 Tap to take a picture of the lorry</span>
-              )}
-            </label>
-            {lorryPhoto && (
-              <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
-                <button type="button" className={styles.btnActionGhost} onClick={() => setLorryPhoto(null)}>
-                  Remove photo
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {/* No Transport & Driver Details here: the driver and plate come from the Delivery
+          Schedule (or the lorry), and the lorry photos are taken on the Loading page. */}
 
       {/* 5. Footer Action Bar */}
       <div className={styles.inspectFooterBar}>
@@ -5858,17 +5901,9 @@ function StockOutVerificationPage({
             </button>
             )
           ) : !loaded ? (
-            <button
-              className={`${styles.btnActionPrimary} ${styles.btnVerifiedGlow}`}
-              type="button"
-              onClick={() => {
-                onRecord("loaded");
-                onBack();
-              }}
-              title="Loaded onto the lorry: moves the job to Site Check"
-            >
-              ✓ Submit
-            </button>
+            // Verified (not yet loaded): no Submit here. The job is on Loading › Preparing, and
+            // is submitted there with its lorry (after the lorry photos).
+            null
           ) : siteVerified ? (
             // Loading Verification, done: greyed.
             <button className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`} type="button" disabled title="Arrived safely">
@@ -7664,6 +7699,7 @@ function HomeTab({
   onNewStockOut,
   loadingOnly = false,
   loadingMode,
+  onOpenLorry,
   onOpenStock,
   canUpload,
   verifications,
@@ -7700,6 +7736,8 @@ function HomeTab({
   // With loadingOnly: lock the page to one view, without the Loading / Site Check buttons.
   // "ready" = the Loading page (jobs to load), "loaded" = the Site Check page.
   loadingMode?: "ready" | "loaded";
+  // Loading page: a driver row opens that lorry's page; its customer rows do not open on their own.
+  onOpenLorry?: (lorry: { driver: string; plate: string; txIds: string[]; stage?: "preparing" | "verified"; day?: string }) => void;
   onOpenStock: (item: StockItemTab, wh: WhFilter) => void;
   canUpload: boolean;
   verifications: VerificationRecord[];
@@ -7722,16 +7760,8 @@ function HomeTab({
   useEffect(() => {
     // Loading page (ETA, install time) and Stock Out list (install time).
     if (!loadingOnly && txType !== "out") return;
-    let cancelled = false;
-    fetch("/api/warehouse/delivery", { credentials: "same-origin", cache: "no-store" })
-      .then(async (res) => (res.ok ? ((await res.json()) as { runs?: typeof deliveryRuns }) : null))
-      .then((data) => {
-        if (!cancelled && data?.runs) setDeliveryRuns(data.runs);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+    // Kept current with the Scheduling system while the page is open.
+    return watchDeliveryRuns<TimelineRun>(setDeliveryRuns);
   }, [loadingOnly, txType]);
   // Delivery Schedule details (slot, ETA, install time), matched by invoice or customer name.
   const etaLookup = useMemo(() => buildEtaLookup(deliveryRuns), [deliveryRuns]);
@@ -7828,7 +7858,9 @@ function HomeTab({
     ? 0
     : baseTx.filter((t) => !isVerifiedTx(t.status)).length + poRows.filter((file) => !file.verifiedAt).length;
   const loadingCount = baseTx.filter(isLoadedTx).length;
-  const verifiedCount = baseTx.length + poRows.length - toVerifyCount - loadingCount;
+  // Stock Out's Verified tab holds every verified job, loaded ones included (Loading and Site
+  // Check have their own pages); elsewhere loaded jobs are left to the Loading page.
+  const verifiedCount = baseTx.length + poRows.length - toVerifyCount - (outTabs ? 0 : loadingCount);
   // Loading page:
   // - "Loading" tab: Stock Out jobs whose 🚚 Loading (moved to customer's house) was pressed on
   //   Stock Out › Verified, still waiting for every panel to be scanned on site. A job that is
@@ -7842,13 +7874,23 @@ function HomeTab({
   const arrivedInvoices = new Set(Array.from(arrivedJobs).map((ref) => ref.replace(/\D/g, "")).filter(Boolean));
   const [loadingViewPicked, setLoadingView] = useState<"ready" | "loaded">("ready");
   const loadingView = loadingMode ?? loadingViewPicked;
+  // Loading page and Site Check page: Preparing / Verified, each page's own progress.
+  // - Loading: Preparing = verified, not yet loaded; Verified = loaded (Submit pressed).
+  // - Site Check: Preparing = loaded, panels not yet checked on site; Verified = arrived safely
+  //   (Stock Transfers have no site scan, so they count as Verified).
+  const [pageStage, setPageStage] = useState<"preparing" | "verified">("preparing");
+  const loadPreparing = (t: StockTransaction) => t.type === "out" && isVerifiedTx(t.status) && !isLoadedTx(t);
+  const loadVerified = (t: StockTransaction) => t.type === "out" && isLoadedTx(t);
+  const sitePreparing = (t: StockTransaction) => isLoadedTx(t) && t.type === "out" && !arrivedJobs.has(t.reference);
+  const siteVerified = (t: StockTransaction) => isLoadedTx(t) && (t.type !== "out" || arrivedJobs.has(t.reference));
+  const stagePreparing = loadingView === "ready" ? loadPreparing : sitePreparing;
+  const stageVerified = loadingView === "ready" ? loadVerified : siteVerified;
+  const stagePreparingCount = baseTx.filter(stagePreparing).length;
+  const stageVerifiedCount = baseTx.filter(stageVerified).length;
   const isReadyToLoad = (t: StockTransaction) => t.type === "out" && isVerifiedTx(t.status) && !isLoadedTx(t);
   const isSiteCheckTx = (t: StockTransaction) => isLoadedTx(t);
   const readyCount = baseTx.filter(isReadyToLoad).length;
   const siteCheckCount = baseTx.filter(isSiteCheckTx).length;
-  // Stock Out list's Loading tab: the same as the Loading page's.
-  const isOutLoading = isReadyToLoad;
-  const outLoadingCount = baseTx.filter(isOutLoading).length;
 
   // Search: when the customer (or reference) is not on the day shown, go to the day it is on
   // (the one nearest today) and to the tab that holds it.
@@ -7901,9 +7943,10 @@ function HomeTab({
       // Open the tab that holds the first match on that day.
       const tx = hits.find((t) => rowDay(t) === day);
       if (loadingOnly) {
-        if (tx) setLoadingView(isReadyToLoad(tx) ? "ready" : "loaded");
-      } else if (tx && outTabs && isVerifiedTx(tx.status)) {
-        setTxStatusTab(isSiteCheckTx(tx) ? "siteCheck" : "loading");
+        if (tx) {
+          setLoadingView(isReadyToLoad(tx) ? "ready" : "loaded");
+          if (loadingMode) setPageStage(stageVerified(tx) ? "verified" : "preparing");
+        }
       } else if (tx) {
         setTxStatusTab(isVerifiedTx(tx.status) || tx.type === "transfer" ? "verified" : "toVerify");
       } else {
@@ -7919,27 +7962,24 @@ function HomeTab({
     ? loadingView === "ready"
       ? "verified"
       : "loading"
-    : (txStatusTab === "loading" || txStatusTab === "siteCheck") && !outTabs
-      ? "verified" // other lists: loaded jobs are shown on the Loading page only
-      : outTabs && txStatusTab === "verified"
-      ? "loading" // Stock Out has no Verified tab
+    : txStatusTab === "loading" || txStatusTab === "siteCheck"
+      ? "verified" // lists here have no Loading / Site Check tab: those are their own pages
       : isTransferList && txStatusTab === "toVerify"
         ? "verified"
         : txStatusTab;
-  // Is the row on the open tab (Preparing / Loading / Site Check, To Verify / Verified ...)?
+  // Is the row on the open tab (Loading page: Ready / Loaded; lists: To Verify or Preparing /
+  // Verified)?
   const inStatusTab = (t: StockTransaction) =>
-    loadingOnly && loadingView === "ready"
+    loadingOnly && loadingMode
+      ? pageStage === "verified"
+        ? stageVerified(t)
+        : stagePreparing(t)
+      : loadingOnly && loadingView === "ready"
       ? isReadyToLoad(t)
-      : statusTab === "siteCheck"
-      ? isSiteCheckTx(t)
       : statusTab === "loading"
-      ? loadingOnly
-        ? isSiteCheckTx(t)
-        : outTabs
-          ? isOutLoading(t)
-          : isLoadedTx(t)
+      ? isSiteCheckTx(t)
       : statusTab === "verified"
-        ? (isTransferList || isVerifiedTx(t.status)) && !isLoadedTx(t)
+        ? (isTransferList || isVerifiedTx(t.status)) && (outTabs || !isLoadedTx(t))
         : !isVerifiedTx(t.status);
   const filteredTx = baseTx.filter(inStatusTab);
   // Loading page: each Stock Out job's driver and lorry plate, as typed on its job page.
@@ -7966,8 +8006,8 @@ function HomeTab({
       cancelled = true;
     };
   }, [loadingJobRefs]);
-  // Driver and lorry of a Stock Out job: typed on the job page, otherwise the run's driver and
-  // lorry on the Delivery Schedule ("Lorry 2", as the sheet has no plates).
+  // Driver and plate of a Stock Out job: typed on the job page, otherwise the run's driver and
+  // plate on the Delivery Schedule (read from the sheet's lorry header, e.g. "WJX 3918").
   const driverOf = (tx: StockTransaction) => lorryByJob[tx.reference]?.driver || etaOf(tx)?.driver || "";
   const lorryOf = (tx: StockTransaction) => lorryByJob[tx.reference]?.plate || etaOf(tx)?.lorry || "";
   const driverGroupKey = (tx: StockTransaction) =>
@@ -7993,8 +8033,28 @@ function HomeTab({
     });
     return [...order.flatMap((key) => groups.get(key) ?? []), ...transfers];
   })();
+  // Loading page: one row per lorry (driver group), no customer rows. Its slot is the earliest of
+  // its customers' slots on the Delivery Schedule.
+  const lorryRows = (() => {
+    if (!onOpenLorry) return [];
+    const rows: { key: string; driver: string; plate: string; txs: StockTransaction[] }[] = [];
+    shownTx.forEach((tx) => {
+      if (tx.type !== "out") return;
+      const key = driverGroupKey(tx);
+      const row = rows.find((r) => r.key === key);
+      if (row) row.txs.push(tx);
+      else rows.push({ key, driver: driverOf(tx), plate: lorryOf(tx), txs: [tx] });
+    });
+    return rows.map((row) => {
+      const slots = row.txs
+        .map((tx) => etaOf(tx))
+        .filter((eta): eta is NonNullable<typeof eta> => Boolean(eta?.slotDate))
+        .sort((a, b) => `${a.slotDate} ${a.slotTime}`.localeCompare(`${b.slotDate} ${b.slotTime}`));
+      return { ...row, slot: slots[0] };
+    });
+  })();
   // The Loading page and Stock Out's Loading tab leave out the Model / Serial and Qty columns.
-  const hideItemCols = loadingOnly || (outTabs && statusTab === "loading");
+  const hideItemCols = loadingOnly;
   // The same table rows with any item (the item filter left off): the Stock Out item cards count
   // these, so each card shows what the table holds for that item, and tapping one card does not
   // empty the others.
@@ -8286,9 +8346,9 @@ function HomeTab({
                 + New Stock Out
               </button>
             )}
-            {/* Stock Out's Preparing and Loading tabs call it "Item List" */}
+            {/* Stock Out (Preparing and Verified) calls it "Item List" */}
             <button type="button" className={styles.btnActionGhost} onClick={() => setPrepReportOpen(true)}>
-              {outTabs && (statusTab === "toVerify" || statusTab === "loading") ? "Item List" : "Report"}
+              {outTabs ? "Item List" : "Report"}
             </button>
           </div>
         )}
@@ -8483,8 +8543,29 @@ function HomeTab({
             {/* Status tabs + search on one row */}
             <div className={styles.txTabsSearchRow}>
             {loadingOnly && loadingMode ? (
-              // Loading page / Site Check page: one view each, no buttons to switch
-              <span />
+              // Loading page / Site Check page: Preparing and Verified (that page's own progress)
+              <div className={styles.txFilterPills} role="tablist" aria-label={loadingMode === "ready" ? "Loading" : "Site Check"}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={pageStage === "preparing"}
+                  className={`${styles.txPill} ${pageStage === "preparing" ? styles.txPillActive : ""}`}
+                  onClick={() => setPageStage("preparing")}
+                  title={loadingMode === "ready" ? "Verified jobs not yet loaded onto the lorry" : "Loaded jobs whose panels are not yet checked on site"}
+                >
+                  Preparing ({stagePreparingCount})
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={pageStage === "verified"}
+                  className={`${styles.txPill} ${pageStage === "verified" ? styles.txPillActive : ""}`}
+                  onClick={() => setPageStage("verified")}
+                  title={loadingMode === "ready" ? "Jobs loaded onto the lorry (Submit pressed)" : "Jobs checked on site: arrived safely"}
+                >
+                  Verified ({stageVerifiedCount})
+                </button>
+              </div>
             ) : loadingOnly ? (
             <div className={styles.txFilterPills} role="tablist" aria-label="Loading">
               <button
@@ -8521,8 +8602,8 @@ function HomeTab({
                   {outTabs ? "Preparing" : "To Verify"} ({toVerifyCount})
                 </button>
               )}
-              {/* Stock Out has no Verified tab: Verified sends a job to Loading */}
-              {!outTabs && (
+              {/* Stock Out: Preparing and Verified (Loading and Site Check are their own pages) */}
+              {(
                 <button
                   type="button"
                   role="tab"
@@ -8532,30 +8613,6 @@ function HomeTab({
                 >
                   Verified ({verifiedCount})
                 </button>
-              )}
-              {outTabs && (
-                <>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={statusTab === "loading"}
-                    className={`${styles.txPill} ${statusTab === "loading" ? styles.txPillActive : ""}`}
-                    onClick={() => setTxStatusTab("loading")}
-                    title="Verified Stock Out jobs to load onto the lorry (Submit moves them to Site Check)"
-                  >
-                    Loading ({outLoadingCount})
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={statusTab === "siteCheck"}
-                    className={`${styles.txPill} ${statusTab === "siteCheck" ? styles.txPillActive : ""}`}
-                    onClick={() => setTxStatusTab("siteCheck")}
-                    title="Loaded Stock Out jobs: scan each panel on site, then Submit"
-                  >
-                    Site Check ({siteCheckCount})
-                  </button>
-                </>
               )}
             </div>
             )}
@@ -8615,13 +8672,91 @@ function HomeTab({
             )}
 
             {/* Transaction Ledger Table */}
-            {filteredTx.length === 0 && shownPoRows.length === 0 ? (
+            {onOpenLorry ? (
+              // Loading page: one row per lorry; a row opens that lorry's page (its customers)
+              lorryRows.length === 0 ? (
+                <p className={styles.note}>No lorry to show for this day.</p>
+              ) : (
+                <div className={styles.tableWrap} ref={txTableRef}>
+                  <table className={`${styles.detailTable} ${styles.txLedger} ${styles.txLedgerLoading} ${styles.lorryRowsTable}`}>
+                    <thead>
+                      <tr>
+                        <th scope="col">Slot</th>
+                        <th scope="col">Driver</th>
+                        <th scope="col">Plate No</th>
+                        <th scope="col">Customers</th>
+                        <th scope="col">Type</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lorryRows.map((row) => {
+                        const open = () =>
+                          onOpenLorry({ driver: row.driver, plate: row.plate, txIds: row.txs.map((t) => t.id), stage: pageStage, day: selectedDay });
+                        const slotTime = row.slot ? sheetClock(row.slot.slotTime) || row.slot.slotTime : "";
+                        return (
+                          <tr
+                            key={row.key}
+                            className={`${styles.loadingPicRow} ${styles.loadingPicRowClickable}`}
+                            tabIndex={0}
+                            role="button"
+                            title="Open this lorry's loading page"
+                            onClick={open}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                open();
+                              }
+                            }}
+                          >
+                            <td style={{ whiteSpace: "nowrap" }}>
+                              {row.slot ? (
+                                <>
+                                  {isoDateLabel(row.slot.slotDate)}
+                                  {slotTime && <div>{slotTime}</div>}
+                                </>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                            <td>
+                              <span className={styles.loadingPicValue}>{row.driver || "—"}</span>
+                            </td>
+                            <td style={{ whiteSpace: "nowrap" }}>
+                              <span className={styles.loadingPicValue}>{row.plate || "—"}</span>
+                            </td>
+                            <td>
+                              {row.txs.map((tx) => (
+                                <div key={tx.id}>{tx.schedule?.customerName ?? tx.party}</div>
+                              ))}
+                            </td>
+                            <td>
+                              {/* A lorry carries Stock Out jobs: the same ▼ mark as Stock Details */}
+                              <span
+                                role="img"
+                                aria-label="Stock Out"
+                                title="Stock Out"
+                                className={`${styles.txTypeText} ${styles.txTypeOut}`}
+                                style={{ fontSize: "13px", color: "var(--red)" }}
+                              >
+                                ▼
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            ) : filteredTx.length === 0 && shownPoRows.length === 0 ? (
               <p className={styles.note}>No stock transactions match your filter criteria.</p>
             ) : (
               <div className={styles.tableWrap} ref={txTableRef}>
                 <table className={`${styles.detailTable} ${styles.txLedger} ${txType === "out" && !hideItemCols ? styles.txLedgerOut : ""} ${hideItemCols ? styles.txLedgerLoading : ""} ${txType === "in" ? styles.txLedgerIn : ""}`}>
                   <thead>
                     <tr>
+                      {/* Loading page: Slot first, before the customer */}
+                      {hideItemCols && <th scope="col">Slot</th>}
                       <th scope="col">{loadingOnly ? "Customer / Transfer No." : txType === "in" ? "PO Number" : txType === "transfer" ? "Transfer No." : "Customer Name"}</th>
                       {txType === "in" && <th scope="col">Item Type</th>}
                       {/* No Model / Serial or Qty columns on the Loading page or Stock Out's Loading tab */}
@@ -8630,7 +8765,6 @@ function HomeTab({
                       {txType === "all" && <th scope="col">Type</th>}
                       {/* Loading page and Stock Out's Loading tab: Slot and ETA (from the Delivery
                           Schedule), then Installation Date */}
-                      {hideItemCols && <th scope="col">Slot</th>}
                       {hideItemCols && <th scope="col">ETA</th>}
                       <th scope="col" className={hideItemCols ? styles.instDateCol : undefined}>Installation Date</th>
                     </tr>
@@ -8719,7 +8853,7 @@ function HomeTab({
                     })}
                     {shownTx.map((tx, i) => (
                       <Fragment key={tx.id}>
-                      {/* Loading page: one band per driver, above that driver's customers */}
+                      {/* Site Check page: one band per driver, above that driver's customers */}
                       {loadingOnly && tx.type === "out" && (i === 0 || driverGroupKey(shownTx[i - 1]) !== driverGroupKey(tx)) && (
                         <tr className={styles.loadingPicRow}>
                           <td colSpan={2 + 2 + (txType === "in" ? 1 : 0) + (txType === "all" ? 1 : 0)}>
@@ -8730,7 +8864,7 @@ function HomeTab({
                                 <span className={styles.loadingPicValue}>{driverOf(tx) || "—"}</span>
                               </div>
                               <div className={styles.loadingPicField}>
-                                <span className={styles.loadingPicLabel}>Lorry</span>
+                                <span className={styles.loadingPicLabel}>Plate No</span>
                                 <span className={styles.loadingPicValue}>{lorryOf(tx) || "—"}</span>
                               </div>
                             </div>
@@ -8755,6 +8889,21 @@ function HomeTab({
                             : "Verified — tap to view"
                         }
                       >
+                        {hideItemCols && (
+                          <td style={{ whiteSpace: "nowrap", fontSize: "12px", color: "#000" }}>
+                            {(() => {
+                              const eta = etaOf(tx);
+                              if (!eta?.slotDate) return "—";
+                              const time = sheetClock(eta.slotTime) || eta.slotTime;
+                              return (
+                                <>
+                                  {isoDateLabel(eta.slotDate)}
+                                  {time && <div style={{ color: "#555" }}>{time}</div>}
+                                </>
+                              );
+                            })()}
+                          </td>
+                        )}
                         <td className={styles.txRefCell}>
                           {tx.type === "transfer" ? (
                             <>
@@ -8870,21 +9019,6 @@ function HomeTab({
                             )}
                           </span>
                         </td>
-                        )}
-                        {hideItemCols && (
-                          <td style={{ whiteSpace: "nowrap", fontSize: "12px", color: "#000" }}>
-                            {(() => {
-                              const eta = etaOf(tx);
-                              if (!eta?.slotDate) return "—";
-                              const time = sheetClock(eta.slotTime) || eta.slotTime;
-                              return (
-                                <>
-                                  {isoDateLabel(eta.slotDate)}
-                                  {time && <div style={{ color: "#555" }}>{time}</div>}
-                                </>
-                              );
-                            })()}
-                          </td>
                         )}
                         {hideItemCols && (
                           <td style={{ whiteSpace: "nowrap", fontSize: "12px", color: "#000" }}>
@@ -11077,6 +11211,8 @@ type DeliveryRunPayload = {
   warehouse: string;
   deliveryPic: string;
   contactNumber: string;
+  // Lorry plate from the run header on the sheet ("JMG 8811").
+  plateNumber?: string;
   isWarehouse: boolean;
   teamClass: string;
   order: number | null;
@@ -11084,8 +11220,10 @@ type DeliveryRunPayload = {
   customers: DeliveryCustomerPayload[];
 };
 
-// Same wording as the dashboard's delivery week bar.
+// Same wording as the dashboard's delivery week bar: the run's own date decides the Mon–Sat
+// week (the sheet's label, e.g. "1311 - 21/11/2026", is only used for a run with no date).
 function deliveryWeekLabel(weekLabel: string, deliveryDate: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) return `DELIVERY~ Week : ${arrWeekLabel(arrMonday(deliveryDate))}`;
   const raw = weekLabel.trim();
   if (raw) {
     if (/^delivery\s*~/i.test(raw)) return raw;
@@ -11228,6 +11366,11 @@ function DeliveryScheduleView({ runs, tabs }: { runs: DeliveryRunPayload[]; tabs
                           <div className="rti-crew-col">
                             <span className="rti-crew-label">Delivery PIC</span>
                             <input type="text" readOnly className="rti-crew-input rti-crew-input-borderless" value={run.deliveryPic} aria-label="Delivery PIC" />
+                          </div>
+                          {/* After Delivery PIC, as on the Scheduling system's Delivery Schedule */}
+                          <div className="rti-crew-col">
+                            <span className="rti-crew-label">Plate No.</span>
+                            <input type="text" readOnly className="rti-crew-input rti-crew-input-borderless" value={run.plateNumber ?? ""} aria-label="Plate No." />
                           </div>
                           <div className="rti-crew-col">
                             <span className="rti-crew-label">Contact Number</span>
@@ -11405,26 +11548,20 @@ function StockByCustomerTab() {
     };
   }, []);
 
-  // Delivery runs, read when the Delivery Schedule tab is first opened.
+  // Delivery runs: read when the Delivery Schedule tab is opened, then kept current with the
+  // Scheduling system while it stays open.
   const [delivery, setDelivery] = useState<DeliveryRunPayload[] | null>(null);
   const [deliveryLoaded, setDeliveryLoaded] = useState(false);
   const wantDelivery = view === "delivery";
   useEffect(() => {
-    if (!wantDelivery || deliveryLoaded) return;
-    let cancelled = false;
-    fetch("/api/warehouse/delivery", { credentials: "same-origin", cache: "no-store" })
-      .then(async (res) => (res.ok ? ((await res.json()) as { runs?: DeliveryRunPayload[] }) : null))
-      .then((data) => {
-        if (!cancelled && data?.runs && data.runs.length > 0) setDelivery(data.runs);
-      })
-      .catch((err) => console.error("Delivery schedule failed", err))
-      .finally(() => {
-        if (!cancelled) setDeliveryLoaded(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [wantDelivery, deliveryLoaded]);
+    if (!wantDelivery) return;
+    return watchDeliveryRuns<DeliveryRunPayload>(
+      (runs) => {
+        if (runs.length > 0) setDelivery(runs);
+      },
+      () => setDeliveryLoaded(true),
+    );
+  }, [wantDelivery]);
 
   const tabs = <ProjectTeamTabs view={view} onView={setView} />;
 
@@ -11447,6 +11584,383 @@ function StockByCustomerTab() {
             ? "No delivery runs to show. Sign in to the dashboard (same browser) to see them."
             : "Loading…"}
         </p>
+      )}
+    </section>
+  );
+}
+
+// Loading page › a lorry row: that lorry's details, its item totals and a table of its customers
+// with what to load (from the invoice). View only; Back returns to the Loading page.
+function LorryLoadingPage({
+  driver,
+  plate,
+  stage,
+  day,
+  txs,
+  loadedRefs,
+  loadedBy,
+  onSubmitAll,
+  onBack,
+}: {
+  driver: string;
+  plate: string;
+  // The Loading page tab it was opened from (for the subtitle).
+  stage: "preparing" | "verified";
+  // The Loading page's day (the lorry's slot day): with driver and plate, it names the lorry.
+  day: string;
+  txs: StockTransaction[];
+  loadedRefs: Set<string>;
+  // Who pressed Submit for each loaded job (from the saved "loaded" records).
+  loadedBy: Record<string, string>;
+  // Marks every customer on the lorry loaded; false if any save failed.
+  onSubmitAll: (txs: StockTransaction[]) => Promise<boolean>;
+  onBack: () => void;
+}) {
+  // Slot and ETA from the Delivery Schedule (matched by invoice, then customer name).
+  const [deliveryRuns, setDeliveryRuns] = useState<TimelineRun[]>([]);
+  useEffect(() => watchDeliveryRuns<TimelineRun>(setDeliveryRuns), []);
+  const etaLookup = useMemo(() => buildEtaLookup(deliveryRuns), [deliveryRuns]);
+  // Item cards: what this lorry carries, by item, as on Stock Out. Panel, inverter and battery
+  // count units; mounting and electrical have no invoice quantity, so they count customers (sets).
+  // Every install needs electrical items. Tap a card to show only the customers with that item
+  // (and only that item in Items to Load); tap again for all.
+  const [itemPick, setItemPick] = useState<string>("all");
+  const itemCards = [
+    { id: "panel", label: "Panel", short: "Panel", bulk: false },
+    { id: "inverter", label: "Inverter", short: "Inv.", bulk: false },
+    { id: "battery", label: "Battery", short: "Batt.", bulk: false },
+    { id: "mounting", label: "Mounting Structure", short: "Mounting", bulk: true },
+    { id: "electrical", label: "Electrical Item", short: "Electrical", bulk: true },
+  ].map((def) => {
+    let units = 0;
+    let jobs = 0;
+    txs.forEach((tx) => {
+      const lines = txLines(tx).filter((line) => line.category === def.id);
+      if (lines.length === 0 && def.id !== "electrical") return;
+      jobs += 1;
+      units += lines.reduce((sum, line) => sum + (line.qty ?? 0), 0);
+    });
+    return { ...def, count: def.bulk ? jobs : units, unit: def.bulk ? (jobs === 1 ? "set" : "sets") : units === 1 ? "unit" : "units" };
+  });
+  const hasItem = (tx: StockTransaction, id: string) =>
+    id === "electrical" || txLines(tx).some((line) => line.category === id);
+  const shownTxs = itemPick === "all" ? txs : txs.filter((tx) => hasItem(tx, itemPick));
+
+  // Lorry photos: one per item card, saved for this lorry (day, driver, plate). Tapping a card
+  // shows "Take lorry photo" for it; once every card with something on it has a photo, Submit
+  // unlocks and marks every customer on the lorry loaded.
+  const lorryKey = `${day}|${driver.trim().toUpperCase()}|${plate.trim().toUpperCase()}`;
+  const [photos, setPhotos] = useState<Record<string, string>>({});
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/warehouse/lorry-photos?lorry=${encodeURIComponent(lorryKey)}`, { credentials: "same-origin", cache: "no-store" })
+      .then(async (res) => (res.ok ? ((await res.json()) as { photos?: Record<string, string> }) : null))
+      .then((data) => {
+        if (!cancelled && data?.photos) setPhotos((prev) => ({ ...data.photos, ...prev }));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [lorryKey]);
+  const photoCards = itemCards.filter((item) => item.count > 0);
+  const allPhotos = photoCards.length > 0 && photoCards.every((item) => photos[item.id]);
+  const allLoaded = txs.length > 0 && txs.every((tx) => loadedRefs.has(tx.reference));
+  const pickedCard = itemCards.find((item) => item.id === itemPick);
+  // Loading › Verified (or a lorry already submitted): photos are shown, not taken. They are the
+  // ones taken on Loading › Preparing.
+  const photosReadOnly = stage === "verified" || allLoaded;
+  // Mounting Structure card: each customer's Box Qty (entered under the mounting table on the
+  // job page), shown in a Box column.
+  const jobRefs = txs.map((tx) => tx.reference).sort().join(",");
+  const [mountBoxes, setMountBoxes] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!jobRefs) return;
+    let cancelled = false;
+    fetch(`/api/warehouse/entries?jobs=${encodeURIComponent(jobRefs)}`, { credentials: "same-origin", cache: "no-store" })
+      .then(async (res) => (res.ok ? ((await res.json()) as { entries?: { job: string; kind: string; key: string; value: string }[] }) : null))
+      .then((data) => {
+        if (cancelled || !data?.entries) return;
+        const map: Record<string, string> = {};
+        data.entries.forEach((entry) => {
+          if (entry.kind === "mounting_box") map[entry.job] = entry.value;
+        });
+        setMountBoxes(map);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [jobRefs]);
+  const showBoxCol = itemPick === "mounting";
+  async function takeLorryPhoto(item: string, file: File | undefined) {
+    if (!file) return;
+    setPhotoBusy(true);
+    setPhotoError(null);
+    try {
+      const photo = await resizePhoto(file);
+      const res = await fetch("/api/warehouse/lorry-photos", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ lorry: lorryKey, item, photo }),
+      });
+      if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error || "Could not save the photo.");
+      setPhotos((prev) => ({ ...prev, [item]: photo }));
+    } catch (err) {
+      setPhotoError(err instanceof Error ? err.message : "Could not save the photo.");
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
+  return (
+    <section className={`${styles.screen} ${styles.soPage}`} aria-labelledby="lorry-loading-title">
+      <div className={styles.inspectTopBar}>
+        <button className={styles.back} type="button" onClick={onBack} style={{ marginBottom: 0 }}>
+          Back
+        </button>
+      </div>
+      {/* "Loading", with "Item List - Preparing" (or "- Verified") below, as on Stock Out */}
+      <div style={{ margin: "0 0 12px" }}>
+        <h1 id="lorry-loading-title" className={styles.inspectHeroTitle} style={{ margin: 0 }}>
+          Loading
+        </h1>
+        <p style={{ margin: "12px 0 0", fontSize: "16px", fontWeight: 700, color: "#000" }}>
+          {stage === "verified" ? "Item List - Verified" : "Item List - Preparing"}
+        </p>
+      </div>
+
+      {/* Loading Details: laid out like a job's Customer Details (grey title box, then lines) */}
+      <div style={{ marginBottom: "16px" }}>
+        <h2
+          className={styles.inspectCardTitle}
+          style={{
+            margin: "0 0 10px",
+            color: "#000",
+            fontWeight: 700,
+            border: "1px solid var(--line)",
+            borderRadius: "10px",
+            background: "#e5e7eb",
+            padding: "8px 14px",
+          }}
+        >
+          <span>🚚</span> Loading Details
+        </h2>
+        <div
+          className={styles.custDetailLines}
+          style={{ display: "grid", gridTemplateColumns: "max-content max-content 1fr", columnGap: "6px", rowGap: "4px", fontSize: "13px", color: "#000" }}
+        >
+          <span style={{ fontWeight: 700 }}>Driver</span>
+          <span style={{ fontWeight: 700 }}>:</span>
+          <span style={{ paddingLeft: "8px" }}>{driver || "—"}</span>
+          <span style={{ fontWeight: 700 }}>Plate No</span>
+          <span style={{ fontWeight: 700 }}>:</span>
+          <span style={{ paddingLeft: "8px" }}>{plate || "—"}</span>
+          <span style={{ fontWeight: 700 }}>No of Customer</span>
+          <span style={{ fontWeight: 700 }}>:</span>
+          <span style={{ paddingLeft: "8px" }}>{txs.length}</span>
+        </div>
+      </div>
+
+      {txs.length === 0 && <p className={styles.note}>No customers on this lorry.</p>}
+
+      {txs.length > 0 && (
+        <div className={styles.outItemGrid} role="group" aria-label="This lorry by item" style={{ marginBottom: "12px" }}>
+          {itemCards.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`${styles.txKpiCatChip} ${styles.outItemCard} ${itemPick === item.id ? styles.balanceCardActive : ""}`}
+              aria-pressed={itemPick === item.id}
+              title={itemPick === item.id ? "Show all items" : `Show only customers with ${item.label}`}
+              onClick={() => setItemPick((cur) => (cur === item.id ? "all" : item.id))}
+            >
+              <span className={styles.txKpiCatName}>
+                <span className={styles.catLabelFull}>{item.label}</span>
+                <span className={styles.catLabelShort}>{item.short}</span>
+              </span>
+              <span className={styles.txKpiCatValOut}>
+                {item.count} <span className={styles.txKpiUnit}>{item.unit}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {txs.length > 0 && (
+        <p className={styles.note} style={{ margin: "0 0 10px", color: "#000", fontSize: "10px" }}>
+          {photosReadOnly ? "Click on cards to view item photo." : "Click on cards to take item photo."}
+        </p>
+      )}
+
+      {/* The picked card: its photo, shown only on Verified (taken on Preparing) */}
+      {pickedCard && pickedCard.count > 0 && photosReadOnly && (
+        <div className={styles.inspectCard} style={{ marginBottom: "14px" }}>
+          <div className={styles.bankingFieldLabel}>Lorry photo – {pickedCard.label}</div>
+          {photos[pickedCard.id] ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={photos[pickedCard.id]} alt={`Lorry – ${pickedCard.label}`} className={styles.lorryPhotoImg} />
+          ) : (
+            <p className={styles.note} style={{ margin: 0 }}>
+              No photo was taken for {pickedCard.label.toLowerCase()} on Loading › Preparing.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* The picked card on Preparing: take (or retake) its lorry photo */}
+      {pickedCard && pickedCard.count > 0 && !photosReadOnly && (
+        <div className={styles.inspectCard} style={{ marginBottom: "14px" }}>
+          <div className={styles.bankingFieldLabel}>Take lorry photo – {pickedCard.label}</div>
+          <label className={styles.lorryPhotoBox}>
+            {/* No "capture" setting: the phone's own camera opens, where front or back can be
+                chosen (and a saved photo can be picked instead). */}
+            <input
+              type="file"
+              accept="image/*"
+              className={styles.lorryPhotoInput}
+              disabled={photoBusy}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                void takeLorryPhoto(pickedCard.id, file);
+              }}
+            />
+            {photos[pickedCard.id] ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={photos[pickedCard.id]} alt={`Lorry – ${pickedCard.label}`} className={styles.lorryPhotoImg} />
+            ) : (
+              <span className={styles.lorryPhotoEmpty}>
+                {photoBusy ? "Saving…" : `📷 Tap to take a picture of the ${pickedCard.label.toLowerCase()} on the lorry`}
+              </span>
+            )}
+          </label>
+          {photos[pickedCard.id] && (
+            <p className={styles.note} style={{ margin: 0 }}>
+              {photoBusy ? "Saving…" : "Tap the photo to take it again."}
+            </p>
+          )}
+          {photoError && (
+            <p className={styles.note} style={{ color: "#b91c1c", margin: 0 }}>
+              {photoError}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* One row per customer on this lorry */}
+      {txs.length > 0 && (
+        <div className={styles.tableWrap}>
+          <table className={`${styles.detailTable} ${styles.lorryTable}`}>
+            <thead>
+              <tr>
+                <th scope="col">Slot</th>
+                <th scope="col">Customer</th>
+                <th scope="col">Agent</th>
+                <th scope="col">Phone</th>
+                <th scope="col">Address</th>
+                <th scope="col">ETA</th>
+                <th scope="col" className={styles.instDateCol}>Installation Date</th>
+                {showBoxCol && <th scope="col">Box</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {shownTxs.map((tx) => {
+                const schedule = tx.schedule;
+                const eta = lookupEta(etaLookup, tx);
+                const slotTime = eta ? sheetClock(eta.slotTime) || eta.slotTime : "";
+                return (
+                  <tr key={tx.id}>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      {eta?.slotDate ? (
+                        <>
+                          {isoDateLabel(eta.slotDate)}
+                          {slotTime && <div style={{ color: "#555" }}>{slotTime}</div>}
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td>
+                      <div className={styles.lorryCustName}>{schedule?.customerName ?? tx.party}</div>
+                      <div className={styles.lorryInvoice}>{schedule?.jobId ?? tx.reference}</div>
+                    </td>
+                    <td>{schedule?.agentName || "—"}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>{schedule?.customerPhone || "—"}</td>
+                    <td className={styles.lorryAddress}>{schedule?.customerAddress || "—"}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      {eta?.date ? (
+                        <>
+                          {isoDateLabel(eta.date)}
+                          {eta.time && <div style={{ color: "#555" }}>{etaClock(eta.time)}</div>}
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td className={styles.instDateCol} style={{ whiteSpace: "nowrap" }}>
+                      {isoDateLabel(tx.time)}
+                      {eta?.installTime && (!eta.installDate || eta.installDate === tx.time.slice(0, 10)) && sheetClock(eta.installTime) && (
+                        <div style={{ color: "#555" }}>{sheetClock(eta.installTime)}</div>
+                      )}
+                    </td>
+                    {showBoxCol && <td style={{ whiteSpace: "nowrap" }}>{mountBoxes[tx.reference] || "—"}</td>}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Checked by: whoever pressed Submit for this lorry ("—" until it is submitted) */}
+      {txs.length > 0 && (
+        <p className={styles.lorryCheckedBy}>
+          <strong>Checked by:</strong>{" "}
+          {Array.from(new Set(txs.map((tx) => loadedBy[tx.reference]).filter(Boolean))).join(", ") || "—"}
+        </p>
+      )}
+
+      {/* Submit: unlocks once every card has its lorry photo; marks every customer loaded */}
+      {txs.length > 0 && (
+        <div className={styles.lorrySubmitRow}>
+          {!allLoaded && !allPhotos && (
+            <span className={styles.note} style={{ margin: 0 }}>
+              Photos: {photoCards.filter((item) => photos[item.id]).length} / {photoCards.length}. Tap each card to take its lorry photo.
+            </span>
+          )}
+          {submitError && (
+            <span className={styles.note} style={{ color: "#b91c1c", margin: 0 }}>
+              {submitError}
+            </span>
+          )}
+          {allLoaded ? (
+            <button className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`} type="button" disabled>
+              ✓ Submitted
+            </button>
+          ) : (
+            <button
+              type="button"
+              className={`${styles.btnActionPrimary} ${allPhotos ? styles.btnVerifiedGlow : styles.btnVerifiedLocked}`}
+              disabled={!allPhotos || submitting}
+              title={allPhotos ? "Loaded onto the lorry: moves these jobs to Site Check" : "Take a lorry photo for every card first"}
+              onClick={async () => {
+                setSubmitting(true);
+                setSubmitError(null);
+                const ok = await onSubmitAll(txs.filter((tx) => !loadedRefs.has(tx.reference)));
+                setSubmitting(false);
+                if (!ok) setSubmitError("Not all saved. Check the connection and press Submit again.");
+              }}
+            >
+              {submitting ? "Saving…" : allPhotos ? "✓ Submit" : "🔒 Submit"}
+            </button>
+          )}
+        </div>
       )}
     </section>
   );

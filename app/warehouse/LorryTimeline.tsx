@@ -14,8 +14,9 @@ export type TimelineRun = {
   warehouse: string;
   deliveryPic: string;
   contactNumber: string;
-  // The lorry on the Delivery Schedule ("Lorry 2"), when the API sends it.
+  // The lorry on the Delivery Schedule ("Lorry 2") and its plate ("WJX 3918").
   deliveryTeam?: string;
+  plateNumber?: string;
   customers: {
     jobId: string;
     invoice: string;

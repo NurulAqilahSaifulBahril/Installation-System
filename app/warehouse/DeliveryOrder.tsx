@@ -7,6 +7,7 @@
 // the driver and delivery times come from the job's run on the Delivery Schedule.
 
 import { useEffect, useState } from "react";
+import { watchDeliveryRuns } from "./delivery-feed";
 import type { StockOutLine, StockOutScheduleData } from "@/lib/warehouse-sample";
 import { DownloadReportButton, reportFileName } from "./ReportDownload";
 import styles from "./warehouse.module.css";
@@ -67,23 +68,17 @@ export function DeliveryOrderDialog({
   // The job's delivery run (matched by invoice number), read from the Delivery Schedule.
   const [run, setRun] = useState<{ run: DeliveryRun; customer: DeliveryCustomer } | null>(null);
   useEffect(() => {
-    let cancelled = false;
     const want = digits(invoice);
-    fetch("/api/warehouse/delivery", { credentials: "same-origin", cache: "no-store" })
-      .then(async (res) => (res.ok ? ((await res.json()) as { runs?: DeliveryRun[] }) : null))
-      .then((data) => {
-        if (cancelled || !data?.runs || !want) return;
-        // The latest run that carries this customer.
-        const found = [...data.runs]
-          .reverse()
-          .map((r) => ({ run: r, customer: r.customers.find((c) => digits(c.invoice) === want) }))
-          .find((x) => x.customer);
-        if (found?.customer) setRun({ run: found.run, customer: found.customer });
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+    if (!want) return;
+    // Kept current with the Scheduling system while the page is open.
+    return watchDeliveryRuns<DeliveryRun>((runs) => {
+      // The latest run that carries this customer.
+      const found = [...runs]
+        .reverse()
+        .map((r) => ({ run: r, customer: r.customers.find((c) => digits(c.invoice) === want) }))
+        .find((x) => x.customer);
+      setRun(found?.customer ? { run: found.run, customer: found.customer } : null);
+    });
   }, [invoice]);
 
   // Quantities ("-" when none).
