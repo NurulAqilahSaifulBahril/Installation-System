@@ -2382,7 +2382,7 @@ function customerNameKey(name: string | undefined | null): string {
 // number, and by customer name as a fallback: the same customer can be on the run under another
 // of their invoices (e.g. "HEAH KEE THIN (ATAP)" is installed under one invoice but delivered
 // under another).
-type EtaInfo = { date: string; time: string; installDate: string; installTime: string; slotDate: string; slotTime: string };
+type EtaInfo = { date: string; time: string; installDate: string; installTime: string; slotDate: string; slotTime: string; driver: string; lorry: string };
 type EtaLookup = { byInvoice: Record<string, EtaInfo>; byName: Record<string, EtaInfo> };
 function buildEtaLookup(runs: TimelineRun[]): EtaLookup {
   const byInvoice: Record<string, EtaInfo> = {};
@@ -2397,6 +2397,9 @@ function buildEtaLookup(runs: TimelineRun[]): EtaLookup {
         installTime: c.installTime ?? "",
         slotDate: run.deliveryDate,
         slotTime: run.departureTime,
+        // The run's driver and lorry on the Delivery Schedule.
+        driver: run.deliveryPic,
+        lorry: run.deliveryTeam ?? "",
       };
       const key = c.invoice.replace(/\D/g, "");
       if (key) byInvoice[key] = info;
@@ -4419,6 +4422,8 @@ function StockOutVerificationPage({
   // TEST ONLY: dummy lorry plate and photo for CHEOK GEOK LIAN.
   const dummyLorry = /cheok\s+geok\s+lian/i.test(schedule?.customerName ?? tx.party);
   const [vehiclePlate, setVehiclePlate] = useState(dummyLorry ? DUMMY_LORRY_PLATE : "");
+  // Lorry driver for this job; saved with the plate (shown on the Loading page).
+  const [driverName, setDriverName] = useState("");
   const [lorryPhoto, setLorryPhoto] = useState<string | null>(dummyLorry ? DUMMY_LORRY_PHOTO : null);
   const [checklist, setChecklist] = useState({
     condition: false,
@@ -4624,9 +4629,13 @@ function StockOutVerificationPage({
         const pvp: Record<string, string> = {};
         const bulk: Record<number, string> = {};
         let box = "";
+        let driver = "";
+        let plate = "";
         (data.entries ?? []).forEach((entry) => {
           if (entry.kind === "mounting_part") parts[entry.key] = entry.value;
           if (entry.kind === "mounting_box") box = entry.value;
+          if (entry.kind === "lorry" && entry.key === "driver") driver = entry.value;
+          if (entry.kind === "lorry" && entry.key === "plate") plate = entry.value;
           if (entry.kind === "electrical_part") elec[entry.key] = entry.value;
           if (entry.kind === "pv_drawing") pvp[entry.key] = entry.value;
           if (entry.kind === "bulk_line") {
@@ -4636,6 +4645,8 @@ function StockOutVerificationPage({
         });
         setPartQty((prev) => ({ ...parts, ...prev }));
         setMountBoxQty((prev) => prev || box);
+        setDriverName((prev) => prev || driver);
+        if (plate) setVehiclePlate((prev) => (prev && prev !== DUMMY_LORRY_PLATE ? prev : plate));
         setElecQty((prev) => ({ ...elec, ...prev }));
         setPvPicked((prev) => ({ ...pvp, ...prev }));
         setBulkQty((prev) => ({ ...bulk, ...prev }));
@@ -4657,6 +4668,11 @@ function StockOutVerificationPage({
           .filter(([, value]) => value.trim() !== "")
           .map(([key, value]) => ({ kind: "mounting_part" as const, key, value: value.trim() })),
         ...(mountBoxQty.trim() !== "" ? [{ kind: "mounting_box" as const, key: "boxes", value: mountBoxQty.trim() }] : []),
+        ...(driverName.trim() !== "" ? [{ kind: "lorry" as const, key: "driver", value: driverName.trim() }] : []),
+        // The test job's dummy plate is not saved.
+        ...(vehiclePlate.trim() !== "" && !(dummyLorry && vehiclePlate === DUMMY_LORRY_PLATE)
+          ? [{ kind: "lorry" as const, key: "plate", value: vehiclePlate.trim() }]
+          : []),
         ...Object.entries(pvPicked)
           .filter(([, value]) => value === "1")
           .map(([key]) => ({ kind: "pv_drawing" as const, key, value: "1" })),
@@ -4671,12 +4687,12 @@ function StockOutVerificationPage({
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ job: tx.reference, kinds: ["mounting_part", "mounting_box", "bulk_line", "electrical_part", "pv_drawing"], entries }),
+        body: JSON.stringify({ job: tx.reference, kinds: ["mounting_part", "mounting_box", "bulk_line", "electrical_part", "pv_drawing", "lorry"], entries }),
       }).catch(() => {});
     }, 600);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [partQty, mountBoxQty, elecQty, bulkQty, pvPicked]);
+  }, [partQty, mountBoxQty, driverName, vehiclePlate, elecQty, bulkQty, pvPicked]);
 
   // Record who completed each material (once): all units scanned, or all quantities entered.
   const recordedMaterials = useRef<Set<string>>(new Set());
@@ -5743,7 +5759,19 @@ function StockOutVerificationPage({
           once the job is verified (Loading / Site Check). */}
       {tx.status === "Verified" && (
         <div className={styles.inspectCard} style={{ marginTop: "16px", marginBottom: "16px" }}>
-          <div className={styles.bankingAmountGrid} style={{ marginBottom: "0" }}>
+          {/* Driver and lorry plate side by side, on a phone too */}
+          <div className={`${styles.bankingAmountGrid} ${styles.lorryFieldsRow}`} style={{ marginBottom: "0" }}>
+            <div className={styles.bankingFieldGroup}>
+              <label className={styles.bankingFieldLabel}>Driver Name:</label>
+              <input
+                type="text"
+                className={`${styles.scannerInput} ${styles.transferField}`}
+                style={{ height: "52px", fontSize: "16px", width: "100%", minWidth: 0 }}
+                value={driverName}
+                onChange={(e) => setDriverName(e.target.value)}
+                placeholder="e.g. Ahmad"
+              />
+            </div>
             <div className={styles.bankingFieldGroup}>
               <label className={styles.bankingFieldLabel}>Lorry / Transport Plate Number:</label>
               <input
@@ -7914,6 +7942,57 @@ function HomeTab({
         ? (isTransferList || isVerifiedTx(t.status)) && !isLoadedTx(t)
         : !isVerifiedTx(t.status);
   const filteredTx = baseTx.filter(inStatusTab);
+  // Loading page: each Stock Out job's driver and lorry plate, as typed on its job page.
+  const loadingJobRefs = loadingOnly
+    ? filteredTx.filter((t) => t.type === "out").map((t) => t.reference).sort().join(",")
+    : "";
+  const [lorryByJob, setLorryByJob] = useState<Record<string, { driver?: string; plate?: string }>>({});
+  useEffect(() => {
+    if (!loadingJobRefs) return;
+    let cancelled = false;
+    fetch(`/api/warehouse/entries?jobs=${encodeURIComponent(loadingJobRefs)}`, { credentials: "same-origin", cache: "no-store" })
+      .then(async (res) => (res.ok ? ((await res.json()) as { entries?: { job: string; kind: string; key: string; value: string }[] }) : null))
+      .then((data) => {
+        if (cancelled || !data?.entries) return;
+        const map: Record<string, { driver?: string; plate?: string }> = {};
+        data.entries.forEach((entry) => {
+          if (entry.kind !== "lorry" || (entry.key !== "driver" && entry.key !== "plate")) return;
+          map[entry.job] = { ...map[entry.job], [entry.key]: entry.value };
+        });
+        setLorryByJob(map);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [loadingJobRefs]);
+  // Driver and lorry of a Stock Out job: typed on the job page, otherwise the run's driver and
+  // lorry on the Delivery Schedule ("Lorry 2", as the sheet has no plates).
+  const driverOf = (tx: StockTransaction) => lorryByJob[tx.reference]?.driver || etaOf(tx)?.driver || "";
+  const lorryOf = (tx: StockTransaction) => lorryByJob[tx.reference]?.plate || etaOf(tx)?.lorry || "";
+  const driverGroupKey = (tx: StockTransaction) =>
+    tx.type === "out" ? `${driverOf(tx).trim().toUpperCase()}|${lorryOf(tx).trim().toUpperCase()}` : "";
+  // Loading page: the table is split by driver. Each driver's customers sit together (drivers in
+  // the order their first customer appears, rows keep their order inside); Stock Transfers last.
+  const shownTx = (() => {
+    if (!loadingOnly) return filteredTx;
+    const order: string[] = [];
+    const groups = new Map<string, StockTransaction[]>();
+    const transfers: StockTransaction[] = [];
+    filteredTx.forEach((tx) => {
+      if (tx.type !== "out") {
+        transfers.push(tx);
+        return;
+      }
+      const key = driverGroupKey(tx);
+      if (!groups.has(key)) {
+        groups.set(key, []);
+        order.push(key);
+      }
+      groups.get(key)!.push(tx);
+    });
+    return [...order.flatMap((key) => groups.get(key) ?? []), ...transfers];
+  })();
   // The Loading page and Stock Out's Loading tab leave out the Model / Serial and Qty columns.
   const hideItemCols = loadingOnly || (outTabs && statusTab === "loading");
   // The same table rows with any item (the item filter left off): the Stock Out item cards count
@@ -8638,9 +8717,27 @@ function HomeTab({
                         </Fragment>
                       );
                     })}
-                    {filteredTx.map((tx) => (
+                    {shownTx.map((tx, i) => (
+                      <Fragment key={tx.id}>
+                      {/* Loading page: one band per driver, above that driver's customers */}
+                      {loadingOnly && tx.type === "out" && (i === 0 || driverGroupKey(shownTx[i - 1]) !== driverGroupKey(tx)) && (
+                        <tr className={styles.loadingPicRow}>
+                          <td colSpan={2 + 2 + (txType === "in" ? 1 : 0) + (txType === "all" ? 1 : 0)}>
+                            {/* Like the Delivery Schedule band: a small label above each value */}
+                            <div className={styles.loadingPicFields}>
+                              <div className={styles.loadingPicField}>
+                                <span className={styles.loadingPicLabel}>Driver</span>
+                                <span className={styles.loadingPicValue}>{driverOf(tx) || "—"}</span>
+                              </div>
+                              <div className={styles.loadingPicField}>
+                                <span className={styles.loadingPicLabel}>Lorry</span>
+                                <span className={styles.loadingPicValue}>{lorryOf(tx) || "—"}</span>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
                       <tr
-                        key={tx.id}
                         className={styles.txRowClickable}
                         tabIndex={0}
                         onClick={() => onInspectTx(tx.id)}
@@ -8822,6 +8919,7 @@ function HomeTab({
                             })()}
                         </td>
                       </tr>
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>

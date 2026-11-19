@@ -250,6 +250,8 @@ type DeliveryRun = {
   warehouseAddress?: string;
   deliveryTeam: string;
   deliveryPic: string;
+  // Lorry plate, e.g. "JVA 390" -- read from the Google Sheet run header.
+  plateNumber?: string;
   contactNumber: string;
   installationGroupId: string;
   status: "pending_stock" | "ready" | "in_transit" | "delivered";
@@ -434,6 +436,18 @@ function formatDateOnly(value: string | null | undefined) {
   const date = new Date(`${value}T00:00:00`);
   if (Number.isNaN(date.getTime())) return value;
   return DATE_PLAIN.format(date);
+}
+
+// "14:30" -> "2.30pm", "09:00" -> "9am": the way the Google Sheet's delivery
+// tab writes times ("26 Oct 2026 Mon @ 2.30pm"), so the two read the same.
+function formatSheetClock(value: string | null | undefined) {
+  const m = (value ?? "").match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return "";
+  const hours = Number(m[1]);
+  if (hours > 23) return "";
+  const suffix = hours >= 12 ? "pm" : "am";
+  const h12 = hours % 12 === 0 ? 12 : hours % 12;
+  return m[2] === "00" ? `${h12}${suffix}` : `${h12}.${m[2]}${suffix}`;
 }
 
 function formatAssignmentStamp(value: string) {
@@ -1141,8 +1155,21 @@ function jobMatchesSearch(
   const query = search.trim().toLowerCase();
   if (!query) return true;
   if (locationHaystack(job).includes(query)) return true;
+  if (invoiceMatches(job.invoiceNumber, query)) return true;
   if (group?.supervisors?.some((name) => name.toLowerCase().includes(query))) return true;
   return false;
+}
+
+// Invoices are stored as "INV-1010679", but people type "1010679",
+// "INV1010679" or "inv 1010679". Compare with spaces and punctuation dropped
+// (and the INV prefix optional) so every form finds the invoice. Needs at
+// least 3 digits so short words don't match every invoice.
+function invoiceMatches(invoiceNumber: string | undefined, query: string) {
+  if (!invoiceNumber) return false;
+  const typed = query.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!/\d{3,}/.test(typed)) return false;
+  const stored = invoiceNumber.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return stored.includes(typed) || stored.includes(typed.replace(/^inv/, ""));
 }
 
 type LocationSuggestion = {
@@ -10804,14 +10831,18 @@ function formatDeliveryWeekLabel(
   weekLabel?: string | null,
   deliveryDate?: string | null,
 ): string {
+  // The run's own date decides the week, the same Mon–Sat week the week picker
+  // filters on. The sheet's label ("23/10 - 30/10/2026") counts its weeks
+  // Friday to Friday, so printing it here put a header that disagreed with the
+  // picker above the very runs the picker had selected.
+  if (deliveryDate && weekBounds(deliveryDate)) {
+    return `DELIVERY~ Week : ${weekRangeLabel(deliveryDate)}`;
+  }
   const raw = (weekLabel || "").trim();
   if (raw) {
     if (/^delivery\s*~/i.test(raw)) return raw;
     if (/^week\b/i.test(raw)) return `DELIVERY~ ${raw}`;
     return `DELIVERY~ Week : ${raw}`;
-  }
-  if (deliveryDate) {
-    return `DELIVERY~ Week : ${weekRangeLabel(deliveryDate)}`;
   }
   return "DELIVERY~ Unscheduled";
 }
@@ -11042,6 +11073,28 @@ function DeliveryPlanningView({
   const [pinnedWeekKeys, setPinnedWeekKeys] = useState<Set<string>>(new Set());
   const [activeAddRunId, setActiveAddRunId] = useState<string | null>(null);
 
+  // While scrolling, the week bar, the Delivery PIC bar and the column header
+  // stack at the top in that order. Each sticks below the ones above it, so the
+  // offsets are the bars' real heights (the PIC bar's height changes with its
+  // inputs and any route note), measured here and handed to the CSS.
+  const deliveryTableRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const wrap = deliveryTableRef.current;
+    if (!wrap || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const week = wrap.querySelector<HTMLElement>("tr.rti-team-band-sub");
+      const run = wrap.querySelector<HTMLElement>("tr.delivery-run-band");
+      if (week) wrap.style.setProperty("--dw-week-h", `${week.offsetHeight}px`);
+      if (run) wrap.style.setProperty("--dw-run-h", `${run.offsetHeight}px`);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    wrap.querySelectorAll("tr.rti-team-band-sub, tr.delivery-run-band").forEach((row) =>
+      observer.observe(row),
+    );
+    return () => observer.disconnect();
+  });
+
   const [periodFilter, setPeriodFilter] = useState("");
   const [customerQuery, setCustomerQuery] = useState("");
   const deferredCustomerQuery = useDeferredValue(customerQuery);
@@ -11117,15 +11170,6 @@ function DeliveryPlanningView({
       }
     });
   };
-
-  const [planningFilter, setPlanningFilter] = useState<string>(ALL_JOBS);
-  const planningLookup = useMemo<PlanningLookup>(
-    () => ({
-      groupByJobId,
-      deliveryRunByJobId: latestByJobId(runs, (run) => run.deliveryDate),
-    }),
-    [groupByJobId, runs],
-  );
 
   function togglePinnedWeek(weekKey: string) {
     setPinnedWeekKeys((prev) => {
@@ -11438,7 +11482,6 @@ function DeliveryPlanningView({
   const filterByWeek = !hasSearch && activeDeliveryWeek && activeDeliveryWeek !== "all";
   const stopFiltered =
     Boolean(query) ||
-    planningFilter !== ALL_JOBS ||
     workCategoryFilter !== ALL_JOBS;
 
   const visibleRuns = useMemo(() => {
@@ -11454,7 +11497,6 @@ function DeliveryPlanningView({
               (groupByJobId.get(job.id)?.supervisors ?? []).some((name) =>
                 name.toLowerCase().includes(query),
               )) &&
-            matchesPipelineStage(job, planningFilter, todayIso, planningLookup) &&
             matchesWorkCategory(job, workCategoryFilter),
         );
         const ordered = matching
@@ -11496,9 +11538,6 @@ function DeliveryPlanningView({
     jobById,
     query,
     groupByJobId,
-    planningFilter,
-    todayIso,
-    planningLookup,
     workCategoryFilter,
     pinnedJobIds,
     filterByWeek,
@@ -11511,7 +11550,6 @@ function DeliveryPlanningView({
   const filtered = Boolean(
     periodFilter ||
       customerQuery ||
-      planningFilter !== ALL_JOBS ||
       workCategoryFilter !== ALL_JOBS,
   );
 
@@ -11519,21 +11557,6 @@ function DeliveryPlanningView({
     <>
       <div className="installation-schedule-filter-bar delivery-schedule-filter-bar">
         <div className="schedule-filters">
-          <label className="schedule-search">
-            <span>Planning status</span>
-            <select
-              value={planningFilter}
-              onChange={(event) => setPlanningFilter(event.target.value)}
-              aria-label="Filter by planning status"
-            >
-              <option value={ALL_JOBS}>All jobs</option>
-              {PLANNING_STAGES.map((stage) => (
-                <option key={stage.value} value={stage.value}>
-                  {stage.label}
-                </option>
-              ))}
-            </select>
-          </label>
           <label className="schedule-search">
             <span>Month or year</span>
             <input
@@ -11563,7 +11586,6 @@ function DeliveryPlanningView({
               onClick={() => {
                 setPeriodFilter("");
                 setCustomerQuery("");
-                setPlanningFilter(ALL_JOBS);
               }}
             >
               Clear
@@ -11644,7 +11666,10 @@ function DeliveryPlanningView({
           </div>
         </div>
       <section className="planning-group">
-        <div className="table-wrap rti-team unified-team-table delivery-schedule-table">
+        <div
+          ref={deliveryTableRef}
+          className="table-wrap rti-team unified-team-table delivery-schedule-table"
+        >
           <table>
             <colgroup>
               <col className="rti-col-date" />
@@ -11721,7 +11746,14 @@ function DeliveryPlanningView({
                               <Pin size={14} />
                             )}
                           </button>
-                          <span className="schedule-band-week">
+                          <span
+                            className="schedule-band-week"
+                            title={
+                              run.weekLabel
+                                ? `Google Sheet: ${run.weekLabel}`
+                                : undefined
+                            }
+                          >
                             {formatDeliveryWeekLabel(run.weekLabel, run.deliveryDate)}
                           </span>
                         </div>
@@ -11751,6 +11783,28 @@ function DeliveryPlanningView({
                                 onChange={(e) =>
                                   updateRun(run.id, {
                                     deliveryPic: e.target.value,
+                                  })
+                                }
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            </div>
+
+                            <div className="rti-crew-col">
+                              <label
+                                className="rti-crew-label"
+                                htmlFor={`del-plate-${run.id}`}
+                              >
+                                Plate No.
+                              </label>
+                              <input
+                                id={`del-plate-${run.id}`}
+                                type="text"
+                                className="rti-crew-input rti-crew-input-borderless"
+                                value={run.plateNumber || ""}
+                                placeholder="e.g. JVA 390"
+                                onChange={(e) =>
+                                  updateRun(run.id, {
+                                    plateNumber: e.target.value,
                                   })
                                 }
                                 onClick={(e) => e.stopPropagation()}
@@ -11906,6 +11960,18 @@ function DeliveryPlanningView({
                         job.installationDate ||
                         job.visits?.[0]?.date ||
                         null;
+                      // Only show a time that belongs to the date shown: a visit
+                      // on that day, else the agreed slot when it is that day.
+                      // A group or proposal can move the date without a time.
+                      const instDay = instDate ? instDate.slice(0, 10) : "";
+                      const instTime = instDay
+                        ? job.visits?.find((v) => v.date === instDay)?.time ||
+                          (job.preferredInstallationDate?.slice(0, 10) === instDay
+                            ? job.preferredInstallationTime
+                            : null) ||
+                          null
+                        : null;
+                      const instTimeLabel = formatSheetClock(instTime);
                       const rowRemark = cleanDeliveryStockRemark(
                         job.stockDetails || "",
                       );
@@ -12284,7 +12350,9 @@ function DeliveryPlanningView({
                                 <Calendar size={12} />
                                 <span className="rti-inst-date-text">
                                   {instDate
-                                    ? formatDateOnly(instDate)
+                                    ? `${formatDateOnly(instDate)}${
+                                        instTimeLabel ? ` @ ${instTimeLabel}` : ""
+                                      }`
                                     : isJobWarehouse
                                     ? "N/A"
                                     : "Unassigned"}

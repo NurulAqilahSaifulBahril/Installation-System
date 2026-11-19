@@ -3,7 +3,7 @@ import { GET as getJobs } from "@/app/api/jobs/route";
 import { AuthError } from "@/lib/auth";
 import { requireUser } from "@/lib/warehouse-auth";
 import { malaysiaToday } from "@/lib/dates";
-import { fetchInvoiceItemLines } from "@/lib/source-api";
+import { fetchDeletedInvoiceIds, fetchInvoiceItemLines } from "@/lib/source-api";
 import type { InstallationJob } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -79,10 +79,20 @@ export async function GET(request: Request) {
   const from = firstOfPreviousMonth(today);
   const to = shiftDate(today, DAYS_AHEAD);
 
-  const windowJobs = (data.jobs ?? []).filter((job) => {
+  const datedJobs = (data.jobs ?? []).filter((job) => {
     const date = job.installationDate?.slice(0, 10);
     return Boolean(date) && date! >= from && date! <= to;
   });
+  // Leave out jobs whose invoice was deleted in prod_main (e.g. Heah Kee Thin's INV-1011708, a
+  // deleted second invoice whose job stayed in the installation store). If the check fails,
+  // every job is kept.
+  let deletedIds = new Set<string>();
+  try {
+    deletedIds = await fetchDeletedInvoiceIds(datedJobs.map((job) => job.id));
+  } catch (error) {
+    console.error("[warehouse/schedule] could not check for deleted invoices", error);
+  }
+  const windowJobs = datedJobs.filter((job) => !deletedIds.has(job.id));
 
   // The job's saved text can lack lines (ops overwrite it from the schedule sheet), so the
   // invoice's own item lines are read directly. If that read fails, the saved text is used.

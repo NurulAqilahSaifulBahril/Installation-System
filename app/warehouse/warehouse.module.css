@@ -6504,3 +6504,53 @@ th.instDateCol {
 .soCardsLoading .soCardSub {
   font-size: 9px;
 }
+
+/* Loading page: the band above each customer (driver and lorry plate). Not clickable. */
+.loadingPicRow td {
+  /* Same gold as the selected Home card outline */
+  background: #bf9000;
+  color: #fff !important;
+  font-size: 11px;
+  font-weight: 600;
+  padding-top: 5px !important;
+  padding-bottom: 5px !important;
+  border-top: 1.5px solid #bf9000;
+}
+
+.loadingPicFields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 48px;
+}
+
+.loadingPicField {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 120px;
+}
+
+/* Small uppercase label, as on the Delivery Schedule band ("DELIVERY PIC") */
+.loadingPicLabel {
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.loadingPicValue {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* Stock Out job: Driver Name and Lorry Plate stay side by side, phones included. */
+.bankingAmountGrid.lorryFieldsRow {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+/* Driver / Lorry text: always white on the gold row */
+.loadingPicRow .loadingPicLabel,
+.loadingPicRow .loadingPicValue {
+  color: #fff !important;
+}

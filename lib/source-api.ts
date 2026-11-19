@@ -929,6 +929,17 @@ function shapeOf(value: unknown): string {
 // An item's description is often a multi-line package text ("16X 650W … Panel", "MIBET Solar
 // Mounting Structure", …). A single-line item sold with a quantity above 1 and no count of its
 // own gets "<qty>X " in front, so the count survives. Keyed by the invoice's bubble id.
+// Of these invoice ids (bubble_id, as on installation jobs), the ones deleted in prod_main. The
+// installation store keeps a job after its invoice is deleted, so callers drop these.
+export async function fetchDeletedInvoiceIds(invoiceIds: string[]): Promise<Set<string>> {
+  if (invoiceIds.length === 0) return new Set();
+  const rows = await querySource<{ bubble_id: string }>(
+    "select bubble_id from invoice where bubble_id = any($1::text[]) and coalesce(is_deleted, false) = true",
+    [invoiceIds],
+  );
+  return new Set(rows.map((row) => row.bubble_id));
+}
+
 export async function fetchInvoiceItemLines(invoiceIds: string[]): Promise<Record<string, string[]>> {
   if (invoiceIds.length === 0) return {};
   const rows = await querySource<{ linked_invoice: string; qty: string | number | null; description: string | null }>(

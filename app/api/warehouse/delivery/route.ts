@@ -51,6 +51,8 @@ export type DeliveryRunPayload = {
   warehouse: string;
   deliveryPic: string;
   contactNumber: string;
+  // The lorry on the sheet ("Lorry 2"); the sheet has no plate numbers.
+  deliveryTeam: string;
   isWarehouse: boolean;
   // Colour class of the run band, as on the dashboard ("rti-team-2", "rti-team-warehouse", …).
   teamClass: string;
@@ -278,6 +280,7 @@ export async function GET(request: Request) {
         warehouse: str(run.warehouse),
         deliveryPic: str(run.deliveryPic),
         contactNumber: str(run.contactNumber),
+        deliveryTeam: str(run.deliveryTeam),
         isWarehouse: isWarehouseRun,
         teamClass: isWarehouseRun
           ? "rti-team-warehouse"

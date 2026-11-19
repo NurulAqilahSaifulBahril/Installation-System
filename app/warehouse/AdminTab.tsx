@@ -36,8 +36,12 @@ type AdminUser = {
   username: string;
   phone: string;
   pageAccess: string;
+  role: string;
   isActive: boolean;
 };
+
+// Job roles (a label only; page access decides what a user can open). Same list as the server.
+const ROLE_OPTIONS = ["IT Admin", "Warehouse Manager", "Warehouse Assistant", "Sales Agent", "Storekeeper", "Driver"];
 
 function formatTime(iso: string): string {
   const date = new Date(iso);
@@ -59,6 +63,7 @@ export default function AdminTab() {
   // Sign-in here is by phone number and OTP, so users added from this tab are staff accounts
   // with no password. Admin accounts need a password and are added in the dashboard.
   const [pageAccess, setPageAccess] = useState("staff");
+  const [role, setRole] = useState("");
   const [saving, setSaving] = useState(false);
   const [formMessage, setFormMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -136,7 +141,7 @@ export default function AdminTab() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ name, username: username.trim(), phone: phone.trim(), pageAccess }),
+        body: JSON.stringify({ name, username: username.trim(), phone: phone.trim(), pageAccess, ...(role ? { role } : {}) }),
       });
       const body = (await response.json().catch(() => ({}))) as { error?: string; id?: string };
       if (response.status === 401 || response.status === 403) {
@@ -153,11 +158,12 @@ export default function AdminTab() {
           action: "user_created",
           entityType: "warehouse_user",
           entityId: typeof body.id === "string" ? body.id : undefined,
-          summary: `Added user "${toTitleCase(name)}"${picked ? "" : " (not in prod_main)"} (username ${username.trim()}, ${phone.trim()}, access: ${pageAccess})`,
+          summary: `Added user "${toTitleCase(name)}"${picked ? "" : " (not in prod_main)"} (username ${username.trim()}, ${phone.trim()}, access: ${pageAccess}${role ? `, role: ${role}` : ""})`,
         }),
       }).catch(() => {});
       setPhone("");
       setUsername("");
+      setRole("");
       setNameQuery("");
       setPicked(null);
       void loadUsers();
@@ -173,7 +179,7 @@ export default function AdminTab() {
   const [usersBusy, setUsersBusy] = useState(false);
   const [usersError, setUsersError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState({ username: "", phone: "", pageAccess: "staff", isActive: true });
+  const [draft, setDraft] = useState({ username: "", phone: "", pageAccess: "staff", role: "", isActive: true });
   const [editMessage, setEditMessage] = useState<string | null>(null);
 
   const loadUsers = useCallback(async () => {
@@ -197,7 +203,7 @@ export default function AdminTab() {
   function startEdit(user: AdminUser) {
     setEditMessage(null);
     setEditingId(user.id);
-    setDraft({ username: user.username, phone: user.phone, pageAccess: user.pageAccess === "admin" || user.pageAccess === "loading" ? user.pageAccess : "staff", isActive: user.isActive });
+    setDraft({ username: user.username, phone: user.phone, pageAccess: user.pageAccess === "admin" || user.pageAccess === "loading" ? user.pageAccess : "staff", role: user.role, isActive: user.isActive });
   }
 
   async function saveEdit(user: AdminUser) {
@@ -216,6 +222,10 @@ export default function AdminTab() {
     if (draft.pageAccess !== user.pageAccess) {
       patch.pageAccess = draft.pageAccess;
       changes.push("page access");
+    }
+    if (draft.role !== user.role) {
+      patch.role = draft.role;
+      changes.push("role");
     }
     if (draft.isActive !== user.isActive) {
       patch.isActive = draft.isActive;
@@ -351,6 +361,7 @@ export default function AdminTab() {
                 <tr>
                   <th scope="col">Name</th>
                   <th scope="col">Username</th>
+                  <th scope="col">Role</th>
                   <th scope="col">Phone</th>
                   <th scope="col">Page access</th>
                   <th scope="col">Status</th>
@@ -360,7 +371,7 @@ export default function AdminTab() {
               <tbody>
                 {users.length === 0 ? (
                   <tr>
-                    <td colSpan={6}>{usersBusy ? "Loading…" : usersError ? "—" : "No users."}</td>
+                    <td colSpan={7}>{usersBusy ? "Loading…" : usersError ? "—" : "No users."}</td>
                   </tr>
                 ) : (
                   users.map((user) =>
@@ -376,6 +387,21 @@ export default function AdminTab() {
                             onChange={(e) => setDraft((d) => ({ ...d, username: e.target.value }))}
                             aria-label="Username"
                           />
+                        </td>
+                        <td>
+                          <select
+                            className={`${styles.bankingAccountSelect} ${styles.adminField}`}
+                            value={draft.role}
+                            onChange={(e) => setDraft((d) => ({ ...d, role: e.target.value }))}
+                            aria-label="Role"
+                          >
+                            <option value="">—</option>
+                            {ROLE_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>
                         </td>
                         <td>
                           <input
@@ -424,6 +450,7 @@ export default function AdminTab() {
                       <tr key={user.id}>
                         <td>{toTitleCase(user.name)}</td>
                         <td>{user.username || "—"}</td>
+                        <td>{user.role || "—"}</td>
                         <td>{user.phone}</td>
                         <td>{PRESET_OPTIONS.find((option) => option.value === user.pageAccess)?.label ?? user.pageAccess}</td>
                         <td>{user.isActive ? "Active" : "Disabled"}</td>
@@ -532,6 +559,21 @@ export default function AdminTab() {
                 placeholder="012-345 6789"
                 onChange={(e) => setPhone(e.target.value)}
               />
+            </label>
+            <label className={`${styles.bankingFieldLabel} ${styles.adminLabel}`}>
+              Role
+              <select
+                className={`${styles.bankingAccountSelect} ${styles.adminField}`}
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+              >
+                <option value="">—</option>
+                {ROLE_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
             </label>
             <label className={`${styles.bankingFieldLabel} ${styles.adminLabel}`}>
               Page access

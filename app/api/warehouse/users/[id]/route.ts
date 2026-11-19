@@ -3,7 +3,7 @@ import { z } from "zod";
 import { AuthError } from "@/lib/auth";
 import { requireAdmin } from "@/lib/warehouse-auth";
 import { queryProxy } from "@/lib/proxy-db";
-import { ensureWarehouseUsersTable } from "@/lib/warehouse-users";
+import { ensureWarehouseUsersTable, WAREHOUSE_ROLES } from "@/lib/warehouse-users";
 import { querySource } from "@/lib/source-api";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +15,8 @@ const patchSchema = z.object({
   username: z.string().min(2).max(50).optional(),
   phone: z.string().min(1).max(50).optional(),
   pageAccess: z.enum(["admin", "staff", "loading"]).optional(),
+  // "" clears the role.
+  role: z.union([z.enum(WAREHOUSE_ROLES), z.literal("")]).optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -86,6 +88,10 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
     if (parsed.data.pageAccess !== undefined) {
       params.push(parsed.data.pageAccess);
       sets.push(`page_access = $${params.length}`);
+    }
+    if (parsed.data.role !== undefined) {
+      params.push(parsed.data.role || null);
+      sets.push(`role = $${params.length}`);
     }
     if (parsed.data.isActive !== undefined) {
       params.push(parsed.data.isActive);

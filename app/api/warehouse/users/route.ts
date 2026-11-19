@@ -5,7 +5,7 @@ import { requireAdmin } from "@/lib/warehouse-auth";
 import { queryProxy } from "@/lib/proxy-db";
 import { querySource } from "@/lib/source-api";
 import { toTitleCase } from "@/lib/title-case";
-import { ensureWarehouseUsersTable, toWarehouseUser, type WarehouseUserRow } from "@/lib/warehouse-users";
+import { ensureWarehouseUsersTable, toWarehouseUser, WAREHOUSE_ROLES, type WarehouseUserRow } from "@/lib/warehouse-users";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +28,7 @@ export async function GET() {
   try {
     await ensureWarehouseUsersTable();
     const rows = await queryProxy<WarehouseUserRow>(
-      "select id, name, username, phone, page_access, is_active, created_at from public.warehouse_users order by created_at asc",
+      "select id, name, username, phone, page_access, role, is_active, created_at from public.warehouse_users order by created_at asc",
     );
     return NextResponse.json({ users: rows.map(toWarehouseUser) });
   } catch (error) {
@@ -45,6 +45,7 @@ const createSchema = z.object({
   phone: z.string().max(50).optional(),
   // Admin: every page. Staff: every page except Admin. Loading: the Loading tabs only, view only.
   pageAccess: z.enum(["admin", "staff", "loading"]).optional(),
+  role: z.enum(WAREHOUSE_ROLES).optional(),
 });
 
 // The name has to be one that exists in prod_main's "user" table: checked here on the
@@ -105,8 +106,8 @@ export async function POST(request: Request) {
 
     const id = crypto.randomUUID();
     await queryProxy(
-      "insert into public.warehouse_users (id, name, username, phone, page_access, created_by) values ($1, $2, $3, $4, $5, $6)",
-      [id, name, username, phone, parsed.data.pageAccess || "staff", admin.id],
+      "insert into public.warehouse_users (id, name, username, phone, page_access, role, created_by) values ($1, $2, $3, $4, $5, $6, $7)",
+      [id, name, username, phone, parsed.data.pageAccess || "staff", parsed.data.role ?? null, admin.id],
     );
     return NextResponse.json({ ok: true, id, name, phone });
   } catch (error) {

@@ -2982,6 +2982,36 @@ tr.needs-reschedule-date.selected td {
   border-bottom: 2px solid #000000 !important;
 }
 
+/* Scrolling: the week bar, the Delivery PIC bar and the column header stack at
+   the top in that order. The delivery table has no sticky <thead>, so the week
+   bar starts at 0 (not the 38px the other tables leave for one); the heights
+   come from DeliveryPlanningView, which measures the bars. */
+.delivery-schedule-table tbody tr.schedule-band.rti-team-band-sub th {
+  top: 0;
+}
+
+.delivery-schedule-table tbody tr.schedule-band.rti-team-band-main th {
+  top: var(--dw-week-h, 34px);
+}
+
+.delivery-schedule-table tbody tr.schedule-column-headers th {
+  position: sticky;
+  top: calc(var(--dw-week-h, 34px) + var(--dw-run-h, 60px));
+  z-index: 4;
+}
+
+/* The darker ETA / Installation Date tint is translucent; on a header that
+   stays put, lay it over a solid fill so rows don't show through. */
+.delivery-schedule-table tbody tr.schedule-column-headers:not(.is-warehouse-headers) th.rti-th-darker {
+  background: linear-gradient(rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.18)),
+    var(--surface-soft, #f8fafc) !important;
+}
+
+:root[data-theme="dark"] .delivery-schedule-table tbody tr.schedule-column-headers:not(.is-warehouse-headers) th.rti-th-darker {
+  background: linear-gradient(rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.18)),
+    #1e293b !important;
+}
+
 /* Delivery Schedule: All data cell text in black (customer, address, agent, phase, panel, inverter, eta, installation date, stock, remark) */
 .delivery-schedule-table tbody td,
 .delivery-schedule-table tbody td button,

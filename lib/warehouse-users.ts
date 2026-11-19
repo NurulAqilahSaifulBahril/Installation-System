@@ -27,6 +27,8 @@ export function ensureWarehouseUsersTable(): Promise<void> {
         "create unique index if not exists warehouse_users_phone_idx on public.warehouse_users (lower(phone))",
       );
       await queryProxy("alter table public.warehouse_users add column if not exists username text");
+      // The person's job role (IT Admin, Driver, ...): a label only, it grants nothing.
+      await queryProxy("alter table public.warehouse_users add column if not exists role text");
       await queryProxy(
         "create unique index if not exists warehouse_users_username_idx on public.warehouse_users (lower(username)) where username is not null",
       );
@@ -44,9 +46,20 @@ export type WarehouseUserRow = {
   username: string | null;
   phone: string;
   page_access: string;
+  role: string | null;
   is_active: boolean;
   created_at: string;
 };
+
+// Job roles offered on the Admin page. A label only: page access decides what a user can open.
+export const WAREHOUSE_ROLES = [
+  "IT Admin",
+  "Warehouse Manager",
+  "Warehouse Assistant",
+  "Sales Agent",
+  "Storekeeper",
+  "Driver",
+] as const;
 
 export function toWarehouseUser(row: WarehouseUserRow) {
   return {
@@ -55,6 +68,7 @@ export function toWarehouseUser(row: WarehouseUserRow) {
     username: row.username ?? "",
     phone: row.phone,
     pageAccess: row.page_access,
+    role: row.role ?? "",
     isActive: row.is_active,
     createdAt: row.created_at,
   };
