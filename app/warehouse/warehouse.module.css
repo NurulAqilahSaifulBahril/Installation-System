@@ -6694,8 +6694,22 @@ button.lorryPhotoBox {
 .projectTeamSync {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+  /* Always on the right, even when it wraps under the tabs on a phone */
+  margin-left: auto;
+}
+
+/* The sync icon turns while syncing */
+.syncSpin {
+  animation: syncSpin 1s linear infinite;
+}
+
+@keyframes syncSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Loading page: "Table follows slot/ loading date." left, Type legend right, one row */

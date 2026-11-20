@@ -3,7 +3,7 @@ import { warehouseJobs } from "@/lib/warehouse-jobs";
 import { AuthError } from "@/lib/auth";
 import { requireUser } from "@/lib/warehouse-auth";
 import { malaysiaToday } from "@/lib/dates";
-import { readOpsState } from "@/lib/ops-store";
+import { readOpsSavedAt, readOpsState } from "@/lib/ops-store";
 import type { InstallationJob } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -156,5 +156,7 @@ export async function GET(request: Request) {
     })
     .sort((a, b) => a.installationDate.localeCompare(b.installationDate) || a.teamLabel.localeCompare(b.teamLabel));
 
-  return NextResponse.json({ groups });
+  // When the Scheduling system last saved (shown after "Sync from Scheduling Dashboard").
+  const savedAt = await readOpsSavedAt().catch(() => null);
+  return NextResponse.json({ groups, savedAt });
 }

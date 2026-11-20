@@ -33,6 +33,11 @@ export function middleware(request: NextRequest) {
     pathname.startsWith("/api/public/") ||
     pathname.startsWith("/_next/") ||
     pathname === "/favicon.ico" ||
+    // Inventory Management as an installable app (PWA): its manifest, service worker and offline
+    // page. Static files with no data in them; the phone fetches them before anyone signs in.
+    pathname === "/warehouse.webmanifest" ||
+    pathname === "/warehouse-sw.js" ||
+    pathname === "/warehouse-offline.html" ||
     /\.(png|jpg|jpeg|svg|gif|ico|webp)$/.test(pathname);
 
   if (isPublic) return withAppId(NextResponse.next());

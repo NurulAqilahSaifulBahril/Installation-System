@@ -48,6 +48,15 @@ function normalizeState(value: unknown): Record<string, unknown> | null {
   return null;
 }
 
+// When the Scheduling system last saved its schedule (by hand or from the Google Sheet sync).
+export async function readOpsSavedAt(): Promise<string | null> {
+  const rows = await queryProxy<{ updated_at: string | null }>(
+    'select updated_at from public.installation_ops_state where id = $1 limit 1',
+    [STATE_ROW_ID],
+  );
+  return rows[0]?.updated_at ?? null;
+}
+
 export async function readOpsState(): Promise<{
   exists: boolean;
   state: OpsState;

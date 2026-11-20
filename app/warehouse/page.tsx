@@ -59,6 +59,12 @@ const MARK_SRC = "/eternalgy-mark.png";
 type View = "mobile" | "desktop";
 
 export default function WarehousePage() {
+  // Installable app (PWA): register the Inventory Management service worker, limited to
+  // /warehouse. It keeps no data; it only shows an offline page when there is no connection.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.register("/warehouse-sw.js", { scope: "/warehouse" }).catch(() => {});
+  }, []);
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -11169,7 +11175,6 @@ function ArrangedInstallationView({ groups, tabs }: { groups: ArrangedGroupPaylo
         <div>
           <h1 id="warehouse-arranged">Project Team</h1>
           <p className={styles.kicker}>Details are from Project Team</p>
-          {tabs}
         </div>
         <div className={styles.arrNav}>
           {/* ‹ calendar › : previous week, the week of a picked day, next week */}
@@ -11194,6 +11199,8 @@ function ArrangedInstallationView({ groups, tabs }: { groups: ArrangedGroupPaylo
           />
         </div>
       </div>
+      {/* Tabs on the left, Sync on the right, across the full width */}
+      <div style={{ margin: "-4px 0 12px" }}>{tabs}</div>
 
       {/* Customer search, below the week buttons */}
       <div style={{ display: "flex", justifyContent: "flex-end", margin: "0 0 12px" }}>
@@ -11403,7 +11410,6 @@ function DeliveryScheduleView({ runs, tabs }: { runs: DeliveryRunPayload[]; tabs
         <div>
           <h1 id="warehouse-delivery">Project Team</h1>
           <p className={styles.kicker}>Details are from Project Team</p>
-          {tabs}
         </div>
         <div className={styles.arrNav}>
           <DateNav
@@ -11426,6 +11432,8 @@ function DeliveryScheduleView({ runs, tabs }: { runs: DeliveryRunPayload[]; tabs
           />
         </div>
       </div>
+      {/* Tabs on the left, Sync on the right, across the full width */}
+      <div style={{ margin: "-4px 0 12px" }}>{tabs}</div>
 
       <div style={{ display: "flex", justifyContent: "flex-end", margin: "0 0 12px" }}>
         <input
@@ -11674,7 +11682,26 @@ function ProjectTeamTabs({
           disabled={syncing}
           title="Read the latest Installation and Delivery Schedule from the Scheduling dashboard now"
         >
-          {syncing ? "Syncing…" : "🔄 Sync from Scheduling Dashboard"}
+          {/* Grey circular-arrows icon (spins while syncing) */}
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#6b7280"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+            className={syncing ? styles.syncSpin : undefined}
+            style={{ marginRight: "6px", verticalAlign: "-2px" }}
+          >
+            <path d="M21 12a9 9 0 0 1-15.5 6.2L3 16" />
+            <path d="M3 21v-5h5" />
+            <path d="M3 12a9 9 0 0 1 15.5-6.2L21 8" />
+            <path d="M21 3v5h-5" />
+          </svg>
+          {syncing ? "Syncing…" : "Sync from Scheduling Dashboard"}
         </button>
       </div>
     </div>
@@ -11728,14 +11755,18 @@ function StockByCustomerTab() {
         fetch("/api/warehouse/delivery?fresh=1", { credentials: "same-origin", cache: "no-store" }),
       ]);
       if (!arrangedRes.ok || !deliveryRes.ok) throw new Error("not ok");
-      const arrangedData = (await arrangedRes.json()) as { groups?: ArrangedGroupPayload[] };
+      const arrangedData = (await arrangedRes.json()) as { groups?: ArrangedGroupPayload[]; savedAt?: string | null };
       const deliveryData = (await deliveryRes.json()) as { runs?: DeliveryRunPayload[] };
       if (arrangedData.groups) setArranged(arrangedData.groups);
       if (deliveryData.runs) setDelivery(deliveryData.runs);
       setLoaded(true);
       setDeliveryLoaded(true);
+      const clock = (value: string | Date) =>
+        new Date(value).toLocaleString("en-GB", { timeZone: "Asia/Kuala_Lumpur", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+      // Also say when the Scheduling system itself last saved, so it is clear the inventory now
+      // shows exactly that version.
       setSyncNote(
-        `Synced at ${new Date().toLocaleTimeString("en-GB", { timeZone: "Asia/Kuala_Lumpur", hour: "2-digit", minute: "2-digit" })}`,
+        `Synced ${clock(new Date())}${arrangedData.savedAt ? ` · Scheduling data saved ${clock(arrangedData.savedAt)}` : ""}`,
       );
     } catch {
       setSyncNote("Sync failed. Check the connection and try again.");

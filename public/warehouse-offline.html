@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#bf9000" />
+    <title>Inventory Management – Offline</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #f7f6f3;
+        color: #111;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        padding: 16px;
+        box-sizing: border-box;
+      }
+      .card {
+        max-width: 360px;
+        text-align: center;
+      }
+      img {
+        width: 72px;
+        height: 72px;
+        border-radius: 16px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 16px 0 8px;
+      }
+      p {
+        font-size: 14px;
+        color: #444;
+        margin: 0 0 20px;
+      }
+      button {
+        background: #bf9000;
+        color: #fff;
+        border: 0;
+        border-radius: 8px;
+        padding: 10px 18px;
+        font-size: 15px;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <img src="/warehouse-icons/icon-192.png" alt="" />
+      <h1>You're offline</h1>
+      <p>Inventory Management needs a connection to load stock, jobs and photos. Check the phone's Wi-Fi or data, then try again.</p>
+      <button type="button" onclick="location.reload()">Try again</button>
+    </div>
+  </body>
+</html>
