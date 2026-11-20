@@ -10,6 +10,8 @@ export const dynamic = "force-dynamic";
 // (Panel, Inverter, Battery, Mounting Structure, Electrical Item) per lorry. A lorry is its slot
 // day, driver and plate ("2026-11-16|HERY|WJX 3918"). Once every card has a photo, the lorry
 // can be submitted as loaded.
+// The same table also keeps a Stock Out job's own photos under "job:<reference>" (e.g. the photo
+// of the panel boxes taken on Preparing, item "panel"); those are a record only.
 //
 //  - GET ?lorry=<key>: { photos: { panel: "data:image/jpeg;base64,…", … } }
 //  - PUT { lorry, item, photo }: saves (or replaces) that card's photo.

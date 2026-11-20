@@ -5,7 +5,13 @@ import { requireAdmin } from "@/lib/warehouse-auth";
 import { queryProxy } from "@/lib/proxy-db";
 import { querySource } from "@/lib/source-api";
 import { toTitleCase } from "@/lib/title-case";
-import { ensureWarehouseUsersTable, toWarehouseUser, WAREHOUSE_ROLES, type WarehouseUserRow } from "@/lib/warehouse-users";
+import {
+  ensureWarehouseUsersTable,
+  OUTSIDE_PROD_MAIN_ROLES,
+  toWarehouseUser,
+  WAREHOUSE_ROLES,
+  type WarehouseUserRow,
+} from "@/lib/warehouse-users";
 
 export const dynamic = "force-dynamic";
 
@@ -49,8 +55,8 @@ const createSchema = z.object({
 });
 
 // The name has to be one that exists in prod_main's "user" table: checked here on the
-// server, whatever the form sends. Only a Loading user (view only) may be someone outside
-// prod_main (e.g. a lorry driver or helper); then the typed name and phone number are used.
+// server, whatever the form sends. Only a Driver or Storekeeper (role) may be someone outside
+// prod_main; then the typed name and phone number are used. (Page access no longer decides this.)
 export async function POST(request: Request) {
   let admin;
   try {
@@ -70,10 +76,10 @@ export async function POST(request: Request) {
       [parsed.data.name.trim()],
     );
     const person = found[0];
-    const outsideLoading = !person?.name && parsed.data.pageAccess === "loading";
-    if (!person?.name && !outsideLoading) {
+    const outsideAllowed = !person?.name && OUTSIDE_PROD_MAIN_ROLES.includes(parsed.data.role ?? "");
+    if (!person?.name && !outsideAllowed) {
       return NextResponse.json(
-        { error: "That name is not in prod_main. Pick a name from the list, or choose Loading access." },
+        { error: "That name is not in prod_main. Pick a name from the list, or choose the Driver or Storekeeper role." },
         { status: 400 },
       );
     }

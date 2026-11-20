@@ -6631,3 +6631,79 @@ th.instDateCol {
   font-weight: 700;
   text-align: right;
 }
+
+/* Lorry photo box used as a button (opens the in-page camera) */
+button.lorryPhotoBox {
+  width: 100%;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+}
+
+/* In-page camera (PhotoCamera), shown inside the photo box: live picture, buttons below */
+.photoCamBox {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.photoCamView {
+  position: relative;
+  background: #000;
+  border-radius: 10px;
+  overflow: hidden;
+  min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.photoCamVideo {
+  width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  display: block;
+}
+
+.photoCamHint {
+  position: absolute;
+  inset: auto 12px 12px;
+  color: #fff;
+  font-size: 13px;
+  text-align: center;
+}
+
+.photoCamButtons {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+
+/* Project Team: tabs on the left, "Sync from Scheduling Dashboard" on the right */
+.projectTeamBar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.projectTeamSync {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Loading page: "Table follows slot/ loading date." left, Type legend right, one row */
+.loadingNoteRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0 0 6px;
+}

@@ -61,6 +61,10 @@ export const WAREHOUSE_ROLES = [
   "Driver",
 ] as const;
 
+// Roles whose people may be added without a name in prod_main (e.g. lorry drivers and store
+// helpers who have no company account): the typed name and phone number are used.
+export const OUTSIDE_PROD_MAIN_ROLES: readonly string[] = ["Driver", "Storekeeper"];
+
 export function toWarehouseUser(row: WarehouseUserRow) {
   return {
     id: row.id,

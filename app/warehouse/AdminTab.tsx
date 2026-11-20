@@ -42,6 +42,8 @@ type AdminUser = {
 
 // Job roles (a label only; page access decides what a user can open). Same list as the server.
 const ROLE_OPTIONS = ["IT Admin", "Warehouse Manager", "Warehouse Assistant", "Sales Agent", "Storekeeper", "Driver"];
+// These roles may be added without a name in prod_main (same rule as the server).
+const OUTSIDE_ROLES = ["Driver", "Storekeeper"];
 
 function formatTime(iso: string): string {
   const date = new Date(iso);
@@ -113,13 +115,13 @@ export default function AdminTab() {
   async function addUser(event: FormEvent) {
     event.preventDefault();
     setFormMessage(null);
-    // Loading access (view only) may be someone outside prod_main: then the typed name is used.
+    // A Driver or Storekeeper may be someone outside prod_main: then the typed name is used.
     const typedName = nameQuery.trim().replace(/ +/g, " ");
-    const name = picked?.name ?? (pageAccess === "loading" ? typedName : "");
+    const name = picked?.name ?? (OUTSIDE_ROLES.includes(role) ? typedName : "");
     if (!name) {
       setFormMessage({
         ok: false,
-        text: "Pick a name from the list. Only names in prod_main can be added (or choose Loading access for someone outside prod_main).",
+        text: "Pick a name from the list. Only names in prod_main can be added (or choose the Driver or Storekeeper role for someone outside prod_main).",
       });
       return;
     }
@@ -480,7 +482,7 @@ export default function AdminTab() {
                 className={`${styles.scannerInput} ${styles.transferField} ${styles.adminField}`}
                 style={{ minWidth: 0, height: "42px" }}
                 value={nameQuery}
-                placeholder={pageAccess === "loading" ? "Type any name (or search prod_main)" : "Type to search prod_main"}
+                placeholder={OUTSIDE_ROLES.includes(role) ? "Type any name (or search prod_main)" : "Type to search prod_main"}
                 onChange={(e) => {
                   setNameQuery(e.target.value);
                   setPicked(null);
@@ -530,9 +532,9 @@ export default function AdminTab() {
                 {!picked && searching && <span style={{ display: "block", padding: "6px 10px", border: "1px solid var(--line)", borderRadius: "8px", background: "var(--surface)", fontSize: "11px", fontWeight: 500, color: "var(--muted)" }}>Searching…</span>}
                 {!picked && !searching && nameQuery.trim().length >= 2 && suggestions.length === 0 && (
                   <span style={{ display: "block", padding: "6px 10px", border: "1px solid var(--line)", borderRadius: "8px", background: "var(--surface)", fontSize: "11px", fontWeight: 500, color: "var(--muted)" }}>
-                    {pageAccess === "loading"
-                      ? "Not in prod_main: will be added as typed (Loading access)."
-                      : "No matching name in prod_main. Choose Loading access to add someone outside prod_main."}
+                    {OUTSIDE_ROLES.includes(role)
+                      ? `Not in prod_main: will be added as typed (${role}).`
+                      : "No matching name in prod_main. Choose the Driver or Storekeeper role to add someone outside prod_main."}
                   </span>
                 )}
               </div>

@@ -36,6 +36,8 @@ function load(requestUrl: string): Promise<InstallationJob[]> {
 }
 
 export async function warehouseJobs(requestUrl: string): Promise<InstallationJob[]> {
+  // "Sync from Scheduling Dashboard" (?fresh=1): wait for a fresh load instead of the copy.
+  if (new URL(requestUrl).searchParams.get("fresh") === "1") return load(requestUrl);
   const age = last ? Date.now() - last.at : Infinity;
   if (last && age < FRESH_MS) return last.jobs;
   if (last && age < STALE_MS) {

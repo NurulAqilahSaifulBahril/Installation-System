@@ -3,7 +3,7 @@ import { z } from "zod";
 import { AuthError } from "@/lib/auth";
 import { requireAdmin } from "@/lib/warehouse-auth";
 import { queryProxy } from "@/lib/proxy-db";
-import { ensureWarehouseUsersTable, WAREHOUSE_ROLES } from "@/lib/warehouse-users";
+import { ensureWarehouseUsersTable, OUTSIDE_PROD_MAIN_ROLES, WAREHOUSE_ROLES } from "@/lib/warehouse-users";
 import { querySource } from "@/lib/source-api";
 
 export const dynamic = "force-dynamic";
@@ -37,22 +37,23 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
 
   try {
     await ensureWarehouseUsersTable();
-    const target = await queryProxy<{ id: string; name: string; page_access: string }>(
-      "select id, name, page_access from public.warehouse_users where id = $1",
+    const target = await queryProxy<{ id: string; name: string; page_access: string; role: string | null }>(
+      "select id, name, page_access, role from public.warehouse_users where id = $1",
       [id],
     );
     if (target.length === 0) return NextResponse.json({ error: "User not found." }, { status: 404 });
 
-    // Staff and Admin must be people in prod_main; only Loading users may be from outside it.
-    const nextAccess = parsed.data.pageAccess;
-    if ((nextAccess === "admin" || nextAccess === "staff") && nextAccess !== target[0].page_access) {
+    // Someone outside prod_main must keep the Driver or Storekeeper role: moving them to any other
+    // role is refused. (Page access no longer decides this.)
+    const nextRole = parsed.data.role;
+    if (nextRole !== undefined && nextRole !== (target[0].role ?? "") && !OUTSIDE_PROD_MAIN_ROLES.includes(nextRole)) {
       const found = await querySource<{ name: string | null }>(
         'select name from public."user" where lower(trim(name)) = lower($1) limit 1',
         [target[0].name.trim()],
       );
       if (!found[0]?.name) {
         return NextResponse.json(
-          { error: "This person is not in prod_main, so they can only have Loading access." },
+          { error: "This person is not in prod_main, so their role can only be Driver or Storekeeper." },
           { status: 400 },
         );
       }
