@@ -9,6 +9,7 @@ import { DeliveryOrderDialog } from "./DeliveryOrder";
 import { LorryTimeline, type TimelineRun } from "./LorryTimeline";
 import { watchDeliveryRuns } from "./delivery-feed";
 import { PhotoCamera } from "./PhotoCamera";
+import { TrainingVideo, trainingHidden } from "./TrainingVideo";
 
 // The Loading page's lorry timeline (LorryTimeline) is hidden for now.
 const SHOW_LORRY_TIMELINE = false;
@@ -69,6 +70,9 @@ export default function WarehousePage() {
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [signedInPhone, setSignedInPhone] = useState<string | null>(null);
+  // "How to use" video, reopened from the How to use button once signed in (it is offered on
+  // the sign-in page).
+  const [howtoOpen, setHowtoOpen] = useState(false);
   // The username of the Inventory Management user this phone number belongs to (for "Hi …!").
   const [signedInUsername, setSignedInUsername] = useState("");
   // "admin" or "staff" for a registered phone number; "" when it is not registered.
@@ -205,11 +209,15 @@ export default function WarehousePage() {
             <img className={styles.brandLogo} src={LOGO_SRC} alt="Eternalgy" width={1332} height={176} />
             <div className={styles.brandRight}>
               <span className={styles.brandUser}>{signedInUsername ? `Hi ${signedInUsername}!` : "Hi!"}</span>
+              <button className={styles.brandSignOut} type="button" onClick={() => setHowtoOpen(true)}>
+                How to use
+              </button>
               <button className={styles.brandSignOut} type="button" onClick={signOut}>
                 Sign out
               </button>
             </div>
           </header>
+          {howtoOpen && <TrainingVideo who="device" onClose={() => setHowtoOpen(false)} />}
           <Dashboard phone={signedInPhone} username={signedInUsername} access={signedInAccess} model={model} onSignOut={signOut} onSelect={setModel} />
         </>
       ) : (
@@ -241,6 +249,11 @@ function SignIn({
   onCode: (value: string) => void;
   onSubmit: (event: FormEvent) => void;
 }) {
+  // "How to use" video, offered when the sign-in page opens, and from the link under the form.
+  const [howtoOpen, setHowtoOpen] = useState(false);
+  useEffect(() => {
+    if (!trainingHidden("device")) setHowtoOpen(true);
+  }, []);
   const fields = (
     <>
       <label className={styles.field}>
@@ -286,6 +299,10 @@ function SignIn({
       <form className={`${styles.form} ${styles.inlineForm}`} onSubmit={onSubmit} aria-label="Sign in">
         {fields}
       </form>
+      <button type="button" className={styles.howtoLink} onClick={() => setHowtoOpen(true)}>
+        ▶ How to use Inventory Management
+      </button>
+      {howtoOpen && <TrainingVideo who="device" onClose={() => setHowtoOpen(false)} />}
     </section>
   );
 }
@@ -726,6 +743,16 @@ const TEST_LOADED_REFS = new Set<string>();
 const TEST_LOADING_PREPARING: Record<string, string> = {
   "INV-1011113": "2026-10-20", // OOI IN HAN (KHAIRUL's 8am run): left out of the 20 Oct loaded jobs
 };
+// DEMO ONLY (training video): on a local copy (localhost / 127.0.0.1) this Preparing job opens with
+// every item already scanned or counted, so the green Submit can be shown. Nothing of it is saved
+// (the job page's automatic saves are switched off for it), and it never applies on Railway.
+const LOCAL_DEMO_JOB = "INV-1011991"; // NG QING-MIM
+function isLocalDemoJob(tx: StockTransaction): boolean {
+  if (typeof window === "undefined") return false;
+  const host = window.location.hostname;
+  return (host === "localhost" || host === "127.0.0.1") && tx.reference === LOCAL_DEMO_JOB && tx.status !== "Verified";
+}
+
 // TEST ONLY: a test job (23 Oct installs, or a 20 Oct slot job) that gets sample scans and names.
 function isTestVerifiedJob(tx: StockTransaction): boolean {
   return (
@@ -742,7 +769,7 @@ function sampleWarehouseScans(
   tx: StockTransaction,
   serialLines: StockOutLine[],
 ): { boxes: { code: string; qty: number }[]; scans: { serial: string; lineIdx: number }[] } | null {
-  if (!isTestVerifiedJob(tx)) return null;
+  if (!isTestVerifiedJob(tx) && !isLocalDemoJob(tx)) return null;
   const job = tx.reference;
   const boxes: { code: string; qty: number }[] = [];
   const scans: { serial: string; lineIdx: number }[] = [];
@@ -4449,7 +4476,11 @@ function StockOutVerificationPage({
     const present = STOCK_OUT_TABS.find(([id]) => lines.some((line) => line.category === id));
     return present ? present[0] : "panel";
   });
-  const [bulkQty, setBulkQty] = useState<Record<number, string>>({});
+  // DEMO ONLY: the local demo job opens with every counted line filled in.
+  const demoJob = isLocalDemoJob(tx);
+  const [bulkQty, setBulkQty] = useState<Record<number, string>>(() =>
+    demoJob ? Object.fromEntries(bulkLines.map((_, i) => [i, "1"])) : {},
+  );
 
   // Mounting structure: suggested parts from the PV drawing's layout (entered by hand
   // from the drawing), and the quantity actually loaded per part.
@@ -4462,7 +4493,9 @@ function StockOutVerificationPage({
     const total = lines.filter((line) => line.category === "panel").reduce((sum, line) => sum + (line.qty ?? 0), 0);
     return String(Math.max(1, Math.ceil(total / 3)));
   });
-  const [partQty, setPartQty] = useState<Record<string, string>>({});
+  const [partQty, setPartQty] = useState<Record<string, string>>(() =>
+    demoJob ? ({ "Rail splice": "6", "3.6M": "14", "2.4M": "4" } as Record<string, string>) : {},
+  );
   // How many boxes the mounting structure is packed into for this job.
   const [mountBoxQty, setMountBoxQty] = useState("");
   // How many boxes the electrical items are packed into for this job.
@@ -4501,7 +4534,9 @@ function StockOutVerificationPage({
   // PV drawings the user ticked to appear on the report (by link), saved per job.
   const [pvPicked, setPvPicked] = useState<Record<string, string>>({});
   const [elecGroup, setElecGroup] = useState(ELECTRICAL_GROUPS[0].label);
-  const [elecQty, setElecQty] = useState<Record<string, string>>({});
+  const [elecQty, setElecQty] = useState<Record<string, string>>(() =>
+    demoJob ? Object.fromEntries(ELECTRICAL_GROUPS[0].parts.slice(0, 3).map((name) => [name, "2"])) : {},
+  );
   const [commGroup, setCommGroup] = useState(COMMERCIAL_GROUPS[0].label);
   const panelCount = lines.filter((line) => line.category === "panel").reduce((sum, line) => sum + (line.qty ?? 0), 0);
   const mountEstimate = useMemo(
@@ -4781,8 +4816,8 @@ function StockOutVerificationPage({
   }, [tx.reference]);
   useEffect(() => {
     // Only after the saved values were read, so an early keystroke cannot wipe them. A job
-    // that is already Verified still saves what is typed.
-    if (!entriesLoaded.current) return;
+    // that is already Verified still saves what is typed. (The local demo job saves nothing.)
+    if (!entriesLoaded.current || demoJob) return;
     const timer = setTimeout(() => {
       const entries = [
         ...Object.entries(partQty)
@@ -4819,7 +4854,7 @@ function StockOutVerificationPage({
   // Record who completed each material (once): all units scanned, or all quantities entered.
   const recordedMaterials = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (tx.status === "Verified") return;
+    if (tx.status === "Verified" || demoJob) return;
     STOCK_OUT_TABS.forEach(([id]) => {
       if (recordedMaterials.current.has(id)) return;
       const serialRequired = slots.filter((slot) => slot.line.category === id).length;

@@ -38,6 +38,8 @@ export function middleware(request: NextRequest) {
     pathname === "/warehouse.webmanifest" ||
     pathname === "/warehouse-sw.js" ||
     pathname === "/warehouse-offline.html" ||
+    // The "How to use" video on the sign-in page (customer details blurred in it).
+    /^\/training\/[\w-]+\.mp4$/.test(pathname) ||
     /\.(png|jpg|jpeg|svg|gif|ico|webp)$/.test(pathname);
 
   if (isPublic) return withAppId(NextResponse.next());
