@@ -10,19 +10,21 @@ import styles from "./warehouse.module.css";
 
 const VIDEO_SRC = "/training/how-to-part1.mp4";
 // Length of the video in seconds, used until the browser has read it from the file.
-const VIDEO_LENGTH = 432;
+const VIDEO_LENGTH = 578;
 
 // Chapters, YouTube style: the progress bar is split at each one, hovering shows its name, and
-// the list under the video jumps to it. Start times (seconds) are where the screen changes to
-// that part in how-to-part1.mp4; re-check them if the video is rebuilt.
+// the list under the video jumps to it. Start times (seconds) come from the video build
+// (training-video/*.chapters.json); copy them here whenever the video is rebuilt.
 const CHAPTERS = [
   { start: 0, title: "Sign in" },
-  { start: 28, title: "Home page" },
-  { start: 118, title: "Stock Out" },
-  { start: 206, title: "New Stock Out" },
-  { start: 281, title: "Preparing a job (scanning)" },
-  { start: 374, title: "Submit and Verified" },
-  { start: 414, title: "Loading" },
+  { start: 30.6, title: "Home page" },
+  { start: 118.6, title: "Stock Out" },
+  { start: 206.2, title: "New Stock Out" },
+  { start: 280, title: "Preparing a job (scanning)" },
+  { start: 373, title: "Submit and Verified" },
+  { start: 412.8, title: "Loading" },
+  { start: 496.6, title: "Lorry photos" },
+  { start: 525.8, title: "Loading: Submit and Verified" },
 ];
 
 function clock(seconds: number) {
