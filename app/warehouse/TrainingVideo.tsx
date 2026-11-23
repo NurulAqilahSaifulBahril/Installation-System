@@ -60,8 +60,8 @@ export function TrainingVideo({ who, onClose }: { who: string; onClose: () => vo
           />
         ) : (
           <p className={styles.howtoText}>
-            A short video (about 5 minutes) on signing in, the Home page and Stock Out: preparing a job,
-            scanning, Submit and Verified.
+            A short video on signing in, the Home page, Stock Out (preparing a job, scanning, Submit and
+            Verified) and Loading (lorry photos, Submit and Verified).
           </p>
         )}
 

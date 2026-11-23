@@ -11899,7 +11899,18 @@ function LorryLoadingPage({
   // shows "Take lorry photo" for it; once every card with something on it has a photo, Submit
   // unlocks and marks every customer on the lorry loaded.
   const lorryKey = `${day}|${driver.trim().toUpperCase()}|${plate.trim().toUpperCase()}`;
-  const [photos, setPhotos] = useState<Record<string, string>>({});
+  // DEMO ONLY (training video): on a local copy (localhost / 127.0.0.1), lorries on the 20 and
+  // 21 Oct test days open with a sample photo on every card, so the green Submit and the
+  // Verified view can be shown. Nothing of it is saved, and it never applies on Railway.
+  const localPhotoDemo =
+    typeof window !== "undefined" &&
+    (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") &&
+    (day === "2026-10-20" || day === "2026-10-21");
+  const [photos, setPhotos] = useState<Record<string, string>>(() =>
+    localPhotoDemo
+      ? Object.fromEntries(itemCards.filter((item) => item.count > 0).map((item) => [item.id, "/dummy-lorry-load.jpg"]))
+      : {},
+  );
   const [photoBusy, setPhotoBusy] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);

@@ -12,3 +12,5 @@ scratch
 backups
 data
 release
+training-video
+__pycache__
