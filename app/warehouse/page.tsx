@@ -13381,10 +13381,18 @@ function StockOutLorryPage({
   useEffect(() => {
     if (stage !== "verified" || !lorryKey) return;
     let cancelled = false;
+    // TEST ONLY: a TEST_PREPARED_SLOT_DATE lorry shows a sample photo on every card (page only,
+    // never saved); a photo taken or saved for the lorry shows instead.
+    if (lorryKey.startsWith(`lorry:${TEST_PREPARED_SLOT_DATE}|`)) {
+      setLoadingPhotos((prev) => ({
+        ...Object.fromEntries(LOADING_PHOTO_ITEMS.map((item) => [item, "/dummy-lorry-load.jpg"])),
+        ...prev,
+      }));
+    }
     fetch(`/api/warehouse/lorry-photos?lorry=${encodeURIComponent(lorryKey)}`, { credentials: "same-origin", cache: "no-store" })
       .then(async (res) => (res.ok ? ((await res.json()) as { photos?: Record<string, string> }) : null))
       .then((data) => {
-        if (!cancelled && data?.photos) setLoadingPhotos((prev) => ({ ...data.photos, ...prev }));
+        if (!cancelled && data?.photos) setLoadingPhotos((prev) => ({ ...prev, ...data.photos }));
       })
       .catch(() => undefined);
     return () => {
