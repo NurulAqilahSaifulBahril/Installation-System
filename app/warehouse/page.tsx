@@ -13095,6 +13095,25 @@ function StockOutLorryPage({
   // The picked customer's details show for Panel / Inverter / Battery and Mounting Structure.
   const rowDetails = pickedSerial || itemPick === "mounting";
   const detailTx = rowDetails ? pickedCustomer : undefined;
+  // Mounting Structure: one table for the lorry. With a customer row picked, it also shows that
+  // customer's invoice line, panels, suggested parts and what is saved on the job; unpicked,
+  // the lorry's own figures only.
+  const mountFocus = (() => {
+    if (itemPick !== "mounting" || !detailTx) return null;
+    const panels = unitsNeeded(detailTx, "panel");
+    const runs = Math.max(1, Math.ceil(panels / 3));
+    const saved = (entriesByJob[detailTx.reference] ?? []).filter((entry) => entry.kind === "mounting_part");
+    return {
+      name: detailTx.schedule?.customerName ?? detailTx.party,
+      ref: detailTx.schedule?.jobId ?? detailTx.reference,
+      lines: txLines(detailTx).filter((line) => line.category === "mounting"),
+      panels,
+      runs,
+      estimate: panels > 0 ? estimateMounting({ system: mountSystem, roof: mountRoof, orientation: mountOrientation, panels, rows: runs }) : null,
+      savedQty: Object.fromEntries(saved.map((entry) => [entry.key, entry.value])) as Record<string, string>,
+      box: boxCountOf(detailTx, "mounting"),
+    };
+  })();
   // A different card closes the camera and clears the message. The picked customer stays,
   // unless the new card hides it from the table.
   useEffect(() => {
@@ -13334,136 +13353,6 @@ function StockOutLorryPage({
           )}
         </div>
       )}
-
-      {/* The tapped customer's details for the picked item only */}
-      {/* Mounting Structure: the tapped customer's invoice lines, panels, suggested parts (with
-          the System / Roof set in the lorry table) and anything already saved on the job */}
-      {detailTx &&
-        itemPick === "mounting" &&
-        (() => {
-          const name = detailTx.schedule?.customerName ?? detailTx.party;
-          const mountLines = txLines(detailTx).filter((line) => line.category === "mounting");
-          const panels = unitsNeeded(detailTx, "panel");
-          const runs = Math.max(1, Math.ceil(panels / 3));
-          const estimate = estimateMounting({ system: mountSystem, roof: mountRoof, orientation: mountOrientation, panels, rows: runs });
-          const saved = (entriesByJob[detailTx.reference] ?? []).filter((entry) => entry.kind === "mounting_part");
-          const savedQty = Object.fromEntries(saved.map((entry) => [entry.key, entry.value]));
-          const box = boxCountOf(detailTx, "mounting");
-          const parts = (MOUNTING_SYSTEMS.find((system) => system.id === mountSystem)?.groups ?? []).flatMap((group) =>
-            group.parts.map((part) => ({ group: group.label, name: part.name })),
-          );
-          return (
-            <div className={styles.inspectCard} style={{ marginBottom: "14px" }}>
-              <h2 className={styles.inspectCardTitle} style={{ margin: 0 }}>
-                Mounting Structure – {name}{" "}
-                <span style={{ fontWeight: 400, color: "#555", fontSize: "12px" }}>{detailTx.schedule?.jobId ?? detailTx.reference}</span>
-              </h2>
-              <div style={{ marginTop: "8px", fontSize: "13px", color: "#000", display: "grid", gap: "2px" }}>
-                <div>
-                  <strong>On the invoice:</strong>{" "}
-                  {mountLines.length === 0
-                    ? "no mounting structure line"
-                    : mountLines.map((line) => (line.qty ? `${line.model} × ${line.qty}` : line.model)).join(", ")}
-                </div>
-                <div>
-                  <strong>Panels:</strong> {panels || "—"} · <strong>Runs (about 1 per 3 panels):</strong> {panels ? runs : "—"}
-                </div>
-                <div>
-                  <strong>Box Qty on the job:</strong> {box || "—"}
-                </div>
-              </div>
-              {panels > 0 && (
-                <div className={styles.tableWrap} style={{ marginTop: "10px" }}>
-                  <table className={`${styles.detailTable} ${styles.lorryTable}`}>
-                    <thead>
-                      <tr>
-                        <th scope="col">Part</th>
-                        <th scope="col" className={styles.num}>
-                          Suggested ({mountSystem === "winstar" ? "WINSTAR" : "MIBET"})
-                        </th>
-                        {saved.length > 0 && <th scope="col" className={styles.num}>Saved on job</th>}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {parts
-                        .filter((part) => estimate.parts[part.name] !== undefined || savedQty[part.name])
-                        .map((part) => (
-                          <tr key={`${part.group}-${part.name}`}>
-                            <td>
-                              {part.name} <span style={{ color: "#555", fontSize: "11px" }}>({part.group})</span>
-                            </td>
-                            <td className={styles.num}>{estimate.parts[part.name] ?? "—"}</td>
-                            {saved.length > 0 && <td className={styles.num}>{savedQty[part.name] || "—"}</td>}
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          );
-        })()}
-
-      {detailTx &&
-        pickedSerial &&
-        (() => {
-          const { serialLines, scanned } = progressOf(detailTx);
-          const verified = detailTx.status === "Verified";
-          const rows = serialLines
-            .map((line, i) => ({ line, done: verified ? line.qty ?? 0 : scanned[i] }))
-            .filter((row) => row.line.category === itemPick);
-          const need = rows.reduce((sum, row) => sum + (row.line.qty ?? 0), 0);
-          const done = rows.reduce((sum, row) => sum + Math.min(row.done, row.line.qty ?? 0), 0);
-          const codes = (scansByJob[detailTx.reference] ?? []).filter((scan) => scan.category === itemPick);
-          return (
-            <div className={styles.inspectCard} style={{ marginBottom: "14px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "8px", flexWrap: "wrap" }}>
-                <h2 className={styles.inspectCardTitle} style={{ margin: 0 }}>
-                  {pickedLabel} – {detailTx.schedule?.customerName ?? detailTx.party}{" "}
-                  <span style={{ fontWeight: 400, color: "#555", fontSize: "12px" }}>{detailTx.schedule?.jobId ?? detailTx.reference}</span>
-                </h2>
-                <span style={{ fontWeight: 700, color: need > 0 && done >= need ? "var(--green)" : "#b45309" }}>
-                  {done} / {need} scanned
-                </span>
-              </div>
-              {rows.length === 0 ? (
-                <p className={styles.note} style={{ margin: "8px 0 0" }}>
-                  No {pickedLabel.toLowerCase()} for this customer.
-                </p>
-              ) : (
-                <div className={styles.tableWrap} style={{ marginTop: "10px" }}>
-                  <table className={`${styles.detailTable} ${styles.lorryTable}`}>
-                    <thead>
-                      <tr>
-                        <th scope="col">Model</th>
-                        <th scope="col" className={styles.num}>Qty</th>
-                        <th scope="col" className={styles.num}>Scanned</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((row, i) => (
-                        <tr key={`${row.line.model}-${i}`}>
-                          <td>{row.line.model}</td>
-                          <td className={styles.num}>{row.line.qty ?? "—"}</td>
-                          <td className={styles.num}>{Math.min(row.done, row.line.qty ?? 0)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              {/* What was scanned for this customer: box barcodes (panels inside) and serials */}
-              <div style={{ marginTop: "10px", fontSize: "13px", color: "#000" }}>
-                <strong>{itemPick === "panel" ? "Boxes / serials" : "Serials"}:</strong>{" "}
-                {codes.length === 0 ? (
-                  "none scanned yet"
-                ) : (
-                  <div style={{ marginTop: "6px" }}>{codes.map((scan) => scanChip(detailTx.reference, scan, !verified))}</div>
-                )}
-              </div>
-            </div>
-          );
-        })()}
 
       {/* Panel / Inverter / Battery: one scanner for the whole lorry */}
       {pickedSerial && txs.length > 0 && (
@@ -13740,6 +13629,35 @@ function StockOutLorryPage({
                 Panels on this lorry: <strong>{lorryPanels}</strong>
               </p>
             </div>
+            {/* The picked customer row (tap the row again to go back to the lorry only) */}
+            {mountFocus && (
+              <div
+                style={{
+                  margin: "0 0 10px",
+                  padding: "8px 10px",
+                  border: "1px solid var(--line)",
+                  borderRadius: "8px",
+                  fontSize: "13px",
+                  color: "#000",
+                  display: "grid",
+                  gap: "2px",
+                }}
+              >
+                <div style={{ fontWeight: 700 }}>
+                  {mountFocus.name} <span style={{ fontWeight: 400, color: "#555", fontSize: "12px" }}>{mountFocus.ref}</span>
+                </div>
+                <div>
+                  <strong>On the invoice:</strong>{" "}
+                  {mountFocus.lines.length === 0
+                    ? "no mounting structure line"
+                    : mountFocus.lines.map((line) => (line.qty ? `${line.model} × ${line.qty}` : line.model)).join(", ")}
+                </div>
+                <div>
+                  <strong>Panels:</strong> {mountFocus.panels || "—"} · <strong>Runs (about 1 per 3 panels):</strong>{" "}
+                  {mountFocus.panels ? mountFocus.runs : "—"} · <strong>Box Qty on the job:</strong> {mountFocus.box || "—"}
+                </div>
+              </div>
+            )}
             <div className={styles.txFilterPills} role="tablist" aria-label="Mounting group" style={{ marginBottom: "10px" }}>
               {mountTabs.map((mt) => (
                 <button
@@ -13759,7 +13677,12 @@ function StockOutLorryPage({
                 <thead>
                   <tr>
                     <th scope="col">Part</th>
-                    <th scope="col" className={styles.qtyCenter}>Qty</th>
+                    {/* Picked customer: their suggested parts, and what is saved on their job */}
+                    {mountFocus?.estimate && <th scope="col" className={styles.num}>Customer suggested</th>}
+                    {mountFocus && Object.keys(mountFocus.savedQty).length > 0 && (
+                      <th scope="col" className={styles.num}>Saved on job</th>
+                    )}
+                    <th scope="col" className={styles.qtyCenter}>{mountFocus ? "Lorry Qty" : "Qty"}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -13769,7 +13692,11 @@ function StockOutLorryPage({
                       <Fragment key={group.label}>
                         {mountTabGroups.length > 1 && (
                           <tr>
-                            <th scope="colgroup" colSpan={2} style={{ textAlign: "left" }}>
+                            <th
+                              scope="colgroup"
+                              colSpan={2 + (mountFocus?.estimate ? 1 : 0) + (mountFocus && Object.keys(mountFocus.savedQty).length > 0 ? 1 : 0)}
+                              style={{ textAlign: "left" }}
+                            >
                               {group.label}
                             </th>
                           </tr>
@@ -13777,6 +13704,10 @@ function StockOutLorryPage({
                         {group.parts.map((part) => (
                           <tr key={part.name}>
                             <td>{part.name}</td>
+                            {mountFocus?.estimate && <td className={styles.num}>{mountFocus.estimate.parts[part.name] ?? "—"}</td>}
+                            {mountFocus && Object.keys(mountFocus.savedQty).length > 0 && (
+                              <td className={styles.num}>{mountFocus.savedQty[part.name] || "—"}</td>
+                            )}
                             <td className={styles.qtyCenter}>
                               <input
                                 type="number"

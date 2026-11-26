@@ -128,11 +128,12 @@ export async function GET(request: Request) {
   const to = shiftDate(today, DAYS_AHEAD);
   const inWindow = (date: string | undefined) => Boolean(date) && date! >= from && date! <= to;
 
-  // Stock Out goes by the Delivery Schedule: every job on a delivery run in the window, plus
-  // booked jobs not (yet) on a run, by installation date.
-  const datedJobs = allJobs.filter(
-    (job) => Boolean(job.installationDate) && (inWindow(runDate.get(job.id)) || inWindow(job.installationDate?.slice(0, 10))),
-  );
+  // Stock Out shows only the Delivery Schedule: jobs on a delivery run in the window. A booked job
+  // on no run is left out until it is put on one. If the Delivery Schedule cannot be read, the
+  // booked jobs by installation date are used instead, so Stock Out is not left empty.
+  const datedJobs = ops
+    ? allJobs.filter((job) => inWindow(runDate.get(job.id)))
+    : allJobs.filter((job) => inWindow(job.installationDate?.slice(0, 10)));
   // Two prod_main reads, run side by side: which invoices were deleted (e.g. Heah Kee Thin's
   // INV-1011708, a deleted second invoice whose job stayed in the installation store; those jobs
   // are left out) and each invoice's own item lines (the job's saved text can lack lines, since ops
