@@ -347,6 +347,10 @@ export type StockOutScheduleData = {
   customerPhone?: string;
   customerAddress?: string;
   scheduledDate: string;
+  // Live jobs: the date of the job's own run on the Delivery Schedule (Stock Out's day).
+  slotDate?: string;
+  // Every day Stock Out lists the job on (its runs; a cancelled delivery: its latest run only).
+  slotDates?: string[];
   installerTeam: string;
   systemPackage?: string;
   allocatedQty: number;

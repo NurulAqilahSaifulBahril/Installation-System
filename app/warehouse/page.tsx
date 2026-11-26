@@ -3,6 +3,7 @@
 import AdminTab from "./AdminTab";
 import { PO_ITEM_TYPE_OPTIONS, UploadDoButton, poDay, useDoFiles, type DoFile } from "./DoFiles";
 import { cameraErrorMessage, openCameraStream } from "./camera";
+import SerialCamera from "./SerialCamera";
 import PoVerificationPage from "./PoVerification";
 import { DownloadReportButton, reportFileName } from "./ReportDownload";
 import { DeliveryOrderDialog } from "./DeliveryOrder";
@@ -538,9 +539,8 @@ function LoadingIcon() {
 
 const TABS: { id: TabId; label: string; shortLabel: string }[] = [
   { id: "home", label: "Home", shortLabel: "Home" },
-  // No Loading page: a lorry is sent to Site Check by Submit on Stock Out › Verified.
-  // Site Check page (shown as a house with a tick).
-  { id: "siteCheck", label: "Site Check", shortLabel: "Site Check" },
+  // No Loading or Site Check button here: a lorry is sent to Site Check by Submit on
+  // Stock Out › Loading, and Site Check is Stock Out's third tab (after Loading).
   { id: "stock", label: "Stock Details", shortLabel: "Stock" },
   { id: "customers", label: "Project Team", shortLabel: "Team" },
   // Shown (right-aligned, after Project Team) only when the session belongs to an admin.
@@ -558,6 +558,10 @@ type ScheduledJobPayload = {
   address: string;
   agentName: string;
   installationDate: string;
+  // The job's own Delivery Schedule run date (found by job on the server).
+  slotDate?: string;
+  // Every day Stock Out lists the job on.
+  slotDates?: string[];
   teams: string[];
   packageName: string;
   totalAmount: number;
@@ -652,6 +656,9 @@ const INVERTER_MODELS: Record<string, string[]> = {
 // phase letter (S single, T three) the invoice tag gives. A micro inverter already written as a
 // code ("M2-1.0K S2") is just tidied. A line that does not follow this shape is shown as written.
 function inverterModelCode(name: string): string {
+  // The invoice already names the model code ("[3P] SAJ H2-10K-LT2 Hybrid Inverter"): just that.
+  const code = name.match(/\b([A-Z]{1,2}\d+-\d+(?:\.\d+)?K-[A-Z0-9]+(?:-[A-Z0-9]+)*)\b/i);
+  if (code) return code[1].toUpperCase();
   const micro = name.match(/\bM(\d+)[\s-]*(\d+(?:\.\d+)?)\s*K\s*-?\s*S(\d+)\b/i);
   if (micro) return `M${micro[1]}-${micro[2]}K-S${micro[3]}`;
   const match = name.match(/\b([A-Z]{1,2}\d+)\s+(\d+(?:\.\d+)?)\s*KW\b/i);
@@ -739,6 +746,12 @@ const TEST_PREPARING_JOBS = new Set(["INV-1010698"]);
 const TEST_LOADED_SLOT_DATE = "2026-10-20";
 // The jobs found on those runs (filled in once the Delivery Schedule has loaded).
 const TEST_LOADED_REFS = new Set<string>();
+// TEST ONLY: every Stock Out job on a delivery run of this slot day counts as submitted on
+// Preparing (Verified, not loaded), with sample scans and names, so Stock Out › Loading can be
+// tried. Nothing is saved: it lives in the page only. Remove once real preparing is in use.
+const TEST_PREPARED_SLOT_DATE = "2026-11-24";
+// The jobs found on those runs (filled in once the Delivery Schedule has loaded).
+const TEST_PREPARED_REFS = new Set<string>();
 // TEST ONLY: jobs that count as Verified (not loaded) and sit on Loading › Preparing on the given
 // slot day (their real run is moved to that day in the page only), so Preparing can be tried.
 const TEST_LOADING_PREPARING: Record<string, string> = {
@@ -759,7 +772,10 @@ function isTestVerifiedJob(tx: StockTransaction): boolean {
   return (
     tx.id.startsWith("live-") &&
     tx.status === "Verified" &&
-    (tx.time === TEST_VERIFIED_DATE || TEST_LOADED_REFS.has(tx.reference) || tx.reference in TEST_LOADING_PREPARING)
+    (tx.time === TEST_VERIFIED_DATE ||
+      TEST_LOADED_REFS.has(tx.reference) ||
+      TEST_PREPARED_REFS.has(tx.reference) ||
+      tx.reference in TEST_LOADING_PREPARING)
   );
 }
 
@@ -848,9 +864,13 @@ function liveStockOutRows(jobs: ScheduledJobPayload[]): StockTransaction[] {
       customerPhone: job.customerPhone || undefined,
       customerAddress: job.address || undefined,
       scheduledDate: job.installationDate,
+      slotDate: job.slotDate || undefined,
+      slotDates: job.slotDates?.length ? job.slotDates : undefined,
       installerTeam: job.teams.join(", ") || "—",
       systemPackage: job.packageName || undefined,
-      commercial: job.commercial === true,
+      // Commercial (Special Material: trunking, cable gland, metal DB box): over 100 panels, as
+      // commercial jobs are factories. The package type (Tariff B) alone no longer counts.
+      commercial: panelQty > 100,
       allocatedQty: panelQty,
       dispatchedQty: 0,
       systemSizeKwp: kwp,
@@ -1830,6 +1850,8 @@ function Dashboard({
     stage: "preparing" | "verified";
     // The Stock Out list's day: with driver and plate it names the lorry (its saved entries).
     day: string;
+    // The Delivery Schedule run (names a lorry that has no driver or plate yet).
+    runId?: string;
   } | null>(null);
   // The lorry page's picked customer: its DO / Item List / PV Drawing window, shown on top.
   const [lorryDialog, setLorryDialog] = useState<{ txId: string; kind: "do" | "report" | "pv" } | null>(null);
@@ -1863,6 +1885,9 @@ function Dashboard({
     if (inspectTxId) window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [inspectTxId]);
   const [transactions, setTransactions] = useState<StockTransaction[]>(STOCK_TRANSACTIONS);
+  // The Stock Out jobs have been read (or could not be): until then Stock Out shows "Loading…"
+  // instead of a table that would redraw as the jobs arrive.
+  const [outLoaded, setOutLoaded] = useState(false);
   // Saved verification records: which job and material, and who completed it.
   const [verifications, setVerifications] = useState<VerificationRecord[]>([]);
   // TEST ONLY: TEST_LOADED_SLOT_DATE jobs count as Verified and loaded (in the page, not saved).
@@ -1890,6 +1915,27 @@ function Dashboard({
     setVerifications((prev) => {
       const missing = Array.from(refs).filter((ref) => !prev.some((r) => r.jobRef === ref && r.material === "loaded"));
       return missing.length > 0 ? [...prev, ...missing.map((jobRef) => ({ jobRef, material: "loaded", by: "Wei Hao" }))] : prev;
+    });
+  }, [testRuns, transactions, verifications]);
+  // TEST ONLY: TEST_PREPARED_SLOT_DATE jobs count as submitted on Preparing (Verified, not loaded),
+  // with "Checked by" (the job verification) as on a real Submit. In the page only, not saved.
+  useEffect(() => {
+    const lookup = buildEtaLookup(testRuns);
+    const refs = new Set(
+      transactions
+        .filter((t) => t.type === "out" && lookupEta(lookup, t)?.slotDate === TEST_PREPARED_SLOT_DATE)
+        .map((t) => t.reference),
+    );
+    if (refs.size === 0) return;
+    refs.forEach((ref) => TEST_PREPARED_REFS.add(ref));
+    setTransactions((prev) =>
+      prev.some((t) => refs.has(t.reference) && t.status !== "Verified")
+        ? prev.map((t) => (refs.has(t.reference) ? { ...t, status: "Verified" as const, issueRemark: undefined } : t))
+        : prev,
+    );
+    setVerifications((prev) => {
+      const missing = Array.from(refs).filter((ref) => !prev.some((r) => r.jobRef === ref && r.material === "job"));
+      return missing.length > 0 ? [...prev, ...missing.map((jobRef) => ({ jobRef, material: "job", by: "Jia Keat" }))] : prev;
     });
   }, [testRuns, transactions, verifications]);
   // "+ New Stock Out" form (last-minute item taken by the PIC) is open.
@@ -1963,6 +2009,9 @@ function Dashboard({
       })
       .catch((err) => {
         console.error("Live schedule failed", err);
+      })
+      .finally(() => {
+        if (!cancelled) setOutLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -2035,10 +2084,10 @@ function Dashboard({
         driver={outLorryView.driver}
         plate={outLorryView.plate}
         stage={outLorryView.stage}
-        lorryKey={stockOutLorryKey(outLorryView.day, outLorryView.driver, outLorryView.plate)}
+        lorryKey={stockOutLorryKey(outLorryView.day, outLorryView.driver, outLorryView.plate, outLorryView.runId)}
         lorryPackedBy={Object.fromEntries(
           verifications
-            .filter((r) => r.jobRef === stockOutLorryKey(outLorryView.day, outLorryView.driver, outLorryView.plate) && r.by)
+            .filter((r) => r.jobRef === stockOutLorryKey(outLorryView.day, outLorryView.driver, outLorryView.plate, outLorryView.runId) && r.by)
             .map((r) => [r.material, r.by]),
         )}
         txs={outLorryView.txIds
@@ -2274,6 +2323,7 @@ function Dashboard({
           </button>
         </nav>
         <HomeTab
+          outLoaded={outLoaded}
           transactions={transactions}
           onInspectTx={(id) => setInspectTxId(id)}
           onSignOut={onSignOut}
@@ -2352,8 +2402,40 @@ function Dashboard({
         ))}
       </nav>
 
-      {tab === "home" && (
+      {/* Stock Out › Site Check: the Site Check page (the loaded jobs, scanned on site), shown
+          under Stock Out instead of as its own tab */}
+      {tab === "home" && homeShowsTx && homeTxType === "out" && homeTxStatusTab === "siteCheck" && (
         <HomeTab
+          key="stock-out-site-check"
+          outLoaded={outLoaded}
+          stockOutSiteCheck
+          transactions={transactions}
+          onInspectTx={(id) => setInspectTxId(id)}
+          onSignOut={onSignOut}
+          onInverterOpen={() => {}}
+          showTx
+          onShowTx={setHomeShowsTx}
+          txType="all"
+          setTxType={setHomeTxType}
+          txCat={homeTxCat}
+          setTxCat={setHomeTxCat}
+          txStatusTab="loading"
+          setTxStatusTab={setHomeTxStatusTab}
+          selectedDay={homeDay}
+          setSelectedDay={setHomeDay}
+          onOpenTransfer={() => {}}
+          onNewStockOut={() => {}}
+          onOpenStock={() => {}}
+          canUpload={false}
+          verifications={verifications}
+          loadingOnly
+          loadingMode="loaded"
+        />
+      )}
+      {tab === "home" && !(homeShowsTx && homeTxType === "out" && homeTxStatusTab === "siteCheck") && (
+        <HomeTab
+          key="home"
+          outLoaded={outLoaded}
           transactions={transactions}
           onInspectTx={(id) => setInspectTxId(id)}
           onSignOut={onSignOut}
@@ -2407,33 +2489,6 @@ function Dashboard({
           initialItem={stockFocus?.item}
           initialWarehouse={stockFocus?.wh}
         />}
-      {/* Site Check page: the loaded jobs (scan each panel on site), as the Loading page's Site
-          Check tab was. */}
-      {tab === "siteCheck" && (
-        <HomeTab
-          transactions={transactions}
-          onInspectTx={(id) => setInspectTxId(id)}
-          onSignOut={onSignOut}
-          onInverterOpen={() => {}}
-          showTx
-          onShowTx={() => {}}
-          txType="all"
-          setTxType={setHomeTxType}
-          txCat={homeTxCat}
-          setTxCat={setHomeTxCat}
-          txStatusTab="loading"
-          setTxStatusTab={setHomeTxStatusTab}
-          selectedDay={homeDay}
-          setSelectedDay={setHomeDay}
-          onOpenTransfer={() => {}}
-          onNewStockOut={() => {}}
-          onOpenStock={() => {}}
-          canUpload={false}
-          verifications={verifications}
-          loadingOnly
-          loadingMode="loaded"
-        />
-      )}
       {tab === "customers" && <StockByCustomerTab />}
       {tab === "admin" && isAdmin && <AdminTab />}
     </>
@@ -2553,11 +2608,31 @@ function customerNameKey(name: string | undefined | null): string {
 // number, and by customer name as a fallback: the same customer can be on the run under another
 // of their invoices (e.g. "HEAH KEE THIN (ATAP)" is installed under one invoice but delivered
 // under another).
-type EtaInfo = { date: string; time: string; installDate: string; installTime: string; slotDate: string; slotTime: string; driver: string; lorry: string };
-type EtaLookup = { byInvoice: Record<string, EtaInfo>; byName: Record<string, EtaInfo> };
+// runId: the Delivery Schedule run the job is on (each run is its own lorry on Stock Out).
+type EtaInfo = {
+  date: string;
+  time: string;
+  installDate: string;
+  installTime: string;
+  slotDate: string;
+  slotTime: string;
+  driver: string;
+  lorry: string;
+  runId: string;
+};
+// byInvoiceDay / byNameDay: the same for one run day ("<key>|<YYYY-MM-DD>"), for a job on more
+// than one run.
+type EtaLookup = {
+  byInvoice: Record<string, EtaInfo>;
+  byName: Record<string, EtaInfo>;
+  byInvoiceDay: Record<string, EtaInfo>;
+  byNameDay: Record<string, EtaInfo>;
+};
 function buildEtaLookup(runs: TimelineRun[]): EtaLookup {
   const byInvoice: Record<string, EtaInfo> = {};
   const byName: Record<string, EtaInfo> = {};
+  const byInvoiceDay: Record<string, EtaInfo> = {};
+  const byNameDay: Record<string, EtaInfo> = {};
   // Runs come oldest first, so a later run overwrites an earlier one.
   runs.forEach((run) =>
     run.customers.forEach((c) => {
@@ -2571,26 +2646,37 @@ function buildEtaLookup(runs: TimelineRun[]): EtaLookup {
         // The run's driver and lorry plate on the Delivery Schedule.
         driver: run.deliveryPic,
         lorry: run.plateNumber ?? "",
+        runId: run.id,
       };
       const key = c.invoice.replace(/\D/g, "");
-      if (key) byInvoice[key] = info;
+      if (key) {
+        byInvoice[key] = info;
+        byInvoiceDay[`${key}|${run.deliveryDate}`] = info;
+      }
       const name = customerNameKey(c.name);
-      if (name) byName[name] = info;
+      if (name) {
+        byName[name] = info;
+        byNameDay[`${name}|${run.deliveryDate}`] = info;
+      }
     }),
   );
-  return { byInvoice, byName };
+  return { byInvoice, byName, byInvoiceDay, byNameDay };
 }
-function lookupEta(lookup: EtaLookup, tx: StockTransaction): EtaInfo | undefined {
+// With a day: the job's run on that day (a job on two runs has a lorry and slot on each).
+function lookupEta(lookup: EtaLookup, tx: StockTransaction, day?: string): EtaInfo | undefined {
   if (tx.type !== "out") return undefined;
+  const invoiceKey = (tx.extra?.linkedJob ?? tx.reference).replace(/\D/g, "");
+  const nameKey = customerNameKey(tx.schedule?.customerName ?? tx.party);
   const info: EtaInfo | undefined =
-    lookup.byInvoice[(tx.extra?.linkedJob ?? tx.reference).replace(/\D/g, "")] ??
-    lookup.byName[customerNameKey(tx.schedule?.customerName ?? tx.party)];
+    (day ? lookup.byInvoiceDay[`${invoiceKey}|${day}`] ?? lookup.byNameDay[`${nameKey}|${day}`] : undefined) ??
+    lookup.byInvoice[invoiceKey] ??
+    lookup.byName[nameKey];
   // TEST ONLY: a TEST_LOADING_PREPARING job's slot is moved to its test day.
   const testDay = TEST_LOADING_PREPARING[tx.reference];
   if (testDay) {
     return info
       ? { ...info, slotDate: testDay }
-      : { date: "", time: "", installDate: "", installTime: "", slotDate: testDay, slotTime: "", driver: "", lorry: "" };
+      : { date: "", time: "", installDate: "", installTime: "", slotDate: testDay, slotTime: "", driver: "", lorry: "", runId: "" };
   }
   return info;
 }
@@ -2776,68 +2862,7 @@ function StockInVerificationPage({
     if (window.matchMedia("(pointer: fine)").matches) barcodeInputRef.current?.focus();
   }, []);
 
-  // Camera video stream & live BarcodeDetector hook
-  useEffect(() => {
-    let stream: MediaStream | null = null;
-    let detectorTimer: NodeJS.Timeout | null = null;
-    // Set when the camera is closed (or the page re-renders) before the camera has started,
-    // so a stream that arrives late is stopped instead of keeping the camera busy.
-    let cancelled = false;
-
-    if (cameraActive) {
-      if (typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getUserMedia === "function") {
-        openCameraStream()
-          .then((s) => {
-            if (cancelled) {
-              s.getTracks().forEach((t) => t.stop());
-              return;
-            }
-            stream = s;
-            if (videoRef.current) {
-              videoRef.current.srcObject = s;
-              videoRef.current.play().catch(() => {});
-            }
-            setCameraError(null);
-
-            if (typeof window !== "undefined" && "BarcodeDetector" in window) {
-              try {
-                // @ts-expect-error - standard browser BarcodeDetector API
-                const detector = new window.BarcodeDetector({ formats: ["code_128", "qr_code", "ean_13", "data_matrix"] });
-                detectorTimer = setInterval(async () => {
-                  if (videoRef.current && videoRef.current.readyState >= 2) {
-                    try {
-                      const barcodes = await detector.detect(videoRef.current);
-                      if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
-                        handleScan(barcodes[0].rawValue);
-                      }
-                    } catch {}
-                  }
-                }, 400);
-              } catch {}
-            }
-          })
-          .catch((err) => {
-            if (!cancelled) setCameraError(cameraErrorMessage(err));
-          });
-      } else {
-        setCameraError(cameraErrorMessage(null));
-      }
-    } else {
-      if (videoRef.current && videoRef.current.srcObject) {
-        const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-        tracks.forEach((t) => t.stop());
-        videoRef.current.srcObject = null;
-      }
-    }
-
-    return () => {
-      cancelled = true;
-      if (detectorTimer) clearInterval(detectorTimer);
-      if (stream) {
-        stream.getTracks().forEach((t) => t.stop());
-      }
-    };
-  }, [cameraActive]);
+  // Camera: the shared serial reader (SerialCamera), shown while cameraActive.
 
   const totalExpected = supplierSerialList.length > 0 ? supplierSerialList.length : items.reduce((sum, it) => sum + it.invoicedQty, 0);
   const totalScanned = verifiedSerials.size;
@@ -3089,17 +3114,7 @@ function StockInVerificationPage({
                 >
                   ✕
                 </button>
-            <div className={styles.cameraScanLine} />
-            <video ref={videoRef} className={styles.videoCameraActive} playsInline autoPlay muted />
-            {cameraError && (
-              <div style={{ padding: "12px 14px", background: "rgba(0,0,0,0.65)", borderRadius: "6px", margin: "8px" }}>
-                <div style={{ fontSize: "22px", marginBottom: "2px" }}>📸</div>
-                <strong style={{ color: "#f87171", fontSize: "12px" }}>Camera Notice:</strong>
-                <div style={{ fontSize: "11px", color: "#e2e8f0", marginTop: "2px" }}>
-                  {cameraError}
-                </div>
-              </div>
-            )}
+            <SerialCamera onRead={(serial) => handleScan(serial)} />
             <div style={{ padding: "8px 12px", background: "rgba(0,0,0,0.55)", borderRadius: "6px", marginTop: "6px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
               <span style={{ fontSize: "11px", color: "#e2e8f0" }}>
                 🎯 Camera auto-detects barcode &amp; matches against Supplier Serial List.
@@ -4678,68 +4693,7 @@ function StockOutVerificationPage({
     if (window.matchMedia("(pointer: fine)").matches) barcodeInputRef.current?.focus();
   }, []);
 
-  // Camera video stream & live BarcodeDetector hook
-  useEffect(() => {
-    let stream: MediaStream | null = null;
-    let detectorTimer: NodeJS.Timeout | null = null;
-    // Set when the camera is closed (or the page re-renders) before the camera has started,
-    // so a stream that arrives late is stopped instead of keeping the camera busy.
-    let cancelled = false;
-
-    if (cameraActive) {
-      if (typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getUserMedia === "function") {
-        openCameraStream()
-          .then((s) => {
-            if (cancelled) {
-              s.getTracks().forEach((t) => t.stop());
-              return;
-            }
-            stream = s;
-            if (videoRef.current) {
-              videoRef.current.srcObject = s;
-              videoRef.current.play().catch(() => {});
-            }
-            setCameraError(null);
-
-            if (typeof window !== "undefined" && "BarcodeDetector" in window) {
-              try {
-                // @ts-expect-error - standard browser BarcodeDetector API
-                const detector = new window.BarcodeDetector({ formats: ["code_128", "qr_code", "ean_13", "data_matrix"] });
-                detectorTimer = setInterval(async () => {
-                  if (videoRef.current && videoRef.current.readyState >= 2) {
-                    try {
-                      const barcodes = await detector.detect(videoRef.current);
-                      if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
-                        handleScanRef.current(barcodes[0].rawValue);
-                      }
-                    } catch {}
-                  }
-                }, 400);
-              } catch {}
-            }
-          })
-          .catch((err) => {
-            if (!cancelled) setCameraError(cameraErrorMessage(err));
-          });
-      } else {
-        setCameraError(cameraErrorMessage(null));
-      }
-    } else {
-      if (videoRef.current && videoRef.current.srcObject) {
-        const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-        tracks.forEach((t) => t.stop());
-        videoRef.current.srcObject = null;
-      }
-    }
-
-    return () => {
-      cancelled = true;
-      if (detectorTimer) clearInterval(detectorTimer);
-      if (stream) {
-        stream.getTracks().forEach((t) => t.stop());
-      }
-    };
-  }, [cameraActive]);
+  // Camera: the shared serial reader (SerialCamera), shown while cameraActive.
 
   // Box coverage: the boxes' panels are shared out over the panel lines (after the loose panels).
   const looseOf = (i: number) => scans.filter((scan) => scan.lineIdx === i).map((scan) => scan.serial);
@@ -4846,6 +4800,10 @@ function StockOutVerificationPage({
   // still there after leaving the screen or reloading. Loaded when the job opens, saved
   // (after a short pause) whenever a quantity changes.
   const entriesLoaded = useRef(false);
+  // Mounting boxes per item ("rail", "hook") from the Stock Out lorry page, kept on save.
+  const otherMountBoxes = useRef<Record<string, string>>({});
+  // Electrical / special material boxes per group from the Stock Out lorry page, kept on save.
+  const otherElecBoxes = useRef<Record<string, string>>({});
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/warehouse/entries?job=${encodeURIComponent(tx.reference)}`, { credentials: "same-origin", cache: "no-store" })
@@ -4863,8 +4821,10 @@ function StockOutVerificationPage({
         let plate = "";
         (data.entries ?? []).forEach((entry) => {
           if (entry.kind === "mounting_part") parts[entry.key] = entry.value;
-          if (entry.kind === "mounting_box") box = entry.value;
-          if (entry.kind === "electrical_box") elecBox = entry.value;
+          if (entry.kind === "mounting_box" && entry.key === "boxes") box = entry.value;
+          if (entry.kind === "mounting_box" && entry.key !== "boxes") otherMountBoxes.current[entry.key] = entry.value;
+          if (entry.kind === "electrical_box" && entry.key === "boxes") elecBox = entry.value;
+          if (entry.kind === "electrical_box" && entry.key !== "boxes") otherElecBoxes.current[entry.key] = entry.value;
           if (entry.kind === "lorry" && entry.key === "driver") driver = entry.value;
           if (entry.kind === "lorry" && entry.key === "plate") plate = entry.value;
           if (entry.kind === "electrical_part") elec[entry.key] = entry.value;
@@ -4900,7 +4860,15 @@ function StockOutVerificationPage({
           .filter(([, value]) => value.trim() !== "")
           .map(([key, value]) => ({ kind: "mounting_part" as const, key, value: value.trim() })),
         ...(mountBoxQty.trim() !== "" ? [{ kind: "mounting_box" as const, key: "boxes", value: mountBoxQty.trim() }] : []),
+        // The per-item boxes (Rail, Hook) from the Stock Out lorry page, kept as they are.
+        ...Object.entries(otherMountBoxes.current)
+          .filter(([, value]) => value.trim() !== "")
+          .map(([key, value]) => ({ kind: "mounting_box" as const, key, value: value.trim() })),
         ...(elecBoxQty.trim() !== "" ? [{ kind: "electrical_box" as const, key: "boxes", value: elecBoxQty.trim() }] : []),
+        // The per-group boxes (Electrical Item / Special Material) from the Stock Out lorry page.
+        ...Object.entries(otherElecBoxes.current)
+          .filter(([, value]) => value.trim() !== "")
+          .map(([key, value]) => ({ kind: "electrical_box" as const, key, value: value.trim() })),
         ...(driverName.trim() !== "" ? [{ kind: "lorry" as const, key: "driver", value: driverName.trim() }] : []),
         // The test job's dummy plate is not saved.
         ...(vehiclePlate.trim() !== "" && !(dummyLorry && vehiclePlate === DUMMY_LORRY_PLATE)
@@ -5487,17 +5455,7 @@ function StockOutVerificationPage({
                 >
                   ✕
                 </button>
-                <div className={styles.cameraScanLine} />
-                <video ref={videoRef} className={styles.videoCameraActive} playsInline autoPlay muted />
-                {cameraError && (
-                  <div style={{ padding: "12px 14px", background: "rgba(0,0,0,0.65)", borderRadius: "6px", margin: "8px" }}>
-                    <div style={{ fontSize: "22px", marginBottom: "2px" }}>📸</div>
-                    <strong style={{ color: "#f87171", fontSize: "12px" }}>Camera Notice:</strong>
-                    <div style={{ fontSize: "11px", color: "#e2e8f0", marginTop: "2px" }}>
-                      {cameraError}
-                    </div>
-                  </div>
-                )}
+                <SerialCamera onRead={(serial) => handleScanRef.current(serial)} />
                 <div style={{ padding: "8px 12px", background: "rgba(0,0,0,0.55)", borderRadius: "6px", marginTop: "6px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                   <span style={{ fontSize: "11px", color: "#e2e8f0" }}>
                     🎯 Camera auto-detects barcode &amp; matches against Job #{schedule?.jobId ?? tx.reference} requirements.
@@ -7931,6 +7889,7 @@ function StockBalanceCards({
 }
 
 function HomeTab({
+  outLoaded = true,
   transactions,
   onInspectTx,
   onSignOut,
@@ -7956,9 +7915,15 @@ function HomeTab({
   onOpenOutLorry,
   openDayReport = false,
   onDayReportOpened,
+  stockOutSiteCheck = false,
 }: {
+  // The Stock Out jobs have been read (see Dashboard).
+  outLoaded?: boolean;
+  // The Site Check page shown inside Stock Out (its Site Check tab): Stock Out's title, Back and
+  // Preparing / Loading / Site Check tabs on top of the Site Check page.
+  stockOutSiteCheck?: boolean;
   // Stock Out › Preparing / Verified: a lorry row opens that lorry's Stock Out page.
-  onOpenOutLorry?: (lorry: { driver: string; plate: string; txIds: string[]; stage: "preparing" | "verified"; day: string }) => void;
+  onOpenOutLorry?: (lorry: { driver: string; plate: string; txIds: string[]; stage: "preparing" | "verified"; day: string; runId?: string }) => void;
   // The Stock Out lorry page's Report button: open the day's Report (once) on arrival.
   openDayReport?: boolean;
   onDayReportOpened?: () => void;
@@ -8014,21 +7979,45 @@ function HomeTab({
   // Loading page: each job's ETA at the customer's house, from its run on the Delivery Schedule
   // (matched by invoice number).
   const [deliveryRuns, setDeliveryRuns] = useState<TimelineRun[]>([]);
+  // The Delivery Schedule runs have been read once (or could not be).
+  const [runsLoaded, setRunsLoaded] = useState(false);
   useEffect(() => {
     // Loading page (ETA, install time) and Stock Out list (install time).
     if (!loadingOnly && txType !== "out") return;
     // Kept current with the Scheduling system while the page is open.
-    return watchDeliveryRuns<TimelineRun>(setDeliveryRuns);
+    return watchDeliveryRuns<TimelineRun>(setDeliveryRuns, () => setRunsLoaded(true));
   }, [loadingOnly, txType]);
+  // Stock Out and the Loading page: the table waits for both the jobs and the Delivery Schedule
+  // runs (which decide each job's day and lorry), so it is drawn once, not first without the runs.
+  const stockOutWaiting = (loadingOnly || txType === "out") && (!outLoaded || !runsLoaded);
   // Delivery Schedule details (slot, ETA, install time), matched by invoice or customer name.
   const etaLookup = useMemo(() => buildEtaLookup(deliveryRuns), [deliveryRuns]);
-  const etaOf = (tx: StockTransaction) => lookupEta(etaLookup, tx);
+  // The job's run on the day shown (a job on two runs is on a different lorry each day).
+  const etaOf = (tx: StockTransaction) => lookupEta(etaLookup, tx, selectedDay);
   // The day a row belongs to. The Loading page and Stock Out (Preparing and Verified) go by slot
   // date (the delivery run's date on the Delivery Schedule); a job on no run, and every Stock
   // Transfer, by its own date. Elsewhere rows go by installation date.
-  const rowDay = (tx: StockTransaction): string | null =>
-    loadingOnly || txType === "out" ? etaOf(tx)?.slotDate || txDate(tx) : txDate(tx);
-  const inSelectedDay = (tx: StockTransaction) => rowDay(tx) === selectedDay;
+  const rowDay = (tx: StockTransaction): string | null => {
+    if (!(loadingOnly || txType === "out")) return txDate(tx);
+    // A live Stock Out job: only its own delivery run's date (sent by the server, matched by job,
+    // not by customer name). Never its installation date: a job installed on one day but
+    // delivered on another belongs to its delivery day.
+    if (tx.type === "out" && tx.schedule?.live) {
+      return TEST_LOADING_PREPARING[tx.reference] ?? (tx.schedule.slotDate || etaOf(tx)?.slotDate || null);
+    }
+    return etaOf(tx)?.slotDate || txDate(tx);
+  };
+  // Every day a row is listed on: a live Stock Out job on two runs (not cancelled) is on both.
+  const rowDays = (tx: StockTransaction): string[] => {
+    if ((loadingOnly || txType === "out") && tx.type === "out" && tx.schedule?.live) {
+      const testDay = TEST_LOADING_PREPARING[tx.reference];
+      if (testDay) return [testDay];
+      if (tx.schedule.slotDates?.length) return tx.schedule.slotDates;
+    }
+    const day = rowDay(tx);
+    return day ? [day] : [];
+  };
+  const inSelectedDay = (tx: StockTransaction) => rowDays(tx).includes(selectedDay);
 
   // Rows passing the warehouse / type / item filters (any day).
   const passesFilters = (tx: StockTransaction) => {
@@ -8138,7 +8127,8 @@ function HomeTab({
   const [pageStage, setPageStage] = useState<"preparing" | "verified">("preparing");
   const loadPreparing = (t: StockTransaction) => t.type === "out" && isVerifiedTx(t.status) && !isLoadedTx(t);
   const loadVerified = (t: StockTransaction) => t.type === "out" && isLoadedTx(t);
-  const sitePreparing = (t: StockTransaction) => isLoadedTx(t) && t.type === "out" && !arrivedJobs.has(t.reference);
+  // Site Check lists a job only once Loading has submitted it (loaded onto the lorry).
+  const sitePreparing = (t: StockTransaction) => t.type === "out" && !arrivedJobs.has(t.reference) && isLoadedTx(t);
   const siteVerified = (t: StockTransaction) => isLoadedTx(t) && (t.type !== "out" || arrivedJobs.has(t.reference));
   const stagePreparing = loadingView === "ready" ? loadPreparing : sitePreparing;
   const stageVerified = loadingView === "ready" ? loadVerified : siteVerified;
@@ -8148,6 +8138,24 @@ function HomeTab({
   const isSiteCheckTx = (t: StockTransaction) => isLoadedTx(t);
   const readyCount = baseTx.filter(isReadyToLoad).length;
   const siteCheckCount = baseTx.filter(isSiteCheckTx).length;
+  // Stock Out flow: every job stays on Preparing, Loading and Site Check (a copy on each page),
+  // and each step opens only once the step before it is submitted:
+  // Preparing (Submit) -> Loading (Submit) -> Site Check.
+  const outFlowTx = baseTx.filter((t) => t.type === "out");
+  const flowPrepared = (t: StockTransaction) => isVerifiedTx(t.status);
+  const flowLoaded = (t: StockTransaction) => flowPrepared(t) && loadedJobs.has(t.reference);
+  const flowChecked = (t: StockTransaction) => flowLoaded(t) && arrivedJobs.has(t.reference);
+  // Stock Out › Site Check: a job not loaded yet is listed but cannot be opened.
+  const siteLocked = (t: StockTransaction) => stockOutSiteCheck && t.type === "out" && !flowLoaded(t);
+  // "done / total" for a tab: 4/4 means every job on it is complete.
+  const flowCount = (done: (t: StockTransaction) => boolean) =>
+    `${outFlowTx.filter(done).length}/${outFlowTx.length}`;
+  // The three steps for the Stock Out timeline.
+  const flowSteps: StockOutFlowStep[] = [
+    { id: "toVerify", label: "Preparing", done: outFlowTx.filter(flowPrepared).length, total: outFlowTx.length, onClick: () => setTxStatusTab("toVerify") },
+    { id: "verified", label: "Loading", done: outFlowTx.filter(flowLoaded).length, total: outFlowTx.length, onClick: () => setTxStatusTab("verified") },
+    { id: "siteCheck", label: "Site Check", done: outFlowTx.filter(flowChecked).length, total: outFlowTx.length, onClick: () => setTxStatusTab("siteCheck") },
+  ];
 
   // Search: when the customer (or reference) is not on the day shown, go to the day it is on
   // (the one nearest today) and to the tab that holds it.
@@ -8163,7 +8171,7 @@ function HomeTab({
         (tx) =>
           passesFilters(tx) &&
           txMatchesSearch(tx, q) &&
-          !!rowDay(tx) &&
+          rowDays(tx).length > 0 &&
           // Only rows this page lists: the Loading page has Loading / Site Check jobs; other
           // pages hide loaded jobs.
           (loadingOnly
@@ -8187,7 +8195,7 @@ function HomeTab({
               );
             })
           : [];
-      const days = [...hits.map((tx) => rowDay(tx) as string), ...poHits.map((file) => poDay(file))].filter(Boolean);
+      const days = [...hits.flatMap((tx) => rowDays(tx)), ...poHits.map((file) => poDay(file))].filter(Boolean);
       if (days.length === 0 || days.includes(selectedDay)) {
         setSearchJump(null);
         return;
@@ -8198,7 +8206,7 @@ function HomeTab({
       setSelectedDay(day);
       setSearchJump(day);
       // Open the tab that holds the first match on that day.
-      const tx = hits.find((t) => rowDay(t) === day);
+      const tx = hits.find((t) => rowDays(t).includes(day));
       if (loadingOnly) {
         if (tx) {
           setLoadingView(isReadyToLoad(tx) ? "ready" : "loaded");
@@ -8219,7 +8227,9 @@ function HomeTab({
     ? loadingView === "ready"
       ? "verified"
       : "loading"
-    : txStatusTab === "loading" || txStatusTab === "siteCheck"
+    : outTabs && txStatusTab === "siteCheck"
+      ? "siteCheck" // Stock Out's own Site Check tab (after Loading); empty for now
+      : txStatusTab === "loading" || txStatusTab === "siteCheck"
       ? "verified" // lists here have no Loading / Site Check tab: those are their own pages
       : isTransferList && txStatusTab === "toVerify"
         ? "verified"
@@ -8227,7 +8237,15 @@ function HomeTab({
   // Is the row on the open tab (Loading page: Ready / Loaded; lists: To Verify or Preparing /
   // Verified)?
   const inStatusTab = (t: StockTransaction) =>
-    loadingOnly && loadingMode
+    statusTab === "siteCheck"
+      ? false // Stock Out › Site Check is the Site Check page (shown in its place)
+      : outTabs && statusTab === "toVerify"
+      ? true // Stock Out › Preparing: every job, a submitted lorry stays (✓ Submitted)
+      : outTabs && statusTab === "verified"
+      ? isVerifiedTx(t.status) // Stock Out › Loading: only lorries Preparing has submitted
+      : stockOutSiteCheck
+      ? t.type === "out" && (sitePreparing(t) || siteVerified(t)) // every Stock Out job Loading has submitted, checked or not
+      : loadingOnly && loadingMode
       ? pageStage === "verified"
         ? stageVerified(t)
         : stagePreparing(t)
@@ -8268,7 +8286,7 @@ function HomeTab({
   const driverOf = (tx: StockTransaction) => lorryByJob[tx.reference]?.driver || etaOf(tx)?.driver || "";
   const lorryOf = (tx: StockTransaction) => lorryByJob[tx.reference]?.plate || etaOf(tx)?.lorry || "";
   const driverGroupKey = (tx: StockTransaction) =>
-    tx.type === "out" ? `${driverOf(tx).trim().toUpperCase()}|${lorryOf(tx).trim().toUpperCase()}` : "";
+    tx.type === "out" ? `${etaOf(tx)?.runId ?? ""}|${driverOf(tx).trim().toUpperCase()}|${lorryOf(tx).trim().toUpperCase()}` : "";
   // Loading page: the table is split by driver. Each driver's customers sit together (drivers in
   // the order their first customer appears, rows keep their order inside); Stock Transfers last.
   const groupedTx = (() => {
@@ -8336,8 +8354,7 @@ function HomeTab({
   const whTx = useMemo(() => {
     // Same day as the list (Stock Out: slot date), so the day's report matches the list.
     return transactions.filter((tx) => {
-      const date = rowDay(tx);
-      if (date === null || date !== selectedDay) return false;
+      if (!rowDays(tx).includes(selectedDay)) return false;
       return txInWarehouse(tx, whFilter);
     });
     // rowDay changes with the Delivery Schedule lookup and the page type.
@@ -8406,6 +8423,7 @@ function HomeTab({
           selectedDay,
           typed("driver") || lorryByJob[t.reference]?.driver || etaOf(t)?.driver || "",
           typed("plate") || lorryByJob[t.reference]?.plate || etaOf(t)?.lorry || "",
+          etaOf(t)?.runId,
         );
         prepLorryJobs.set(lorry, [...(prepLorryJobs.get(lorry) ?? []), t.reference]);
       });
@@ -8436,7 +8454,9 @@ function HomeTab({
   const lorryNames = (keys: string[]) =>
     unique(
       Array.from(prepLorryJobs.entries()).flatMap(([lorry, refs]) => {
-        const typed = unique(keys.map((k) => prepLorryEntries.find((e) => e.job === lorry && e.key === k)?.value));
+        const typed = unique(
+          keys.map((k) => prepLorryEntries.find((e) => e.job === lorry && e.key === k)?.value || sampleLorrySignoffs(lorry)[k]),
+        );
         if (typed.length > 0) return typed;
         if (keys.includes("checked")) {
           return verifications.filter((r) => r.material === "job" && refs.includes(r.jobRef)).map((r) => r.by);
@@ -8444,13 +8464,39 @@ function HomeTab({
         return verifications.filter((r) => r.jobRef === lorry && keys.includes(r.material)).map((r) => r.by);
       }),
     ).join(", ");
+  // What Stock Out saved for each job, plus (TEST ONLY) a test job's sample mounting / electrical
+  // entries when it has none, as its lorry page shows them.
+  const prepEntriesAll = (() => {
+    const out = [...prepEntries];
+    whTx
+      .filter((t) => t.type === "out" && t.status === "Verified" && isTestVerifiedJob(t))
+      .forEach((t) => {
+        const job = t.schedule?.jobId ?? t.reference;
+        const own = prepEntries.filter((e) => e.job === job);
+        if (own.some((e) => ["mounting_part", "mounting_box", "electrical_part", "electrical_box"].includes(e.kind))) return;
+        sampleLorryEntries(t).forEach((e) => out.push({ job, ...e }));
+      });
+    return out;
+  })();
+  // Each customer's mounting boxes as Stock Out records them: Rail, and Hook, Bracket & Clamp
+  // (an older job with one count for all its mounting: under Rail, marked "all items").
+  const prepMountBoxes = (kind: "rail" | "hook") =>
+    prepCustomers.map((customer) => {
+      const jobs = prepRows.filter((r) => r.customer === customer).map((r) => r.jobId);
+      const entries = prepEntriesAll.filter((e) => jobs.includes(e.job) && e.kind === "mounting_box");
+      const own = entries.filter((e) => e.key === kind).reduce((sum, e) => sum + (Number(e.value) || 0), 0);
+      const perItem = entries.some((e) => e.key === "rail" || e.key === "hook");
+      const older = entries.filter((e) => e.key === "boxes").reduce((sum, e) => sum + (Number(e.value) || 0), 0);
+      const box = perItem ? (own > 0 ? String(own) : "") : kind === "rail" && older > 0 ? `${older} (all items)` : "";
+      return { customer, box };
+    });
   const prepMountingGroups = (() => {
     const groupOf = new Map<string, string>();
     MOUNTING_SYSTEMS.forEach((system) =>
       system.groups.forEach((group) => group.parts.forEach((part) => !groupOf.has(part.name) && groupOf.set(part.name, group.label))),
     );
     const totals = new Map<string, number>();
-    prepEntries
+    prepEntriesAll
       .filter((entry) => entry.kind === "mounting_part")
       .forEach((entry) => totals.set(entry.key, (totals.get(entry.key) ?? 0) + (Number(entry.value) || 0)));
     const order = ["Rail", "Hook & Bracket", "Clamp"];
@@ -8617,12 +8663,13 @@ function HomeTab({
     <section className={styles.screen} aria-labelledby="warehouse-home">
       <div className={styles.head}>
         <div>
-          {showTx && !loadingOnly && (
+          {showTx && (!loadingOnly || stockOutSiteCheck) && (
             <button
             className={styles.back}
             type="button"
             onClick={() => {
               setTxType("all");
+              if (stockOutSiteCheck) setTxStatusTab("toVerify");
               onShowTx(false);
             }}
           >
@@ -8762,7 +8809,7 @@ function HomeTab({
             )}
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "10px", marginBottom: "12px" }}>
         <h2 className={styles.sectionTitle} style={{ margin: 0, fontSize: "24px", fontWeight: 700, color: "#000" }}>
-          {loadingOnly ? (loadingMode === "loaded" ? "Site Check" : "Loading") : txType === "in" ? "Stock In" : txType === "out" ? "Stock Out" : txType === "transfer" ? "Stock Transfer" : "Stock Transactions"}{txCat !== "all" ? ` · ${CAT_LABEL[txCat] === "Inv." ? "Inverter" : CAT_LABEL[txCat] === "Batt." ? "Battery" : CAT_LABEL[txCat] === "Mounting" ? "Mounting Structure" : CAT_LABEL[txCat] === "Electrical" ? "Electrical Item" : (CAT_LABEL[txCat] ?? txCat)}` : ""}
+          {stockOutSiteCheck ? "Stock Out" : loadingOnly ? (loadingMode === "loaded" ? "Site Check" : "Loading") : txType === "in" ? "Stock In" : txType === "out" ? "Stock Out" : txType === "transfer" ? "Stock Transfer" : "Stock Transactions"}{txCat !== "all" ? ` · ${CAT_LABEL[txCat] === "Inv." ? "Inverter" : CAT_LABEL[txCat] === "Batt." ? "Battery" : CAT_LABEL[txCat] === "Mounting" ? "Mounting Structure" : CAT_LABEL[txCat] === "Electrical" ? "Electrical Item" : (CAT_LABEL[txCat] ?? txCat)}` : ""}
         </h2>
             </div>
             {/* Same JB / KL / Kluang buttons as the Home page */}
@@ -8866,9 +8913,19 @@ function HomeTab({
               />
             </div>
 
+            {/* Stock Out › Site Check: Stock Out's own tabs, then the Site Check page's tabs below */}
+            {stockOutSiteCheck && (
+              <div style={{ marginBottom: "10px" }}>
+                <StockOutFlowTimeline steps={flowSteps} active="siteCheck" />
+              </div>
+            )}
             {/* Status tabs + search on one row */}
-            <div className={styles.txTabsSearchRow}>
-            {loadingOnly && loadingMode ? (
+            {/* Stock Out: a row gap between Preparing / Loading / Site Check and the item cards */}
+            <div className={styles.txTabsSearchRow} style={txType === "out" || loadingOnly ? { marginBottom: "20px" } : undefined}>
+            {stockOutSiteCheck ? (
+              // Stock Out › Site Check: no Preparing / Verified buttons; every job is listed
+              <span />
+            ) : loadingOnly && loadingMode ? (
               // Loading page / Site Check page: Preparing and Verified (that page's own progress)
               <div className={styles.txFilterPills} role="tablist" aria-label={loadingMode === "ready" ? "Loading" : "Site Check"}>
                 <button
@@ -8915,6 +8972,9 @@ function HomeTab({
                 Site Check ({siteCheckCount})
               </button>
             </div>
+            ) : outTabs ? (
+              // Stock Out: Preparing -> Loading -> Site Check, joined by a line
+              <StockOutFlowTimeline steps={flowSteps} active={statusTab} />
             ) : (
             <div className={styles.txFilterPills} role="tablist" aria-label="Transaction status">
               {!isTransferList && (
@@ -8925,7 +8985,7 @@ function HomeTab({
                   className={`${styles.txPill} ${txStatusTab === "toVerify" ? styles.txPillActive : ""}`}
                   onClick={() => setTxStatusTab("toVerify")}
                 >
-                  {outTabs ? "Preparing" : "To Verify"} ({toVerifyCount})
+                  {outTabs ? `Preparing (${flowCount(flowPrepared)})` : `To Verify (${toVerifyCount})`}
                 </button>
               )}
               {/* Stock Out: Preparing and Verified (Loading and Site Check are their own pages) */}
@@ -8937,7 +8997,19 @@ function HomeTab({
                   className={`${styles.txPill} ${statusTab === "verified" ? styles.txPillActive : ""}`}
                   onClick={() => setTxStatusTab("verified")}
                 >
-                  {outTabs ? "Loading" : "Verified"} ({verifiedCount})
+                  {outTabs ? `Loading (${flowCount(flowLoaded)})` : `Verified (${verifiedCount})`}
+                </button>
+              )}
+              {/* Stock Out: Site Check, after Loading (page left empty for now) */}
+              {outTabs && (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={statusTab === "siteCheck"}
+                  className={`${styles.txPill} ${statusTab === "siteCheck" ? styles.txPillActive : ""}`}
+                  onClick={() => setTxStatusTab("siteCheck")}
+                >
+                  Site Check ({flowCount(flowChecked)})
                 </button>
               )}
             </div>
@@ -8983,10 +9055,10 @@ function HomeTab({
               </div>
             )}
 
-            {/* Stock Out › Preparing, Loading and Site Check: the list goes by installation date */}
+            {/* Stock Out › Preparing and Loading: the list goes by slot date (the delivery run's day) */}
             {outTabs && (
               <p className={styles.note} style={{ margin: "0 0 6px", color: "#000", fontSize: "10px" }}>
-                Table follows installation date.
+                Table follows slot date.
               </p>
             )}
 
@@ -8995,7 +9067,7 @@ function HomeTab({
               // The note on the left; the Type column's marks explained on the right
               <div className={styles.loadingNoteRow}>
                 <p className={styles.note} style={{ margin: 0, color: "#000", fontSize: "10px" }}>
-                  Table follows slot/ loading date.
+                  {stockOutSiteCheck ? "Table follows slot date." : "Table follows slot/ loading date."}
                 </p>
                 <p className={styles.note} style={{ margin: 0, color: "#000", fontSize: "10px" }} aria-label="Type legend">
                   <span style={{ color: "var(--green)" }}>▲</span> Stock In
@@ -9005,12 +9077,16 @@ function HomeTab({
               </div>
             )}
 
-            {/* Transaction Ledger Table */}
-            {showLorryRows ? (
+            {/* Transaction Ledger Table (Stock Out › Site Check: empty page for now) */}
+            {stockOutWaiting ? (
+              <p className={styles.note}>Loading Stock Out…</p>
+            ) : outTabs && statusTab === "siteCheck" ? null : showLorryRows ? (
               // Loading page and Stock Out › Preparing / Verified: one row per lorry; a row opens
               // that lorry's customers
               lorryRows.length === 0 ? (
-                <p className={styles.note}>No lorry to show for this day.</p>
+                <p className={styles.note}>
+                  {outTabs && statusTab === "verified" ? "No lorry submitted from Preparing yet for this day." : "No lorry to show for this day."}
+                </p>
               ) : (
                 <div className={styles.tableWrap} ref={txTableRef}>
                   <table className={`${styles.detailTable} ${styles.txLedger} ${styles.txLedgerLoading} ${styles.lorryRowsTable}`}>
@@ -9025,8 +9101,27 @@ function HomeTab({
                     </thead>
                     <tbody>
                       {lorryRows.map((row) => {
+                        // Stock Out: Preparing keeps a submitted lorry (✓ Submitted); Loading
+                        // lists every lorry but opens one only once Preparing has submitted it.
+                        const outLoadingTab = outTabs && statusTab === "verified";
+                        const prepared = row.txs.every(flowPrepared);
+                        const loaded = row.txs.every(flowLoaded);
+                        const locked = outLoadingTab && !prepared;
+                        const flowNote = !outTabs
+                          ? null
+                          : outLoadingTab
+                            ? locked
+                              ? { text: "Waiting for Preparing", color: "#b45309" }
+                              : loaded
+                                ? { text: "✓ Loaded", color: "var(--green)" }
+                                : null
+                            : prepared
+                              ? { text: "✓ Submitted", color: "var(--green)" }
+                              : null;
                         const open = () =>
-                          onOpenLorry
+                          locked
+                            ? undefined
+                            : onOpenLorry
                             ? onOpenLorry({ driver: row.driver, plate: row.plate, txIds: row.txs.map((t) => t.id), stage: pageStage, day: selectedDay })
                             : onOpenOutLorry?.({
                                 driver: row.driver,
@@ -9034,15 +9129,24 @@ function HomeTab({
                                 txIds: row.txs.map((t) => t.id),
                                 stage: statusTab === "toVerify" ? "preparing" : "verified",
                                 day: selectedDay,
+                                runId: etaOf(row.txs[0])?.runId || undefined,
                               });
                         const slotTime = row.slot ? sheetClock(row.slot.slotTime) || row.slot.slotTime : "";
                         return (
                           <tr
                             key={row.key}
-                            className={`${styles.loadingPicRow} ${styles.loadingPicRowClickable}`}
-                            tabIndex={0}
+                            className={`${styles.loadingPicRow} ${locked ? "" : styles.loadingPicRowClickable}`}
+                            style={locked ? { opacity: 0.55, cursor: "not-allowed" } : undefined}
+                            tabIndex={locked ? -1 : 0}
                             role="button"
-                            title={onOpenLorry ? "Open this lorry's loading page" : "Open this lorry's Stock Out page"}
+                            aria-disabled={locked || undefined}
+                            title={
+                              locked
+                                ? "Waiting for Preparing: Submit this lorry on Stock Out › Preparing first"
+                                : onOpenLorry
+                                  ? "Open this lorry's loading page"
+                                  : "Open this lorry's Stock Out page"
+                            }
                             onClick={open}
                             onKeyDown={(e) => {
                               if (e.key === "Enter" || e.key === " ") {
@@ -9079,6 +9183,9 @@ function HomeTab({
                                   )}
                                 </div>
                               ))}
+                              {flowNote && (
+                                <div style={{ marginTop: "4px", fontSize: "11px", fontWeight: 700, color: flowNote.color }}>{flowNote.text}</div>
+                              )}
                             </td>
                             <td>
                               {/* A lorry carries Stock Out jobs: the same ▼ mark as Stock Details */}
@@ -9223,17 +9330,23 @@ function HomeTab({
                         </tr>
                       )}
                       <tr
-                        className={styles.txRowClickable}
-                        tabIndex={0}
-                        onClick={() => onInspectTx(tx.id)}
+                        className={siteLocked(tx) ? undefined : styles.txRowClickable}
+                        style={siteLocked(tx) ? { opacity: 0.55, cursor: "not-allowed" } : undefined}
+                        tabIndex={siteLocked(tx) ? -1 : 0}
+                        aria-disabled={siteLocked(tx) || undefined}
+                        onClick={() => {
+                          if (!siteLocked(tx)) onInspectTx(tx.id);
+                        }}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
+                          if ((e.key === "Enter" || e.key === " ") && !siteLocked(tx)) {
                             e.preventDefault();
                             onInspectTx(tx.id);
                           }
                         }}
                         title={
-                          tx.status === "To Verify"
+                          siteLocked(tx)
+                            ? "Waiting for Loading: Submit this lorry on Stock Out › Loading first"
+                            : tx.status === "To Verify"
                             ? "To Verify — tap to inspect"
                             : tx.status === "Inspected"
                             ? "Inspected (issue) — tap to open"
@@ -9281,6 +9394,12 @@ function HomeTab({
                                 {tx.reference}
                                 {tx.extra?.linkedJob ? ` · for #${tx.extra.linkedJob}` : ""}
                               </span>
+                              {/* Stock Out › Site Check: not loaded yet */}
+                              {siteLocked(tx) && (
+                                <span style={{ display: "block", marginTop: "2px", fontSize: "11px", color: "#b45309", fontWeight: 700 }}>
+                                  Waiting for Loading
+                                </span>
+                              )}
                               {/* Stock Out › Preparing: scanned, waiting for the lorry's Submit */}
                               {outPreparing && scannedRefs.has(tx.reference) && (
                                 <span style={{ display: "block", marginTop: "2px", fontSize: "11px", color: "var(--green)", fontWeight: 700 }}>
@@ -9506,32 +9625,51 @@ function HomeTab({
                   <div>
                     Qty: {item.bulk ? `${item.jobs} ${item.jobs === 1 ? "set" : "sets"}` : item.units}
                   </div>
-                  <div>
-                    {item.id === "mounting" ? "Packed By" : "Prepared By"}: <strong>{byValue(item.id) || "—"}</strong>
-                  </div>
-                  {item.id === "mounting" && (
-                    <>
-                      {prepMountingGroups.map((group) => (
-                        <div key={group.label} style={{ marginTop: "6px" }}>
-                          <strong>{group.label}</strong>
-                          {group.parts.map((part) => (
-                            <div key={part.name} style={{ marginLeft: "14px" }}>
-                              {part.name}: {part.total}
+                  {item.id !== "mounting" && (
+                    <div>
+                      Prepared By: <strong>{byValue(item.id) || "—"}</strong>
+                    </div>
+                  )}
+                  {/* Mounting Structure in two parts, as Stock Out packs it: Rail, and Hook, Bracket &
+                      Clamp. Each has its parts, who packed it and each customer's boxes. */}
+                  {item.id === "mounting" &&
+                    ([
+                      { kind: "rail" as const, label: "Rail", groups: ["Rail"], material: "mounting_rail" },
+                      { kind: "hook" as const, label: "Hook, Bracket & Clamp", groups: ["Hook & Bracket", "Clamp"], material: "mounting_hook" },
+                    ]).map((part) => (
+                      <div key={part.kind} style={{ marginTop: "10px" }}>
+                        <strong>{part.label}</strong>
+                        <div>
+                          Packed By: <strong>{(prepType === "out" && lorryNames([part.material])) || namesFor([part.material, "mounting"]) || "—"}</strong>
+                        </div>
+                        {prepMountingGroups
+                          .filter((group) => part.groups.includes(group.label))
+                          .map((group) => (
+                            <div key={group.label} style={{ marginTop: "4px" }}>
+                              {part.groups.length > 1 && <em>{group.label}</em>}
+                              {group.parts.map((p) => (
+                                <div key={p.name} style={{ marginLeft: "14px" }}>
+                                  {p.name}: {p.total}
+                                </div>
+                              ))}
                             </div>
                           ))}
+                        <div style={{ marginTop: "6px" }}>
+                          <strong>Total box for each customer</strong>
                         </div>
-                      ))}
-                      <div style={{ marginTop: "6px" }}>
-                        <strong>Total box for each customer</strong>
+                        {prepMountBoxes(part.kind).map(({ customer, box }, i) => (
+                          <div key={customer}>
+                            Customer {i + 1}：{customer}{" "}
+                            {box ? (
+                              <strong>{box}</strong>
+                            ) : (
+                              <span className={styles.prepSignLine} data-sign="1" style={{ minWidth: "70px" }} />
+                            )}{" "}
+                            box
+                          </div>
+                        ))}
                       </div>
-                      {prepCustomers.map((customer, i) => (
-                        <div key={customer}>
-                          Customer {i + 1}：{customer}{" "}
-                          <span className={styles.prepSignLine} data-sign="1" style={{ minWidth: "70px" }} /> box
-                        </div>
-                      ))}
-                    </>
-                  )}
+                    ))}
                 </div>
               ))}
 
@@ -12349,7 +12487,7 @@ function LorryLoadingPage({
             <tbody>
               {shownTxs.map((tx) => {
                 const schedule = tx.schedule;
-                const eta = lookupEta(etaLookup, tx);
+                const eta = lookupEta(etaLookup, tx, day);
                 const slotTime = eta ? sheetClock(eta.slotTime) || eta.slotTime : "";
                 return (
                   <tr key={tx.id}>
@@ -12458,10 +12596,106 @@ function LorryLoadingPage({
 // verifies them all together.
 type LorryScan = { kind: "box" | "serial"; category: string; lineIdx: number; code: string; qty: number };
 
+// TEST ONLY: a test job's sample scans (sampleWarehouseScans) in the lorry page's form.
+function sampleLorryScans(tx: StockTransaction): LorryScan[] {
+  const serialLines = txLines(tx).filter((line) => line.serialised && (line.qty ?? 0) > 0);
+  const sample = sampleWarehouseScans(tx, serialLines);
+  if (!sample) return [];
+  return [
+    ...sample.boxes.map((box) => ({ kind: "box" as const, category: "panel", lineIdx: 0, code: box.code, qty: box.qty })),
+    ...sample.scans.map((scan) => ({
+      kind: "serial" as const,
+      category: serialLines[scan.lineIdx]?.category ?? "panel",
+      lineIdx: scan.lineIdx,
+      code: scan.serial,
+      qty: 1,
+    })),
+  ];
+}
+
+// TEST ONLY: a test job's sample Mounting Structure (the MIBET tile-roof suggestion for its panels,
+// one box each for Rail and Hook, Bracket & Clamp) and Electrical Item (breaker, PV meter, DB box,
+// SPD for its phase; one box each). Shown in the page only, never saved.
+function sampleLorryEntries(tx: StockTransaction): { kind: string; key: string; value: string }[] {
+  const panels = txLines(tx)
+    .filter((line) => line.category === "panel")
+    .reduce((sum, line) => sum + (line.qty ?? 0), 0);
+  const entries: { kind: string; key: string; value: string }[] = [];
+  if (panels > 0) {
+    const estimate = estimateMounting({ system: "mibet", roof: "tile", orientation: "portrait", panels, rows: Math.max(1, Math.ceil(panels / 3)) });
+    Object.entries(estimate.parts).forEach(([key, qty]) => {
+      if (qty > 0) entries.push({ kind: "mounting_part", key, value: String(qty) });
+    });
+    entries.push({ kind: "mounting_box", key: "rail", value: "1" }, { kind: "mounting_box", key: "hook", value: "1" });
+  }
+  const three = tx.schedule?.tnbMeter === "Three phase";
+  [
+    ["Breaker", three ? "3P 32A" : "2P 32A"],
+    ["PV Meter", three ? "4P PV METER" : "2P PV METER"],
+    ["DB Box", "8.5 WAY"],
+    ["SPD", three ? "4P SPD" : "2P SPD"],
+  ].forEach(([group, part]) => {
+    entries.push({ kind: "electrical_part", key: part, value: "1" }, { kind: "electrical_box", key: group, value: "1" });
+  });
+  return entries;
+}
+
+// Stock Out's Preparing -> Loading -> Site Check: the usual tab buttons, joined by a line (a
+// timeline). The line before a step fills in once every job on the step before it is done.
+type StockOutFlowStep = { id: string; label: string; done: number; total: number; onClick?: () => void };
+function StockOutFlowTimeline({ steps, active }: { steps: StockOutFlowStep[]; active: string }) {
+  return (
+    <div className={styles.flowTimeline} role="tablist" aria-label="Stock Out">
+      {steps.map((step, i) => {
+        const prev = steps[i - 1];
+        const lineDone = !!prev && prev.total > 0 && prev.done === prev.total;
+        return (
+          <Fragment key={step.id}>
+            {i > 0 && <span className={`${styles.flowLine} ${lineDone ? styles.flowLineDone : ""}`} aria-hidden />}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={step.id === active}
+              className={`${styles.txPill} ${step.id === active ? styles.txPillActive : ""}`}
+              onClick={step.onClick}
+            >
+              {step.label} ({step.done}/{step.total})
+            </button>
+          </Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+// TEST ONLY: sample Prepared / Packed / Checked by names for a TEST_PREPARED_SLOT_DATE lorry
+// (a different crew on each of the day's lorries). Shown in the page only; a saved name wins.
+function sampleLorrySignoffs(lorryKey: string): Record<string, string> {
+  if (!lorryKey.startsWith(`lorry:${TEST_PREPARED_SLOT_DATE}|`)) return {};
+  const second = /[13579]$/.test(lorryKey);
+  const crew = second
+    ? { prepared: "Hafiz", packed: "Daniel", electrical: "Wei Ming", checked: "Ahmad" }
+    : { prepared: "Joseph", packed: "Farish", electrical: "Jia Keat", checked: "Ahmad" };
+  return {
+    panel: crew.prepared,
+    inverter: crew.prepared,
+    battery: crew.prepared,
+    mounting_rail: crew.packed,
+    mounting_hook: crew.packed,
+    electrical: crew.electrical,
+    commercial: crew.electrical,
+    checked: crew.checked,
+  };
+}
+
 // A Stock Out lorry's own saved entries (its Mounting Structure quantities, who packed them):
 // named by the day with its driver and plate, in place of a job reference.
-function stockOutLorryKey(day: string, driver: string, plate: string): string {
-  return `lorry:${day}|${driver.trim().toUpperCase()}|${plate.trim().toUpperCase()}`.slice(0, 100);
+// A run with no driver and no plate yet is told apart by its run id (two such runs on one day
+// are two lorries, each with its own names).
+function stockOutLorryKey(day: string, driver: string, plate: string, runId?: string): string {
+  const d = driver.trim().toUpperCase();
+  const p = plate.trim().toUpperCase();
+  return (!d && !p && runId ? `lorry:${day}|||${runId}` : `lorry:${day}|${d}|${p}`).slice(0, 100);
 }
 
 function StockOutLorryPage({
@@ -12510,6 +12744,8 @@ function StockOutLorryPage({
   const [deliveryRuns, setDeliveryRuns] = useState<TimelineRun[]>([]);
   useEffect(() => watchDeliveryRuns<TimelineRun>(setDeliveryRuns), []);
   const etaLookup = useMemo(() => buildEtaLookup(deliveryRuns), [deliveryRuns]);
+  // The lorry's day (from its key): a job on two runs shows that day's slot.
+  const lorryDay = lorryKey.match(/^lorry:(\d{4}-\d{2}-\d{2})/)?.[1];
 
   // Saved warehouse scans of every customer on the lorry (as the job page reads them).
   const jobRefs = txs.map((tx) => tx.reference).sort().join(",");
@@ -12525,7 +12761,16 @@ function StockOutLorryPage({
           .catch(() => [ref, [] as LorryScan[]] as const),
       ),
     ).then((rows) => {
-      if (!cancelled) setScansByJob(Object.fromEntries(rows));
+      if (cancelled) return;
+      // TEST ONLY: a test job with no saved scans shows its sample scans (page only).
+      setScansByJob(
+        Object.fromEntries(
+          rows.map(([ref, scans]) => {
+            const tx = txs.find((t) => t.reference === ref);
+            return [ref, scans.length === 0 && tx && isTestVerifiedJob(tx) ? sampleLorryScans(tx) : scans];
+          }),
+        ),
+      );
     });
     return () => {
       cancelled = true;
@@ -12544,6 +12789,13 @@ function StockOutLorryPage({
         const map: Record<string, { kind: string; key: string; value: string }[]> = {};
         data.entries.forEach((entry) => {
           (map[entry.job] ??= []).push(entry);
+        });
+        // TEST ONLY: a test job with no mounting / electrical entries shows sample ones (page only).
+        txs.forEach((tx) => {
+          if (!isTestVerifiedJob(tx)) return;
+          const own = map[tx.reference] ?? [];
+          if (own.some((entry) => ["mounting_part", "mounting_box", "electrical_part", "electrical_box"].includes(entry.kind))) return;
+          map[tx.reference] = [...own, ...sampleLorryEntries(tx)];
         });
         setEntriesByJob(map);
       })
@@ -12710,7 +12962,7 @@ function StockOutLorryPage({
           if (entry.kind === "electrical_box") elecBox = entry.value;
           if (entry.kind === "signoff") signoffs[entry.key] = entry.value;
         });
-        setSignoff((prev) => ({ ...signoffs, ...prev }));
+        setSignoff((prev) => ({ ...sampleLorrySignoffs(lorryKey), ...signoffs, ...prev }));
         setPartQty((prev) => ({ ...parts, ...prev }));
         setMountBoxQty((prev) => prev || box);
         setElecQty((prev) => ({ ...elec, ...prev }));
@@ -12764,10 +13016,34 @@ function StockOutLorryPage({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [elecQty]);
+  // Electrical Item / Special Material recorded on the customers' own jobs, added up per item.
+  // The lorry table shows this total for any item with no lorry quantity typed.
+  const jobElecTotals: Record<string, number> = {};
+  txs.forEach((tx) =>
+    (entriesByJob[tx.reference] ?? [])
+      .filter((entry) => entry.kind === "electrical_part")
+      .forEach((entry) => {
+        jobElecTotals[entry.key] = (jobElecTotals[entry.key] ?? 0) + qtyOf(entry.value);
+      }),
+  );
+  // Electrical Item / Special Material boxes are kept per group (key = the group's label);
+  // older jobs have one electrical count for all ("boxes").
+  const ELEC_GROUP_LABELS = new Set(ELECTRICAL_GROUPS.map((group) => group.label));
+  const COMM_GROUP_LABELS = new Set(COMMERCIAL_GROUPS.map((group) => group.label));
+  const elecBoxesOf = (tx: StockTransaction, commercial: boolean) => {
+    const entries = (entriesByJob[tx.reference] ?? []).filter((entry) => entry.kind === "electrical_box");
+    const labels = commercial ? COMM_GROUP_LABELS : ELEC_GROUP_LABELS;
+    const perGroup = entries.filter((entry) => labels.has(entry.key));
+    const counted = perGroup.length > 0 || commercial ? perGroup : entries.filter((entry) => entry.key === "boxes");
+    return counted.reduce((sum, entry) => sum + qtyOf(entry.value), 0);
+  };
+  const jobElecBoxTotal = txs.reduce((sum, tx) => sum + elecBoxesOf(tx, false), 0);
+  const lorryElecQty = (name: string) =>
+    (elecQty[name] ?? "").trim() !== "" ? elecQty[name] : jobElecTotals[name] ? String(jobElecTotals[name]) : "";
   const elecCountOf = (commercial: boolean) =>
-    Object.entries(elecQty)
-      .filter(([name]) => COMMERCIAL_PART_NAMES.has(name) === commercial)
-      .reduce((sum, [, value]) => sum + qtyOf(value), 0);
+    Array.from(new Set([...Object.keys(elecQty), ...Object.keys(jobElecTotals)]))
+      .filter((name) => COMMERCIAL_PART_NAMES.has(name) === commercial)
+      .reduce((sum, name) => sum + qtyOf(lorryElecQty(name)), 0);
   const lorryElecCount = elecCountOf(false);
   const lorryCommCount = elecCountOf(true);
   const [commGroup, setCommGroup] = useState(COMMERCIAL_GROUPS[0].label);
@@ -12789,8 +13065,159 @@ function StockOutLorryPage({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [partQty]);
-  const lorryMountCount = Object.values(partQty).reduce((sum, value) => sum + qtyOf(value), 0);
+  // Mounting Structure recorded on the customers' own jobs (job page), added up per part for the
+  // lorry. The lorry table shows this total for any part with no lorry quantity typed.
+  const jobMountTotals: Record<string, number> = {};
+  txs.forEach((tx) =>
+    (entriesByJob[tx.reference] ?? [])
+      .filter((entry) => entry.kind === "mounting_part")
+      .forEach((entry) => {
+        jobMountTotals[entry.key] = (jobMountTotals[entry.key] ?? 0) + qtyOf(entry.value);
+      }),
+  );
+  // Mounting boxes are kept per item ("rail", "hook"); older jobs have one count for all ("boxes").
+  const mountBoxKeyOf = (material: string | undefined) => (material === "mounting_hook" ? "hook" : "rail");
+  const mountBoxesOf = (tx: StockTransaction) => {
+    const entries = (entriesByJob[tx.reference] ?? []).filter((entry) => entry.kind === "mounting_box");
+    const perItem = entries.filter((entry) => entry.key === "rail" || entry.key === "hook");
+    return (perItem.length > 0 ? perItem : entries.filter((entry) => entry.key === "boxes")).reduce(
+      (sum, entry) => sum + qtyOf(entry.value),
+      0,
+    );
+  };
+  const jobMountBoxTotal = txs.reduce((sum, tx) => sum + mountBoxesOf(tx), 0);
+  // A part's lorry quantity: what is typed for the lorry, else the customers' jobs' total.
+  const lorryPartQty = (part: string) =>
+    (partQty[part] ?? "").trim() !== "" ? partQty[part] : jobMountTotals[part] ? String(jobMountTotals[part]) : "";
+  const lorryMountCount = Array.from(new Set([...Object.keys(partQty), ...Object.keys(jobMountTotals)])).reduce(
+    (sum, part) => sum + qtyOf(lorryPartQty(part)),
+    0,
+  );
   const allLorryVerified = txs.length > 0 && txs.every((tx) => tx.status === "Verified");
+  // A picked customer row on Mounting Structure / Electrical Item / Special Material: the table
+  // edits that customer's own quantities, saved on their job (as their job page does). Unpicked,
+  // it is the lorry's table.
+  const qtyFor =
+    pickedCustomer && (itemPick === "mounting" || itemPick === "electrical" || itemPick === "commercial") ? pickedCustomer : undefined;
+  const qtyForName = qtyFor ? qtyFor.schedule?.customerName ?? qtyFor.party : "";
+  const groupBoxSummary = (groups: { label: string; parts: string[] }[], commercial: boolean) => {
+    const rows = txs
+      .filter((tx) => hasItem(tx, commercial ? "commercial" : "electrical"))
+      .flatMap((tx) => {
+        const entries = entriesByJob[tx.reference] ?? [];
+        const has = (group: { label: string; parts: string[] }) =>
+          jobVal(tx.reference, "electrical_box", group.label).trim() !== "" ||
+          entries.some((entry) => entry.kind === "electrical_part" && group.parts.includes(entry.key) && qtyOf(entry.value) > 0);
+        const shown = groups.filter(has).map((group) => ({ tx, item: group.label, box: jobVal(tx.reference, "electrical_box", group.label) }));
+        if (shown.length > 0) return shown;
+        // Nothing per group yet: an older job's one count for all, else an empty row.
+        const older = commercial ? "" : jobVal(tx.reference, "electrical_box", "boxes");
+        return [{ tx, item: older ? "All items" : "—", box: older }];
+      });
+    const packedKey = commercial ? "commercial" : "electrical";
+    const packedBy = signoff[packedKey] ?? lorryPackedBy[packedKey];
+    if (rows.length === 0) {
+      return <p className={styles.note}>No customer on this lorry has {commercial ? "special material" : "electrical items"}.</p>;
+    }
+    return (
+      <div className={styles.tableWrap}>
+        <table className={`${styles.detailTable} ${styles.lorryTable}`}>
+          <thead>
+            <tr>
+              <th scope="col" className={styles.num}>Index</th>
+              <th scope="col">Customer</th>
+              <th scope="col">Item</th>
+              <th scope="col" className={styles.num}>Box Qty</th>
+              <th scope="col" style={{ color: "var(--green)" }}>Packed by</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ tx, item, box }, i) => {
+              const first = i === 0 || rows[i - 1].tx.reference !== tx.reference;
+              const span = rows.filter((row) => row.tx.reference === tx.reference).length;
+              const number = new Set(rows.slice(0, i + 1).map((row) => row.tx.reference)).size;
+              return (
+                <tr key={`${tx.reference}-${item}`}>
+                  {first && (
+                    <td className={styles.num} rowSpan={span} style={{ verticalAlign: "middle" }}>
+                      {number}
+                    </td>
+                  )}
+                  {first && (
+                    <td rowSpan={span} style={{ verticalAlign: "middle" }}>
+                      {tx.schedule?.customerName ?? tx.party}
+                    </td>
+                  )}
+                  <td>{item}</td>
+                  <td className={styles.num}>{box || "—"}</td>
+                  {/* Who prepared the lorry's electrical items / special material */}
+                  <td>{packedBy || "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+  // Mounting suggestion for a part: the picked customer's (from their panels), else the lorry's.
+  const mountSuggest = (part: string): number | undefined =>
+    qtyFor ? mountFocus?.estimate?.parts[part] : mountEstimate.parts[part];
+  const jobVal = (ref: string, kind: string, key: string) =>
+    (entriesByJob[ref] ?? []).find((entry) => entry.kind === kind && entry.key === key)?.value ?? "";
+  // Who prepared / packed it for the lorry: recorded once, when a quantity is first entered.
+  const recordFor = (kind: string, key: string) => {
+    if (allLorryVerified) return;
+    let material: VerificationMaterial | null = null;
+    if (kind === "electrical_part") material = COMMERCIAL_PART_NAMES.has(key) ? "commercial" : "electrical";
+    else if (kind === "mounting_part") {
+      const tab = mountTabs.find((mt) =>
+        MOUNTING_SYSTEMS.some((system) => system.groups.some((group) => mt.groups.includes(group.label) && group.parts.some((part) => part.name === key))),
+      );
+      material = tab?.material ?? null;
+    }
+    if (!material) return;
+    const seen = kind === "mounting_part" ? recordedMountTabs.current : recordedElec.current;
+    if (seen.has(material) || lorryPackedBy[material]) return;
+    seen.add(material);
+    onRecordMaterial(lorryKey, material);
+  };
+  const dirtyJobKinds = useRef<Set<string>>(new Set());
+  const setJobVal = (ref: string, kind: string, key: string, value: string) => {
+    dirtyJobKinds.current.add(`${ref}|${kind}`);
+    setEntriesByJob((prev) => {
+      const list = (prev[ref] ?? []).filter((entry) => !(entry.kind === kind && entry.key === key));
+      if (value.trim() !== "") list.push({ kind, key, value });
+      return { ...prev, [ref]: list };
+    });
+    if (value.trim() !== "") recordFor(kind, key);
+  };
+  // Saves an edited customer's quantities (after a short pause), one kind at a time.
+  useEffect(() => {
+    if (dirtyJobKinds.current.size === 0) return;
+    const timer = setTimeout(() => {
+      const dirty = Array.from(dirtyJobKinds.current);
+      dirtyJobKinds.current.clear();
+      dirty.forEach((item) => {
+        const cut = item.lastIndexOf("|");
+        const ref = item.slice(0, cut);
+        const kind = item.slice(cut + 1);
+        // TEST ONLY: a test job's quantities live in the page only.
+        const testTx = txs.find((t) => t.reference === ref);
+        if (testTx && isTestVerifiedJob(testTx)) return;
+        const entries = (entriesByJob[ref] ?? [])
+          .filter((entry) => entry.kind === kind && entry.value.trim() !== "")
+          .map((entry) => ({ kind, key: entry.key, value: entry.value.trim().slice(0, 100) }));
+        void fetch("/api/warehouse/entries", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ job: ref, kinds: [kind], entries }),
+        }).catch(() => {});
+      });
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [entriesByJob]);
   // Sign-off names: saved for the lorry (after a short pause) whenever one is edited.
   const signoffEdited = useRef(false);
   useEffect(() => {
@@ -12810,7 +13237,30 @@ function StockOutLorryPage({
   }, [signoff, lorryKey]);
   // An editable "Packed by" / "Prepared by" / "Checked by" name: starts with the recorded name;
   // what is typed is kept for the lorry.
-  const signoffField = (key: string, label: string, recorded: string, align: "right" | "left" = "right") => (
+  // Stock Out › Preparing, lorry already submitted: view only (names and quantities cannot be
+  // changed any more). Loading keeps its own editing.
+  const preparingLocked = stage === "preparing" && txs.length > 0 && txs.every((tx) => tx.status === "Verified");
+  // Stock Out › Loading: the tables follow Preparing, and every quantity is shown as text (no box).
+  const qtyTextOnly = stage === "verified";
+  // Stock Out › Loading: Preparing's Packed / Prepared by names are shown as text only; Loading's
+  // own "Loading Checked by" (key "loading_checked") is the one name typed there.
+  const signoffField = (key: string, label: string, recorded: string, align: "right" | "left" = "right") =>
+    stage === "verified" && key !== "loading_checked" ? (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: align === "right" ? "flex-end" : "flex-start",
+          gap: "8px",
+          margin: "28px 0 0",
+          fontSize: "13px",
+          color: "var(--green)",
+          fontWeight: 700,
+        }}
+      >
+        {label}:<span style={{ color: "#000", fontWeight: 600 }}>{(signoff[key] ?? recorded) || "—"}</span>
+      </div>
+    ) : (
     <label
       style={{
         display: "flex",
@@ -12829,14 +13279,26 @@ function StockOutLorryPage({
         value={signoff[key] ?? recorded}
         placeholder="—"
         maxLength={100}
+        readOnly={preparingLocked}
         onChange={(e) => {
+          if (preparingLocked) return;
           signoffEdited.current = true;
           const value = e.target.value;
           setSignoff((prev) => ({ ...prev, [key]: value }));
         }}
-        aria-label={`${label} (editable)`}
-        title={`Type to change who this is ${label.toLowerCase()}`}
-        style={{ width: "220px", padding: "6px 8px", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "13px", color: "#000", fontWeight: 600 }}
+        aria-label={preparingLocked ? label : `${label} (editable)`}
+        title={preparingLocked ? "Submitted: view only" : `Type to change who this is ${label.toLowerCase()}`}
+        style={{
+          width: "220px",
+          padding: "6px 8px",
+          border: "1px solid #cbd5e1",
+          borderRadius: "6px",
+          fontSize: "13px",
+          color: "#000",
+          fontWeight: 600,
+          background: preparingLocked ? "#f1f5f9" : undefined,
+          cursor: preparingLocked ? "default" : undefined,
+        }}
       />
     </label>
   );
@@ -12845,7 +13307,12 @@ function StockOutLorryPage({
   // customer's job (so every job keeps its own count): the first customer on the lorry that
   // still needs units of this item.
   const pendingTxs = txs.filter((tx) => tx.status !== "Verified");
-  const targetTx = pendingTxs.find((tx) => needOf(tx, itemPick) > 0);
+  // A picked customer row (Panel / Inverter / Battery): the scanner works for that customer only;
+  // otherwise for the whole lorry.
+  const scanFor = pickedSerial && pickedCustomer ? pickedCustomer : undefined;
+  const scanTxs = scanFor ? pendingTxs.filter((tx) => tx.reference === scanFor.reference) : pendingTxs;
+  const scanForName = scanFor ? scanFor.schedule?.customerName ?? scanFor.party : "";
+  const targetTx = scanTxs.find((tx) => needOf(tx, itemPick) > 0);
   const [panelMode, setPanelMode] = useState<"box" | "loose">("box");
   const [boxSize, setBoxSize] = useState("36");
   // Panel boxes photo: one for the lorry, saved with every customer on it that has panels (as
@@ -12897,9 +13364,54 @@ function StockOutLorryPage({
       setPanelPhotoBusy(false);
     }
   }
+  // Loading: a photo of each item card on the lorry (Panel, Inverter, Battery, Mounting Structure,
+  // Electrical Item, Special Material), one per card per lorry, saved under the lorry's own key
+  // (apart from Preparing's panel boxes photo).
+  const LOADING_PHOTO_ITEMS = ["panel", "inverter", "battery", "mounting", "electrical", "commercial"];
+  const [loadingPhotos, setLoadingPhotos] = useState<Record<string, string>>({});
+  const [loadingCamOpen, setLoadingCamOpen] = useState(false);
+  const [loadingPhotoBusy, setLoadingPhotoBusy] = useState(false);
+  const [loadingPhotoError, setLoadingPhotoError] = useState<string | null>(null);
+  const loadingPhotoLabel = pickedLabel;
+  // Another card: close the camera and clear the last card's error.
+  useEffect(() => {
+    setLoadingCamOpen(false);
+    setLoadingPhotoError(null);
+  }, [itemPick]);
+  useEffect(() => {
+    if (stage !== "verified" || !lorryKey) return;
+    let cancelled = false;
+    fetch(`/api/warehouse/lorry-photos?lorry=${encodeURIComponent(lorryKey)}`, { credentials: "same-origin", cache: "no-store" })
+      .then(async (res) => (res.ok ? ((await res.json()) as { photos?: Record<string, string> }) : null))
+      .then((data) => {
+        if (!cancelled && data?.photos) setLoadingPhotos((prev) => ({ ...data.photos, ...prev }));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [stage, lorryKey]);
+  async function saveLoadingPhoto(item: string, photo: string) {
+    setLoadingPhotoBusy(true);
+    setLoadingPhotoError(null);
+    try {
+      const res = await fetch("/api/warehouse/lorry-photos", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ lorry: lorryKey, item, photo }),
+      });
+      if (!res.ok) throw new Error("The photo was not saved. Take it again.");
+      setLoadingPhotos((prev) => ({ ...prev, [item]: photo }));
+    } catch (err) {
+      setLoadingPhotoError(err instanceof Error ? err.message : "Could not save the photo.");
+    } finally {
+      setLoadingPhotoBusy(false);
+    }
+  }
   const [barcodeInput, setBarcodeInput] = useState("");
   const [feedback, setFeedback] = useState<{ type: "success" | "warning" | "error"; message: string } | null>(null);
-  const canScan = pickedSerial && pendingTxs.some((tx) => unitsNeeded(tx, itemPick) > 0);
+  const canScan = pickedSerial && scanTxs.some((tx) => unitsNeeded(tx, itemPick) > 0);
 
   async function saveScan(job: string, scan: LorryScan) {
     try {
@@ -12997,7 +13509,12 @@ function StockOutLorryPage({
       return;
     }
     if (!targetTx) {
-      setFeedback({ type: "warning", message: `⚠️ Every customer on this lorry already has all the ${pickedLabel.toLowerCase()} units.` });
+      setFeedback({
+        type: "warning",
+        message: scanFor
+          ? `⚠️ ${scanForName} already has all the ${pickedLabel.toLowerCase()} units.`
+          : `⚠️ Every customer on this lorry already has all the ${pickedLabel.toLowerCase()} units.`,
+      });
       return;
     }
     const name = targetTx.schedule?.customerName ?? targetTx.party;
@@ -13042,76 +13559,20 @@ function StockOutLorryPage({
     });
   }
 
-  // Camera: the same live barcode reader as the job page.
+  // Camera: the shared serial reader (SerialCamera: Code 128 / 39 only, high resolution, the
+  // middle band, auto contrast, ZXing where the browser has no reader of its own).
   const [cameraActive, setCameraActive] = useState(false);
-  const [cameraError, setCameraError] = useState<string | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  useEffect(() => {
-    let stream: MediaStream | null = null;
-    let detectorTimer: NodeJS.Timeout | null = null;
-    let cancelled = false;
-    if (cameraActive) {
-      if (typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getUserMedia === "function") {
-        openCameraStream()
-          .then((s) => {
-            if (cancelled) {
-              s.getTracks().forEach((t) => t.stop());
-              return;
-            }
-            stream = s;
-            if (videoRef.current) {
-              videoRef.current.srcObject = s;
-              videoRef.current.play().catch(() => {});
-            }
-            setCameraError(null);
-            if (typeof window !== "undefined" && "BarcodeDetector" in window) {
-              try {
-                // @ts-expect-error - standard browser BarcodeDetector API
-                const detector = new window.BarcodeDetector({ formats: ["code_128", "qr_code", "ean_13", "data_matrix"] });
-                detectorTimer = setInterval(async () => {
-                  if (videoRef.current && videoRef.current.readyState >= 2) {
-                    try {
-                      const barcodes = await detector.detect(videoRef.current);
-                      if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) handleScanRef.current(barcodes[0].rawValue);
-                    } catch {}
-                  }
-                }, 400);
-              } catch {}
-            }
-          })
-          .catch((err) => {
-            if (!cancelled) setCameraError(cameraErrorMessage(err));
-          });
-      } else {
-        setCameraError(cameraErrorMessage(null));
-      }
-    }
-    return () => {
-      cancelled = true;
-      if (detectorTimer) clearInterval(detectorTimer);
-      if (stream) stream.getTracks().forEach((t) => t.stop());
-    };
-  }, [cameraActive]);
   // The picked customer's details show for Panel / Inverter / Battery and Mounting Structure.
   const rowDetails = pickedSerial || itemPick === "mounting";
   const detailTx = rowDetails ? pickedCustomer : undefined;
-  // Mounting Structure: one table for the lorry. With a customer row picked, it also shows that
-  // customer's invoice line, panels, suggested parts and what is saved on the job; unpicked,
-  // the lorry's own figures only.
+  // Mounting Structure, picked customer row: the grey suggestion in each Qty box comes from that
+  // customer's own panels.
   const mountFocus = (() => {
     if (itemPick !== "mounting" || !detailTx) return null;
     const panels = unitsNeeded(detailTx, "panel");
     const runs = Math.max(1, Math.ceil(panels / 3));
-    const saved = (entriesByJob[detailTx.reference] ?? []).filter((entry) => entry.kind === "mounting_part");
     return {
-      name: detailTx.schedule?.customerName ?? detailTx.party,
-      ref: detailTx.schedule?.jobId ?? detailTx.reference,
-      lines: txLines(detailTx).filter((line) => line.category === "mounting"),
-      panels,
-      runs,
       estimate: panels > 0 ? estimateMounting({ system: mountSystem, roof: mountRoof, orientation: mountOrientation, panels, rows: runs }) : null,
-      savedQty: Object.fromEntries(saved.map((entry) => [entry.key, entry.value])) as Record<string, string>,
-      box: boxCountOf(detailTx, "mounting"),
     };
   })();
   // A different card closes the camera and clears the message. The picked customer stays,
@@ -13196,7 +13657,8 @@ function StockOutLorryPage({
           Stock Out
         </h1>
         <p style={{ margin: "12px 0 0", fontSize: "16px", fontWeight: 700, color: "#000" }}>
-          {stage === "verified" || allVerified ? "Item List - Loading" : "Item List - Preparing"}
+          {/* Follows the tab it was opened from: a submitted lorry stays on Preparing too */}
+          {stage === "verified" ? "Item List - Loading" : "Item List - Preparing"}
         </p>
       </div>
 
@@ -13258,6 +13720,7 @@ function StockOutLorryPage({
                 {/* Each customer's panel brand, inverter model and electrical phase (as in the
                     job's Customer Details) */}
                 <th scope="col">Panel</th>
+                <th scope="col">Panel Power</th>
                 <th scope="col">Inverter</th>
                 <th scope="col">Electrical Phase</th>
                 <th scope="col" className={styles.instDateCol}>Installation Date</th>
@@ -13266,7 +13729,7 @@ function StockOutLorryPage({
             <tbody>
               {shownTxs.map((tx) => {
                 const schedule = tx.schedule;
-                const eta = lookupEta(etaLookup, tx);
+                const eta = lookupEta(etaLookup, tx, lorryDay);
                 const slotTime = eta ? sheetClock(eta.slotTime) || eta.slotTime : "";
                 return (
                   // The lorry is checked here: a customer row does not open its job page. Tapping
@@ -13274,11 +13737,11 @@ function StockOutLorryPage({
                   // card); tapping it again goes back to the lorry's.
                   <tr
                     key={tx.id}
-                    className={styles.txRowClickable}
+                    className={`${styles.txRowClickable} ${detailRef === tx.reference ? styles.rowPicked : ""}`}
                     tabIndex={0}
                     title={detailRef === tx.reference ? "Show the whole lorry on the cards" : "Show this customer on the cards"}
-                    // The cells paint their own background, so the picked row is outlined.
-                    style={detailRef === tx.reference ? { outline: "2px solid #c79a00", outlineOffset: "-2px" } : undefined}
+                    // The picked row: yellow background (on its cells, which paint their own) and outline.
+                    style={detailRef === tx.reference ? { outline: "2px solid #bf9000", outlineOffset: "-2px" } : undefined}
                     onClick={() => setDetailRef((cur) => (cur === tx.reference ? null : tx.reference))}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
@@ -13303,6 +13766,15 @@ function StockOutLorryPage({
                     </td>
                     <td>{schedule?.agentName || "—"}</td>
                     <td>{schedule?.panelBrand || "—"}</td>
+                    {/* Panel Power: the job's panel wattage, else the wattage in the invoice's panel line */}
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      {(() => {
+                        if (schedule?.panelPowerWatts) return `${schedule.panelPowerWatts}W`;
+                        const model = txLines(tx).find((line) => line.category === "panel")?.model ?? "";
+                        const watts = model.match(/(\d{3,4})\s*W\b/i);
+                        return watts ? `${watts[1]}W` : "—";
+                      })()}
+                    </td>
                     <td style={{ whiteSpace: "nowrap" }}>{schedule?.inverterModel || "—"}</td>
                     <td style={{ whiteSpace: "nowrap" }}>{schedule?.tnbMeter || "—"}</td>
                     <td className={styles.instDateCol} style={{ whiteSpace: "nowrap" }}>
@@ -13354,13 +13826,57 @@ function StockOutLorryPage({
         </div>
       )}
 
+      {/* Loading: take a photo of the active card's items on the lorry, below the cards. */}
+      {stage === "verified" && LOADING_PHOTO_ITEMS.includes(itemPick) && txs.length > 0 && (
+        <div className={styles.scannerCard} style={{ marginBottom: "14px" }}>
+          <div className={styles.bankingFieldLabel}>Take photo</div>
+          {loadingCamOpen ? (
+            <PhotoCamera
+              title={`${loadingPhotoLabel} on the lorry`}
+              onClose={() => setLoadingCamOpen(false)}
+              onCapture={(photo) => {
+                setLoadingCamOpen(false);
+                void saveLoadingPhoto(itemPick, photo);
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              className={styles.lorryPhotoBox}
+              disabled={loadingPhotoBusy}
+              onClick={() => setLoadingCamOpen(true)}
+              aria-label={`Take a picture of the ${loadingPhotoLabel.toLowerCase()} on the lorry`}
+            >
+              {loadingPhotos[itemPick] ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={loadingPhotos[itemPick]} alt={`${loadingPhotoLabel} on the lorry`} className={styles.lorryPhotoImg} />
+              ) : (
+                <span className={styles.lorryPhotoEmpty}>
+                  {loadingPhotoBusy ? "Saving…" : `📷 Tap to take a picture of the ${loadingPhotoLabel.toLowerCase()} on the lorry`}
+                </span>
+              )}
+            </button>
+          )}
+          {loadingPhotos[itemPick] && !loadingCamOpen && (
+            <p className={styles.note} style={{ margin: "4px 0 0" }}>
+              {loadingPhotoBusy ? "Saving…" : "Tap the photo to take it again."}
+            </p>
+          )}
+          {loadingPhotoError && (
+            <p className={styles.note} style={{ color: "#b91c1c", margin: "4px 0 0" }}>
+              {loadingPhotoError}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Panel / Inverter / Battery: one scanner for the whole lorry */}
       {pickedSerial && txs.length > 0 && (
         <div className={styles.scannerCard} style={{ marginBottom: "14px" }}>
           <div className={styles.scannerHeader}>
             <div>
               <h2 className={styles.scannerTitle}>
-                <span>🔍</span> {pickedLabel} Scanner for this Lorry
+                <span>🔍</span> {pickedLabel} Scanner for {scanFor ? scanForName : "this Lorry"}
               </h2>
               <p className={styles.scannerHelpText}>
                 {canScan
@@ -13468,17 +13984,11 @@ function StockOutLorryPage({
                   >
                     ✕
                   </button>
-                  <div className={styles.cameraScanLine} />
-                  <video ref={videoRef} className={styles.videoCameraActive} playsInline autoPlay muted />
-                  {cameraError && (
-                    <div style={{ padding: "12px 14px", background: "rgba(0,0,0,0.65)", borderRadius: "6px", margin: "8px" }}>
-                      <div style={{ fontSize: "22px", marginBottom: "2px" }}>📸</div>
-                      <strong style={{ color: "#f87171", fontSize: "12px" }}>Camera Notice:</strong>
-                      <div style={{ fontSize: "11px", color: "#e2e8f0", marginTop: "2px" }}>{cameraError}</div>
-                    </div>
-                  )}
+                  <SerialCamera onRead={(serial) => handleScanRef.current(serial)} />
                   <div style={{ padding: "8px 12px", background: "rgba(0,0,0,0.55)", borderRadius: "6px", marginTop: "6px" }}>
-                    <span style={{ fontSize: "11px", color: "#e2e8f0" }}>🎯 Camera auto-detects the barcode.</span>
+                    <span style={{ fontSize: "11px", color: "#e2e8f0" }}>
+                      🎯 Hold the barcode inside the frame, flat and in focus. It beeps on each read.
+                    </span>
                   </div>
                 </div>
               )}
@@ -13532,9 +14042,15 @@ function StockOutLorryPage({
                 </div>
               )}
 
-              {/* Everything scanned for this item on the lorry; ✕ removes a wrong scan */}
+            </>
+          )}
+
+              {/* Everything scanned for this item on the lorry (submitted customers too); ✕ removes
+                  a wrong scan while the customer is not submitted yet */}
               {(() => {
-                const scanned = pendingTxs.flatMap((tx) =>
+                // A picked customer: only their scans.
+                const listTxs = scanFor ? txs.filter((tx) => tx.reference === scanFor.reference) : txs;
+                const scanned = listTxs.flatMap((tx) =>
                   (scansByJob[tx.reference] ?? [])
                     .filter((scan) => scan.category === itemPick)
                     .map((scan) => ({ tx, scan })),
@@ -13546,9 +14062,69 @@ function StockOutLorryPage({
                     </div>
                     {scanned.length === 0 ? (
                       <p className={styles.note} style={{ margin: "4px 0 0" }}>Nothing scanned yet.</p>
+                    ) : pickedSerial ? (
+                      // Panel / Inverter / Battery: a table (Index, Serial Code, Brand, Quantity); the
+                      // ✕ after Quantity removes a wrong scan. A panel box shows its panel count.
+                      <div className={styles.tableWrap} style={{ marginTop: "6px" }}>
+                        <table className={`${styles.detailTable} ${styles.lorryTable}`}>
+                          <thead>
+                            <tr>
+                              <th scope="col" className={styles.num}>Index</th>
+                              <th scope="col">Serial Code</th>
+                              <th scope="col">{pickedLabel} Brand</th>
+                              <th scope="col" className={styles.num}>Quantity</th>
+                              <th scope="col" aria-label="Remove" />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {scanned.map(({ tx, scan }, i) => {
+                              const lines = progressOf(tx).serialLines;
+                              const line =
+                                lines[scan.lineIdx]?.category === itemPick
+                                  ? lines[scan.lineIdx]
+                                  : lines.find((l) => l.category === itemPick);
+                              const model = line?.model ?? "";
+                              const found = itemPick === "panel" ? detectPanelBrand(model) : detectInverterBrand(model);
+                              const brand =
+                                found !== "—"
+                                  ? found
+                                  : (itemPick === "panel"
+                                      ? tx.schedule?.panelBrand
+                                      : itemPick === "inverter"
+                                        ? tx.schedule?.inverterBrand
+                                        : "") || "—";
+                              return (
+                                <tr key={`${tx.reference}-${scan.code}`}>
+                                  <td className={styles.num}>{i + 1}</td>
+                                  <td>
+                                    {scan.code}
+                                    {scan.kind === "box" && <span style={{ color: "#555", fontSize: "11px" }}> (box)</span>}
+                                  </td>
+                                  <td>{brand}</td>
+                                  <td className={styles.num}>{scan.qty || 1}</td>
+                                  <td style={{ textAlign: "center", width: "40px" }}>
+                                    {/* A submitted customer's scans can no longer be removed */}
+                                    {tx.status !== "Verified" && (
+                                      <button
+                                        type="button"
+                                        onClick={() => removeScan(tx.reference, scan.code)}
+                                        aria-label={`Remove ${scan.code}`}
+                                        title="Remove this scan"
+                                        style={{ border: 0, background: "transparent", cursor: "pointer", color: "#b91c1c", fontWeight: 700, padding: 0 }}
+                                      >
+                                        ✕
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
                     ) : (
                       <div style={{ marginTop: "6px" }}>
-                        {scanned.map(({ tx, scan }) => scanChip(tx.reference, scan, true, tx.schedule?.customerName ?? tx.party))}
+                        {scanned.map(({ tx, scan }) => scanChip(tx.reference, scan, tx.status !== "Verified", tx.schedule?.customerName ?? tx.party))}
                       </div>
                     )}
                   </div>
@@ -13556,8 +14132,6 @@ function StockOutLorryPage({
               })()}
               {/* Who prepared the lorry's panels / inverters / batteries: saved on the first scan */}
               {signoffField(itemPick, "Prepared by", lorryPackedBy[itemPick] || "")}
-            </>
-          )}
 
         </div>
       )}
@@ -13565,7 +14139,70 @@ function StockOutLorryPage({
       {/* Mounting Structure card: the job page's Mounting Structure table, for the whole lorry */}
       {itemPick === "mounting" && txs.length > 0 && (
         <div className={styles.scannerCard} style={{ marginBottom: "14px" }}>
-          <h2 className={styles.inspectCardTitle}>Mounting Structure for this lorry</h2>
+          <h2 className={styles.inspectCardTitle}>Mounting Structure for {qtyFor ? qtyForName : "this lorry"}</h2>
+          {!qtyFor ? (
+            // No customer row picked: each customer's boxes per item. Tap a row to enter its parts.
+            <div className={styles.mountPanel}>
+              <p className={styles.itemDesc}>Tap a customer row above to enter their mounting structure.</p>
+              {(() => {
+                const rows = txs
+                  .filter((tx) => hasItem(tx, "mounting"))
+                  .flatMap((tx) => {
+                    const entries = (entriesByJob[tx.reference] ?? []).filter((entry) => entry.kind === "mounting_box");
+                    const perItem = entries.some((entry) => entry.key === "rail" || entry.key === "hook");
+                    const older = entries.find((entry) => entry.key === "boxes")?.value ?? "";
+                    return mountTabs.map((mt, n) => {
+                      const own = jobVal(tx.reference, "mounting_box", mountBoxKeyOf(mt.material));
+                      // An older job has one count for all its mounting: shown once, on the first row.
+                      const box = perItem ? own : n === 0 && older ? `${older} (all items)` : "";
+                      return { tx, mt, box };
+                    });
+                  });
+                if (rows.length === 0) return <p className={styles.note}>No customer on this lorry has mounting structure.</p>;
+                return (
+                  <div className={styles.tableWrap}>
+                    <table className={`${styles.detailTable} ${styles.lorryTable}`}>
+                      <thead>
+                        <tr>
+                          <th scope="col" className={styles.num}>Index</th>
+                          <th scope="col">Customer</th>
+                          <th scope="col">Item</th>
+                          <th scope="col" className={styles.num}>Box Qty</th>
+                          <th scope="col" style={{ color: "var(--green)" }}>Packed by</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map(({ tx, mt, box }, i) => {
+                          // One customer's rows share one Index and Customer cell (merged down).
+                          const first = i === 0 || rows[i - 1].tx.reference !== tx.reference;
+                          const span = rows.filter((row) => row.tx.reference === tx.reference).length;
+                          const number = new Set(rows.slice(0, i + 1).map((row) => row.tx.reference)).size;
+                          return (
+                            <tr key={`${tx.reference}-${mt.key}`}>
+                              {first && (
+                                <td className={styles.num} rowSpan={span} style={{ verticalAlign: "middle" }}>
+                                  {number}
+                                </td>
+                              )}
+                              {first && (
+                                <td rowSpan={span} style={{ verticalAlign: "middle" }}>
+                                  {tx.schedule?.customerName ?? tx.party}
+                                </td>
+                              )}
+                              <td>{mt.label}</td>
+                              <td className={styles.num}>{box || "—"}</td>
+                              {/* Who packed this item for the lorry (as below the table) */}
+                              <td>{(signoff[mt.material] ?? lorryPackedBy[mt.material]) || "—"}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
+            </div>
+          ) : (
           <div className={styles.mountPanel}>
             <p className={styles.itemDesc}>
               Count the runs of panels on the PV drawings (a run is a column or row of panels sharing one pair of rails).
@@ -13615,6 +14252,8 @@ function StockOutLorryPage({
                 Runs of panels (each on its own pair of rails)
                 <input
                   type="number"
+                  readOnly={preparingLocked || qtyTextOnly}
+                  data-text-only={qtyTextOnly || undefined}
                   min="1"
                   inputMode="numeric"
                   value={mountRows}
@@ -13629,35 +14268,6 @@ function StockOutLorryPage({
                 Panels on this lorry: <strong>{lorryPanels}</strong>
               </p>
             </div>
-            {/* The picked customer row (tap the row again to go back to the lorry only) */}
-            {mountFocus && (
-              <div
-                style={{
-                  margin: "0 0 10px",
-                  padding: "8px 10px",
-                  border: "1px solid var(--line)",
-                  borderRadius: "8px",
-                  fontSize: "13px",
-                  color: "#000",
-                  display: "grid",
-                  gap: "2px",
-                }}
-              >
-                <div style={{ fontWeight: 700 }}>
-                  {mountFocus.name} <span style={{ fontWeight: 400, color: "#555", fontSize: "12px" }}>{mountFocus.ref}</span>
-                </div>
-                <div>
-                  <strong>On the invoice:</strong>{" "}
-                  {mountFocus.lines.length === 0
-                    ? "no mounting structure line"
-                    : mountFocus.lines.map((line) => (line.qty ? `${line.model} × ${line.qty}` : line.model)).join(", ")}
-                </div>
-                <div>
-                  <strong>Panels:</strong> {mountFocus.panels || "—"} · <strong>Runs (about 1 per 3 panels):</strong>{" "}
-                  {mountFocus.panels ? mountFocus.runs : "—"} · <strong>Box Qty on the job:</strong> {mountFocus.box || "—"}
-                </div>
-              </div>
-            )}
             <div className={styles.txFilterPills} role="tablist" aria-label="Mounting group" style={{ marginBottom: "10px" }}>
               {mountTabs.map((mt) => (
                 <button
@@ -13677,12 +14287,7 @@ function StockOutLorryPage({
                 <thead>
                   <tr>
                     <th scope="col">Part</th>
-                    {/* Picked customer: their suggested parts, and what is saved on their job */}
-                    {mountFocus?.estimate && <th scope="col" className={styles.num}>Customer suggested</th>}
-                    {mountFocus && Object.keys(mountFocus.savedQty).length > 0 && (
-                      <th scope="col" className={styles.num}>Saved on job</th>
-                    )}
-                    <th scope="col" className={styles.qtyCenter}>{mountFocus ? "Lorry Qty" : "Qty"}</th>
+                    <th scope="col" className={styles.qtyCenter}>Qty</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -13694,7 +14299,7 @@ function StockOutLorryPage({
                           <tr>
                             <th
                               scope="colgroup"
-                              colSpan={2 + (mountFocus?.estimate ? 1 : 0) + (mountFocus && Object.keys(mountFocus.savedQty).length > 0 ? 1 : 0)}
+                              colSpan={2}
                               style={{ textAlign: "left" }}
                             >
                               {group.label}
@@ -13704,30 +14309,36 @@ function StockOutLorryPage({
                         {group.parts.map((part) => (
                           <tr key={part.name}>
                             <td>{part.name}</td>
-                            {mountFocus?.estimate && <td className={styles.num}>{mountFocus.estimate.parts[part.name] ?? "—"}</td>}
-                            {mountFocus && Object.keys(mountFocus.savedQty).length > 0 && (
-                              <td className={styles.num}>{mountFocus.savedQty[part.name] || "—"}</td>
-                            )}
                             <td className={styles.qtyCenter}>
                               <input
                                 type="number"
+                                readOnly={preparingLocked || qtyTextOnly}
+                                data-text-only={qtyTextOnly || undefined}
                                 min="0"
                                 inputMode="numeric"
                                 aria-label={`Quantity loaded for ${part.name}`}
                                 title={
-                                  mountEstimate.parts[part.name] !== undefined
-                                    ? `Suggested ${mountEstimate.parts[part.name]}. Press Enter to use it.`
+                                  mountSuggest(part.name) !== undefined
+                                    ? `Suggested ${mountSuggest(part.name)}. Press Enter to use it.`
                                     : undefined
                                 }
-                                placeholder={mountEstimate.parts[part.name] !== undefined ? String(mountEstimate.parts[part.name]) : ""}
-                                value={partQty[part.name] ?? ""}
-                                onChange={(e) => setPartQty((prev) => ({ ...prev, [part.name]: e.target.value }))}
+                                placeholder={mountSuggest(part.name) !== undefined ? String(mountSuggest(part.name)) : ""}
+                                // Picked customer: their own quantity (saved on their job); else the lorry's.
+                                value={qtyFor ? jobVal(qtyFor.reference, "mounting_part", part.name) : lorryPartQty(part.name)}
+                                onChange={(e) =>
+                                  qtyFor
+                                    ? setJobVal(qtyFor.reference, "mounting_part", part.name, e.target.value)
+                                    : setPartQty((prev) => ({ ...prev, [part.name]: e.target.value }))
+                                }
                                 onKeyDown={(e) => {
-                                  // Enter on an empty box accepts the grey suggestion.
-                                  const suggested = mountEstimate.parts[part.name];
-                                  if (e.key === "Enter" && suggested !== undefined && (partQty[part.name] ?? "").trim() === "") {
+                                  // Enter on an empty box accepts the grey suggestion (not once submitted).
+                                  if (preparingLocked || qtyTextOnly) return;
+                                  const suggested = mountSuggest(part.name);
+                                  const current = qtyFor ? jobVal(qtyFor.reference, "mounting_part", part.name) : lorryPartQty(part.name);
+                                  if (e.key === "Enter" && suggested !== undefined && current.trim() === "") {
                                     e.preventDefault();
-                                    setPartQty((prev) => ({ ...prev, [part.name]: String(suggested) }));
+                                    if (qtyFor) setJobVal(qtyFor.reference, "mounting_part", part.name, String(suggested));
+                                    else setPartQty((prev) => ({ ...prev, [part.name]: String(suggested) }));
                                   }
                                 }}
                                 className={`${styles.scannerInput} ${styles.transferField} ${styles.mountQtyInput}`}
@@ -13744,15 +14355,29 @@ function StockOutLorryPage({
             {/* How many boxes the lorry's mounting structure goes out in */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "8px", marginTop: "14px" }}>
               <label htmlFor="lorry-mount-box-qty" style={{ fontSize: "13px", fontWeight: 700, color: "#000" }}>
-                Box Qty
+                Box Qty ({mountTabs.find((t) => t.key === mountGroup)?.label ?? mountGroup})
               </label>
               <input
                 id="lorry-mount-box-qty"
                 type="number"
+                readOnly={preparingLocked || qtyTextOnly}
+                data-text-only={qtyTextOnly || undefined}
                 min="0"
                 inputMode="numeric"
-                value={mountBoxQty}
-                onChange={(e) => setMountBoxQty(e.target.value)}
+                value={
+                  qtyFor
+                    ? jobVal(qtyFor.reference, "mounting_box", mountBoxKeyOf(mountTabMaterial))
+                    : mountBoxQty.trim() !== ""
+                      ? mountBoxQty
+                      : jobMountBoxTotal
+                        ? String(jobMountBoxTotal)
+                        : ""
+                }
+                onChange={(e) =>
+                  qtyFor
+                    ? setJobVal(qtyFor.reference, "mounting_box", mountBoxKeyOf(mountTabMaterial), e.target.value)
+                    : setMountBoxQty(e.target.value)
+                }
                 className={`${styles.scannerInput} ${styles.transferField} ${styles.mountQtyInput}`}
                 style={{ width: "80px", minWidth: 0, height: "34px", flex: "none" }}
               />
@@ -13760,13 +14385,21 @@ function StockOutLorryPage({
             {/* Who packed this mounting tab for the lorry */}
             {mountTabMaterial && signoffField(mountTabMaterial, "Packed by", lorryPackedBy[mountTabMaterial] || "")}
           </div>
+          )}
         </div>
       )}
 
       {/* Electrical Item card: the job page's electrical table, for the whole lorry */}
       {itemPick === "electrical" && txs.length > 0 && (
         <div className={styles.scannerCard} style={{ marginBottom: "14px" }}>
-          <h2 className={styles.inspectCardTitle}>Electrical Item for this lorry</h2>
+          <h2 className={styles.inspectCardTitle}>Electrical Item for {qtyFor ? qtyForName : "this lorry"}</h2>
+          {!qtyFor ? (
+            // No customer row picked: each customer's boxes per group. Tap a row to enter items.
+            <div className={styles.mountPanel}>
+              <p className={styles.itemDesc}>Tap a customer row above to enter their electrical items.</p>
+              {groupBoxSummary(ELECTRICAL_GROUPS, false)}
+            </div>
+          ) : (
           <div className={styles.mountPanel}>
             <p className={styles.itemDesc}>Enter the quantity of each electrical item loaded for this lorry.</p>
             <div className={styles.txFilterPills} role="tablist" aria-label="Electrical group" style={{ marginBottom: "10px" }}>
@@ -13800,11 +14433,18 @@ function StockOutLorryPage({
                           <td className={styles.qtyCenter}>
                             <input
                               type="number"
+                              readOnly={preparingLocked || qtyTextOnly}
+                              data-text-only={qtyTextOnly || undefined}
                               min="0"
                               inputMode="numeric"
                               aria-label={`Quantity loaded for ${name}`}
-                              value={elecQty[name] ?? ""}
-                              onChange={(e) => setElecQty((prev) => ({ ...prev, [name]: e.target.value }))}
+                              // Picked customer: their own quantity (saved on their job); else the lorry's.
+                              value={qtyFor ? jobVal(qtyFor.reference, "electrical_part", name) : lorryElecQty(name)}
+                              onChange={(e) =>
+                                qtyFor
+                                  ? setJobVal(qtyFor.reference, "electrical_part", name, e.target.value)
+                                  : setElecQty((prev) => ({ ...prev, [name]: e.target.value }))
+                              }
                               className={`${styles.scannerInput} ${styles.transferField} ${styles.mountQtyInput}`}
                             />
                           </td>
@@ -13818,15 +14458,27 @@ function StockOutLorryPage({
             {/* How many boxes the lorry's electrical items go out in */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "8px", marginTop: "14px" }}>
               <label htmlFor="lorry-elec-box-qty" style={{ fontSize: "13px", fontWeight: 700, color: "#000" }}>
-                Box Qty
+                Box Qty ({elecGroup})
               </label>
               <input
                 id="lorry-elec-box-qty"
                 type="number"
+                readOnly={preparingLocked || qtyTextOnly}
+                data-text-only={qtyTextOnly || undefined}
                 min="0"
                 inputMode="numeric"
-                value={elecBoxQty}
-                onChange={(e) => setElecBoxQty(e.target.value)}
+                value={
+                  qtyFor
+                    ? jobVal(qtyFor.reference, "electrical_box", elecGroup)
+                    : elecBoxQty.trim() !== ""
+                      ? elecBoxQty
+                      : jobElecBoxTotal
+                        ? String(jobElecBoxTotal)
+                        : ""
+                }
+                onChange={(e) =>
+                  qtyFor ? setJobVal(qtyFor.reference, "electrical_box", elecGroup, e.target.value) : setElecBoxQty(e.target.value)
+                }
                 className={`${styles.scannerInput} ${styles.transferField} ${styles.mountQtyInput}`}
                 style={{ width: "80px", minWidth: 0, height: "34px", flex: "none" }}
               />
@@ -13834,6 +14486,7 @@ function StockOutLorryPage({
             {/* Who prepared the lorry's electrical items: saved when a quantity is first entered */}
             {signoffField("electrical", "Prepared by", lorryPackedBy.electrical || "")}
           </div>
+          )}
         </div>
       )}
 
@@ -13841,7 +14494,14 @@ function StockOutLorryPage({
           table, for the whole lorry */}
       {itemPick === "commercial" && txs.length > 0 && (
         <div className={styles.scannerCard} style={{ marginBottom: "14px" }}>
-          <h2 className={styles.inspectCardTitle}>Special Material for this lorry</h2>
+          <h2 className={styles.inspectCardTitle}>Special Material for {qtyFor ? qtyForName : "this lorry"}</h2>
+          {!qtyFor ? (
+            // No customer row picked: each customer's boxes per group. Tap a row to enter items.
+            <div className={styles.mountPanel}>
+              <p className={styles.itemDesc}>Tap a customer row above to enter their special material.</p>
+              {groupBoxSummary(COMMERCIAL_GROUPS, true)}
+            </div>
+          ) : (
           <div className={styles.mountPanel}>
             <p className={styles.itemDesc}>Commercial jobs: enter the quantity of each special material loaded for this lorry.</p>
             <div className={styles.txFilterPills} role="tablist" aria-label="Special material group" style={{ marginBottom: "10px" }}>
@@ -13875,11 +14535,18 @@ function StockOutLorryPage({
                           <td className={styles.qtyCenter}>
                             <input
                               type="number"
+                              readOnly={preparingLocked || qtyTextOnly}
+                              data-text-only={qtyTextOnly || undefined}
                               min="0"
                               inputMode="numeric"
                               aria-label={`Quantity loaded for ${name}`}
-                              value={elecQty[name] ?? ""}
-                              onChange={(e) => setElecQty((prev) => ({ ...prev, [name]: e.target.value }))}
+                              // Picked customer: their own quantity (saved on their job); else the lorry's.
+                              value={qtyFor ? jobVal(qtyFor.reference, "electrical_part", name) : lorryElecQty(name)}
+                              onChange={(e) =>
+                                qtyFor
+                                  ? setJobVal(qtyFor.reference, "electrical_part", name, e.target.value)
+                                  : setElecQty((prev) => ({ ...prev, [name]: e.target.value }))
+                              }
                               className={`${styles.scannerInput} ${styles.transferField} ${styles.mountQtyInput}`}
                             />
                           </td>
@@ -13890,19 +14557,41 @@ function StockOutLorryPage({
                 </tbody>
               </table>
             </div>
+            {/* How many boxes this customer's special material (the group shown) goes out in */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "8px", marginTop: "14px" }}>
+              <label htmlFor="lorry-comm-box-qty" style={{ fontSize: "13px", fontWeight: 700, color: "#000" }}>
+                Box Qty ({commGroup})
+              </label>
+              <input
+                id="lorry-comm-box-qty"
+                type="number"
+                readOnly={preparingLocked || qtyTextOnly}
+                data-text-only={qtyTextOnly || undefined}
+                min="0"
+                inputMode="numeric"
+                value={jobVal(qtyFor.reference, "electrical_box", commGroup)}
+                onChange={(e) => setJobVal(qtyFor.reference, "electrical_box", commGroup, e.target.value)}
+                className={`${styles.scannerInput} ${styles.transferField} ${styles.mountQtyInput}`}
+                style={{ width: "80px", minWidth: 0, height: "34px", flex: "none" }}
+              />
+            </div>
             {/* Who prepared the lorry's special materials: saved when a quantity is first entered */}
             {signoffField("commercial", "Prepared by", lorryPackedBy.commercial || "")}
           </div>
+          )}
         </div>
       )}
 
-      {/* Checked by: whoever pressed Submit for this lorry ("—" until it is submitted) */}
+      {/* Checked by: whoever pressed Submit for this lorry ("—" until it is submitted). Loading has
+          its own "Loading Checked by", typed by whoever checks the loading. */}
       {txs.length > 0 &&
-        signoffField(
-          "checked",
-          "Checked by",
-          Array.from(new Set(txs.map((tx) => verifiedBy[tx.reference]).filter(Boolean))).join(", "),
-        )}
+        (stage === "verified"
+          ? signoffField("loading_checked", "Loading Checked by", "")
+          : signoffField(
+              "checked",
+              "Checked by",
+              Array.from(new Set(txs.map((tx) => verifiedBy[tx.reference]).filter(Boolean))).join(", "),
+            ))}
 
       {/* Submit: unlocks once the lorry is checked; verifies every customer (moves to Verified) */}
       {txs.length > 0 && (
@@ -13918,8 +14607,13 @@ function StockOutLorryPage({
               {submitError}
             </span>
           )}
-          {allVerified ? (
-            // Verified: Submit sends every customer to Site Check (loaded onto the lorry), as the
+          {allVerified && stage === "preparing" ? (
+            // Preparing, already submitted: kept on Preparing (view only); Loading takes it on.
+            <button className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`} type="button" disabled title="Submitted: continue on Stock Out › Loading">
+              ✓ Submitted
+            </button>
+          ) : allVerified ? (
+            // Loading: Submit sends every customer to Site Check (loaded onto the lorry), as the
             // Loading page's Submit did. Once all are sent it is greyed.
             notLoaded.length === 0 ? (
               <button className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`} type="button" disabled title="Every customer is on Site Check">

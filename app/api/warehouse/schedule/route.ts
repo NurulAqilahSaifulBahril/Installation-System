@@ -23,6 +23,11 @@ export type WarehouseScheduledJob = {
   address: string;
   agentName: string;
   installationDate: string;
+  // The date of the job's own run on the Delivery Schedule (found by job, not by name): the day
+  // Stock Out lists it on.
+  slotDate: string;
+  // Every day Stock Out lists the job on (its runs; a cancelled delivery: its latest run only).
+  slotDates: string[];
   teams: string[];
   packageName: string;
   totalAmount: number;
@@ -41,7 +46,8 @@ export type WarehouseScheduledJob = {
   // out of the job list on purpose, because the links for every invoice are huge).
   sourceId: string;
   // Commercial job, by the dashboard's rule: a Tariff B package, or a Selco customer.
-  // Stock out shows the commercial special materials (trunking, cable gland, metal DB box).
+  // Not used by Stock Out any more: it counts a job commercial (Special Material) when it has
+  // over 100 panels (see liveStockOutRows in app/warehouse/page.tsx).
   commercial: boolean;
 };
 
@@ -85,6 +91,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Could not load installation jobs." }, { status: 502 });
   }
   const [rawJobs, ops] = loaded;
+  const rawJobById = new Map(rawJobs.map((job) => [job.id, job]));
 
   // Customer details as the Delivery Schedule shows them: the ops team's edits on top of the
   // job (name, phone, address, agent, phase, panel, inverter, installation date).
@@ -98,12 +105,25 @@ export async function GET(request: Request) {
     }),
   );
   const runDate = new Map<string, string>();
+  const runDates = new Map<string, string[]>();
   ((ops?.state.deliveryRuns ?? []) as { deliveryDate?: string; jobIds?: string[] }[]).forEach((run) =>
     (run.jobIds ?? []).forEach((id) => {
       const date = str(run.deliveryDate).slice(0, 10);
-      if (date && !runDate.has(id)) runDate.set(id, date);
+      // A job on more than one run: its latest run (used where one date is needed).
+      if (date && (!runDate.has(id) || date > runDate.get(id)!)) runDate.set(id, date);
+      if (date) runDates.set(id, Array.from(new Set([...(runDates.get(id) ?? []), date])).sort());
     }),
   );
+  // The days Stock Out lists a job on: every run it is on (e.g. a pending battery delivered on a
+  // second run), except a cancelled delivery ("CANCEL" in its stock remark), which shows on its
+  // latest run only.
+  const slotDatesOf = (id: string): string[] => {
+    const dates = runDates.get(id) ?? [];
+    if (dates.length <= 1) return dates;
+    // The stock remark as the Delivery Schedule shows it: the ops team's edit, else the job's own.
+    const remark = str(updates[id]?.stockDetails) || str(rawJobById.get(id)?.stockDetails);
+    return /\bcancel/i.test(remark) ? [dates[dates.length - 1]] : dates;
+  };
   const allJobs: InstallationJob[] = rawJobs.map((job) => {
     const update = updates[job.id] ?? {};
     const installationDate =
@@ -132,7 +152,7 @@ export async function GET(request: Request) {
   // on no run is left out until it is put on one. If the Delivery Schedule cannot be read, the
   // booked jobs by installation date are used instead, so Stock Out is not left empty.
   const datedJobs = ops
-    ? allJobs.filter((job) => inWindow(runDate.get(job.id)))
+    ? allJobs.filter((job) => slotDatesOf(job.id).some((date) => inWindow(date)))
     : allJobs.filter((job) => inWindow(job.installationDate?.slice(0, 10)));
   // Two prod_main reads, run side by side: which invoices were deleted (e.g. Heah Kee Thin's
   // INV-1011708, a deleted second invoice whose job stayed in the installation store; those jobs
@@ -177,6 +197,8 @@ export async function GET(request: Request) {
       address: [job.address, job.postcode, job.city, job.state].filter(Boolean).join(", "),
       agentName: agentFor(job),
       installationDate: job.installationDate!.slice(0, 10),
+      slotDate: runDate.get(job.id) ?? "",
+      slotDates: slotDatesOf(job.id),
       teams: job.teams.map((team) => team.teamName).filter(Boolean),
       packageName: job.packageName,
       totalAmount: job.totalAmount,

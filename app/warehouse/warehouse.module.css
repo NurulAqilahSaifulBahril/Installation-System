@@ -4520,6 +4520,13 @@ button.typeCard {
   outline-offset: -2px;
 }
 
+/* Stock Out lorry page: the picked customer row (tap again to unpick), in the same gold as the
+   active item card's outline (.soCardActive) */
+.rowPicked td,
+.rowPicked:hover td {
+  background: #bf9000;
+}
+
 /* Stock Transactions table: black header, time and reference text */
 .txLedger th,
 .txLedger .txRefCell,
@@ -6571,7 +6578,8 @@ th.instDateCol {
 
 /* Lorry loading page */
 .lorryCustName {
-  font-size: 15px;
+  /* Same size as the rest of the lorry table (12px), kept bold */
+  font-size: 12px;
   font-weight: 700;
   color: #000;
 }
@@ -7016,4 +7024,101 @@ button.lorryPhotoBox {
   cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+/* Stock Out: Preparing -> Loading -> Site Check, the tab buttons joined by a line */
+.flowTimeline {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.flowLine {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 2px;
+  background: var(--line);
+}
+.flowLineDone {
+  background: var(--primary);
+}
+
+/* Stock Out › Loading: quantities shown as plain text, not an input box */
+.scannerInput[data-text-only] {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  pointer-events: none;
+  color: #000;
+  font-weight: 600;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.scannerInput[data-text-only]::-webkit-outer-spin-button,
+.scannerInput[data-text-only]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.scannerInput[data-text-only]::placeholder {
+  color: transparent;
+}
+
+/* Stock Out lorry scanner: the serial camera (see serial-scanner.ts). The video is shown whole
+   (contain), so the frame over its middle 40% is exactly the band that is read. */
+.serialCamStage {
+  position: relative;
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+}
+.serialCamVideo {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+.serialCamBand {
+  position: absolute;
+  left: 4%;
+  right: 4%;
+  top: 30%;
+  height: 40%;
+  border: 2px solid #22c55e;
+  border-radius: 6px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.serialCamTools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  color: #e2e8f0;
+  font-size: 12px;
+}
+.serialCamTorch {
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+.serialCamTorchOn {
+  background: #facc15;
+  color: #000;
+  border-color: #facc15;
+}
+.serialCamZoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 160px;
+}
+.serialCamZoom input {
+  flex: 1;
 }
