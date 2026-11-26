@@ -7122,3 +7122,15 @@ button.lorryPhotoBox {
 .serialCamZoom input {
   flex: 1;
 }
+
+/* Stock Out › Site Check: a customer in a lorry row (opens its own Site Check) */
+.siteCustBtn {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  text-align: left;
+}

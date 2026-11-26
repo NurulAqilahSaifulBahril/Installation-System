@@ -125,8 +125,9 @@ export async function POST(request: Request) {
   if (user.role === "loading" && scan.stage !== "site") {
     return NextResponse.json({ error: "Your access is view only (Loading)." }, { status: 403 });
   }
-  if (scan.stage === "site" && (scan.kind !== "serial" || scan.category !== "panel")) {
-    return NextResponse.json({ error: "On site, scan each panel's serial." }, { status: 400 });
+  // On site (Site Check): one serial at a time, panels (out of their boxes), inverters and batteries.
+  if (scan.stage === "site" && scan.kind !== "serial") {
+    return NextResponse.json({ error: "On site, scan each unit's serial." }, { status: 400 });
   }
   try {
     await ensureTable();

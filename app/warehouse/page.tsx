@@ -4517,8 +4517,9 @@ function StockOutVerificationPage({
     }
   }
   const [boxSize, setBoxSize] = useState("36");
-  // On site (Loading tab): each panel's own serial, scanned by the driver when the boxes are opened.
-  const [siteScans, setSiteScans] = useState<string[]>([]);
+  // Site Check (on site): each panel's own serial (the boxes are opened), and each inverter /
+  // battery serial scanned again, to double-check against what Stock Out recorded.
+  const [siteScans, setSiteScans] = useState<{ code: string; category: string }[]>([]);
   // Saved scans for this job, read once when the page opens.
   useEffect(() => {
     let cancelled = false;
@@ -4526,23 +4527,31 @@ function StockOutVerificationPage({
       .then(async (res) => {
         if (!res.ok) return;
         const data = (await res.json()) as {
-          scans?: { stage: string; kind: string; lineIdx: number; code: string; qty: number }[];
+          scans?: { stage: string; kind: string; category?: string; lineIdx: number; code: string; qty: number }[];
         };
         if (cancelled) return;
         const saved = data.scans ?? [];
         const units = saved.filter((x) => x.stage === "warehouse" && x.kind === "serial" && serialLines[x.lineIdx]);
-        const siteSaved = saved.filter((x) => x.stage === "site").map((x) => x.code);
-        // TEST ONLY: a TEST_PREPARED_SLOT_DATE job with no site scans: every panel scanned on site
-        // (sample serials, page only).
-        const testPanels = TEST_PREPARED_REFS.has(tx.reference)
-          ? serialLines.filter((line) => line.category === "panel").reduce((sum, line) => sum + (line.qty ?? 0), 0)
-          : 0;
-        const digits = tx.reference.replace(/\D/g, "").slice(-7).padStart(7, "0");
-        setSiteScans(
-          siteSaved.length > 0 || testPanels === 0
-            ? siteSaved
-            : Array.from({ length: testPanels }, (_, i) => `E4FXJ425G21${digits}${String(i + 1).padStart(6, "0")}`),
-        );
+        const siteSaved = saved
+          .filter((x) => x.stage === "site")
+          .map((x) => ({ code: x.code, category: x.category || "panel" }));
+        // TEST ONLY: a TEST_PREPARED_SLOT_DATE job with no site scans: every unit scanned on site
+        // (page only). Inverters / batteries and loose panels with the sample Stock Out serials (so
+        // they match); the boxed panels with sample panel serials.
+        const testSite: { code: string; category: string }[] = [];
+        if (TEST_PREPARED_REFS.has(tx.reference) && siteSaved.length === 0 && sample) {
+          const digits = tx.reference.replace(/\D/g, "").slice(-7).padStart(7, "0");
+          sample.scans.forEach((x) => {
+            const category = serialLines[x.lineIdx]?.category;
+            if (category) testSite.push({ code: x.serial, category });
+          });
+          const panels = serialLines.filter((line) => line.category === "panel").reduce((sum, line) => sum + (line.qty ?? 0), 0);
+          const loose = testSite.filter((x) => x.category === "panel").length;
+          for (let i = 1; i <= panels - loose; i += 1) {
+            testSite.push({ code: `E4FXJ425G21${digits}${String(i).padStart(6, "0")}`, category: "panel" });
+          }
+        }
+        setSiteScans(siteSaved.length > 0 ? siteSaved : testSite);
         // Test job with nothing saved at the warehouse: keep the sample boxes and serials.
         if (sample && !saved.some((x) => x.stage === "warehouse")) return;
         if (sample) setScans([]);
@@ -4737,10 +4746,21 @@ function StockOutVerificationPage({
   const scannedPerLine = serialLines.map((_, i) => looseOf(i).length + boxAlloc[i].length);
   const totalRequired = serialLines.reduce((sum, line) => sum + (line.qty ?? 0), 0);
   const totalScanned = scannedPerLine.reduce((sum, n) => sum + n, 0);
-  // On site: every panel scanned one by one.
-  const panelTotal = serialLines.filter((line) => line.category === "panel").reduce((sum, line) => sum + (line.qty ?? 0), 0);
-  const siteDone = panelTotal > 0 && siteScans.length >= panelTotal;
-  const siteProgress = panelTotal > 0 ? Math.min(100, Math.round((siteScans.length / panelTotal) * 100)) : 0;
+  // Site Check: every panel, inverter and battery scanned one by one on site.
+  const siteTotalOf = (category: string) =>
+    serialLines.filter((line) => line.category === category).reduce((sum, line) => sum + (line.qty ?? 0), 0);
+  const siteOf = (category: string) => siteScans.filter((x) => x.category === category);
+  const panelTotal = siteTotalOf("panel");
+  // The open tab's on-site figures (Panel, Inverter or Battery).
+  const siteTabTotal = tab === "panel" || tab === "inverter" || tab === "battery" ? siteTotalOf(tab) : 0;
+  const siteTabScans = siteTabTotal > 0 ? siteOf(tab).map((x) => x.code) : [];
+  const siteDone = siteTabTotal > 0 && siteTabScans.length >= siteTabTotal;
+  const siteProgress = siteTabTotal > 0 ? Math.min(100, Math.round((siteTabScans.length / siteTabTotal) * 100)) : 0;
+  // Site Check's Submit: every panel, inverter and battery scanned on site.
+  const siteAllDone = (["panel", "inverter", "battery"] as const).every((c) => siteOf(c).length >= siteTotalOf(c));
+  const siteLeft = (["panel", "inverter", "battery"] as const)
+    .filter((c) => siteOf(c).length < siteTotalOf(c))
+    .map((c) => `${STOCK_OUT_TABS.find(([key]) => key === c)?.[1] ?? c} ${siteOf(c).length}/${siteTotalOf(c)}`);
   const progressPercent = totalRequired > 0 ? Math.min(100, Math.round((totalScanned / totalRequired) * 100)) : 0;
   const bulkMissing = bulkLines.filter(
     (line, i) => !listFilled(line.category) && (bulkQty[i] ?? "").trim() === "",
@@ -4766,8 +4786,9 @@ function StockOutVerificationPage({
     }),
   );
   const isSerialTab = tab === "panel" || tab === "inverter" || tab === "battery";
-  // Loaded job, Panel tab: the scanner card is the on-site panel check (driver scans each panel).
-  const onSitePanels = loaded && tab === "panel" && panelTotal > 0;
+  // Loaded job (Site Check), Panel / Inverter / Battery tab: the scanner card is the on-site check.
+  // (Named for panels, where it began; it covers inverters and batteries too.)
+  const onSitePanels = loaded && isSerialTab && siteTabTotal > 0;
   // Loading stage: verified at the warehouse, not loaded on the lorry yet.
   const loadingJob = tx.status === "Verified" && !loaded;
   // Loading jobs: Slot, ETA and install time from the Delivery Schedule, for Customer Details.
@@ -4785,7 +4806,7 @@ function StockOutVerificationPage({
   // A scan that fits nowhere else goes into a loose row and is flagged as a different serial.
   const siteRows = (() => {
     if (!onSitePanels) return [];
-    const remaining = [...siteScans];
+    const remaining = [...siteTabScans];
     const take = (code: string) => {
       const i = remaining.findIndex((x) => x.toLowerCase() === code.toLowerCase());
       return i >= 0 ? remaining.splice(i, 1)[0] : null;
@@ -4964,24 +4985,46 @@ function StockOutVerificationPage({
 
     if (loaded) {
       setBarcodeInput("");
-      if (panelTotal === 0) {
-        setFeedback({ type: "warning", message: "⚠️ This job has no panels to check on site." });
+      // Site Check: the open tab's item (Panel, Inverter or Battery).
+      const category = tab === "panel" || tab === "inverter" || tab === "battery" ? tab : null;
+      const label = category ? (STOCK_OUT_TABS.find(([key]) => key === category)?.[1] ?? category) : "";
+      const total = category ? siteTotalOf(category) : 0;
+      if (!category || total === 0) {
+        setFeedback({
+          type: "warning",
+          message: category ? `⚠️ This job has no ${label.toLowerCase()} to check on site.` : "⚠️ Open the Panel, Inverter or Battery tab to scan on site.",
+        });
         return;
       }
-      if (siteScans.some((serial) => serial.toLowerCase() === code.toLowerCase())) {
-        setFeedback({ type: "warning", message: `⚠️ Duplicate Scan: panel ${code} was already scanned on site.` });
+      const lower = code.toLowerCase();
+      if (siteScans.some((x) => x.code.toLowerCase() === lower)) {
+        setFeedback({ type: "warning", message: `⚠️ Duplicate Scan: ${code} was already scanned on site.` });
         return;
       }
-      if (siteScans.length >= panelTotal) {
-        setFeedback({ type: "warning", message: `⚠️ All ${panelTotal} panels are already scanned on site.` });
+      const done = siteOf(category).length;
+      if (done >= total) {
+        setFeedback({ type: "warning", message: `⚠️ All ${total} ${label.toLowerCase()} already scanned on site.` });
         return;
       }
-      const count = siteScans.length + 1;
-      setSiteScans((prev) => [...prev, code]);
-      setFeedback({ type: "success", message: `✅ Panel ${code} arrived (${count}/${panelTotal})` });
-      void saveScan({ stage: "site", kind: "serial", category: "panel", lineIdx: 0, code, qty: 1 }).then((error) => {
+      // Double-check against Stock Out: the same serial scanned at the warehouse? (A panel that
+      // left in a box has no serial of its own there: it is matched by count.)
+      const warehouseCodes = slots
+        .filter((slot) => slot.line.category === category && slot.serial && !slot.box)
+        .map((slot) => (slot.serial ?? "").toLowerCase());
+      const boxed = slots.filter((slot) => slot.line.category === category && slot.box).length;
+      const matched = warehouseCodes.includes(lower);
+      const lineIdx = Math.max(0, serialLines.findIndex((line) => line.category === category));
+      setSiteScans((prev) => [...prev, { code, category }]);
+      setFeedback(
+        matched
+          ? { type: "success", message: `✅ ${label} ${code} matches Stock Out (${done + 1}/${total})` }
+          : category === "panel" && boxed > 0
+            ? { type: "success", message: `✅ Panel ${code} counted (${done + 1}/${total})` }
+            : { type: "warning", message: `⚠️ ${label} ${code} is not the serial Stock Out recorded. Check the unit (${done + 1}/${total}).` },
+      );
+      void saveScan({ stage: "site", kind: "serial", category, lineIdx, code, qty: 1 }).then((error) => {
         if (!error) return;
-        setSiteScans((prev) => prev.filter((serial) => serial !== code));
+        setSiteScans((prev) => prev.filter((x) => x.code !== code));
         setFeedback({ type: "error", message: `❌ ${error}` });
       });
       return;
@@ -5372,7 +5415,9 @@ function StockOutVerificationPage({
                 {!(tx.status === "Verified" && !loaded) && (
                   <p className={styles.scannerHelpText}>
                     {onSitePanels
-                      ? "📍 On-site Panel Check (at customer's house): open the boxes and scan each panel's serial to confirm everything arrived safely."
+                      ? tab === "panel"
+                        ? "📍 Site Check (at the customer's house): panels leave the warehouse by box. Open the boxes and scan each panel's own serial: the count must match."
+                        : `📍 Site Check (at the customer's house): scan each ${tab} serial again. It must match the serial Stock Out recorded.`
                       : "Scan physical barcode using live mobile camera or handheld laser gun to record each unit before installer pickup."}
                   </p>
                 )}
@@ -5527,7 +5572,7 @@ function StockOutVerificationPage({
             style={{ border: "1.5px solid #000" }}
             placeholder={
               onSitePanels
-                ? "Scan panel barcode or type its serial number..."
+                ? `Scan the ${tab} serial on site...`
                 : tab === "panel" && panelMode === "box"
                   ? "Scan the panel box barcode..."
                   : "Scan barcode or type unit serial number..."
@@ -5572,21 +5617,24 @@ function StockOutVerificationPage({
 
         {/* 3. Dispatch Units Item List Table (merged into the scanner box). Shown only once a
             unit (or panel box) has been scanned for this item; before that only the scan box shows. */}
-        {(onSitePanels ? siteScans.length > 0 : tabScanned > 0 || (tab === "panel" && boxes.length > 0)) && (
+        {/* Site Check: the table shows from the start (what Stock Out sent, to scan against) */}
+        {(onSitePanels ? true : tabScanned > 0 || (tab === "panel" && boxes.length > 0)) && (
           <>
           <hr style={{ border: 0, borderTop: "1px solid var(--line)", margin: "18px 0" }} />
           <div className={styles.skuProgressHeader}>
             <div>
               <p className={styles.itemDesc}>
                 {onSitePanels
-                  ? "Panels leave the warehouse by box; on site each panel is scanned one by one."
+                  ? tab === "panel"
+                    ? "Panels leave the warehouse by box; on site each panel is scanned one by one."
+                    : "Each unit is scanned again on site and matched to its Stock Out serial."
                   : "Quantities come from the invoice. Serial codes are recorded as each unit is scanned."}
               </p>
             </div>
             <div className={styles.skuOverallStats}>
               {onSitePanels ? (
                 <>
-                  Arrived on site: <strong>{siteScans.length}</strong> / {panelTotal} ({siteProgress}%)
+                  Checked on site: <strong>{siteTabScans.length}</strong> / {siteTabTotal} ({siteProgress}%)
                 </>
               ) : (
                 <>
@@ -6141,25 +6189,30 @@ function StockOutVerificationPage({
               ✓ Submitted
             </button>
           ) : (
-            // Loading Verification: Verified unlocks once every panel is scanned on site (jobs
-            // without panels can be verified straight away); pressing it moves the job to Site Check.
+            // Site Check: Submit unlocks once every panel, inverter and battery is scanned on site
+            // (a job with none can be submitted straight away).
+            <>
+            {!siteAllDone && (
+              <span className={styles.note} style={{ margin: 0 }}>
+                Still to scan on site: {siteLeft.join(", ")}.
+              </span>
+            )}
             <button
               className={`${styles.btnActionPrimary} ${
-                siteDone || panelTotal === 0 ? styles.btnVerifiedGlow : styles.btnVerifiedLocked
+                siteAllDone ? styles.btnVerifiedGlow : styles.btnVerifiedLocked
               }`}
               type="button"
-              disabled={!(siteDone || panelTotal === 0)}
+              disabled={!siteAllDone}
               onClick={() => {
                 setArrivedNow(true);
                 onRecord("arrived");
                 onBack();
               }}
-              title="All panels scanned on site: confirm the delivery arrived safely"
+              title="Every panel, inverter and battery scanned on site: confirm the delivery arrived safely"
             >
-              {siteDone || panelTotal === 0
-                ? "✓ Submit"
-                : "🔒 Submit"}
+              {siteAllDone ? "✓ Submit" : "🔒 Submit"}
             </button>
+            </>
           )}
         </div>
         </div>
@@ -8341,7 +8394,7 @@ function HomeTab({
   // Loading page and Stock Out › Preparing / Verified: one row per lorry (driver group), no
   // customer rows. Its slot is the earliest of its customers' slots on the Delivery Schedule.
   const lorryRows = (() => {
-    if (!onOpenLorry && !outTabs) return [];
+    if (!onOpenLorry && !outTabs && !stockOutSiteCheck) return [];
     const rows: { key: string; driver: string; plate: string; txs: StockTransaction[] }[] = [];
     groupedTx.forEach((tx) => {
       if (tx.type !== "out") return;
@@ -8360,7 +8413,8 @@ function HomeTab({
   })();
   // Stock Out › Preparing / Verified: the lorry rows, as on the Loading page; a tapped row opens
   // that lorry's own page (no customer table here).
-  const showLorryRows = !!onOpenLorry || outTabs;
+  // Stock Out › Site Check: the same lorry rows; each customer in a row opens its own Site Check.
+  const showLorryRows = !!onOpenLorry || outTabs || stockOutSiteCheck;
   // Stock Out › Preparing: jobs whose units are all scanned (job page Submit), ticked in the
   // Customers column.
   const scannedRefs = new Set(verifications.filter((r) => r.material === "scanned").map((r) => r.jobRef));
@@ -9115,7 +9169,11 @@ function HomeTab({
               // that lorry's customers
               lorryRows.length === 0 ? (
                 <p className={styles.note}>
-                  {outTabs && statusTab === "verified" ? "No lorry submitted from Preparing yet for this day." : "No lorry to show for this day."}
+                  {stockOutSiteCheck
+                    ? "No lorry submitted from Loading yet for this day."
+                    : outTabs && statusTab === "verified"
+                      ? "No lorry submitted from Preparing yet for this day."
+                      : "No lorry to show for this day."}
                 </p>
               ) : (
                 <div className={styles.tableWrap} ref={txTableRef}>
@@ -9137,7 +9195,13 @@ function HomeTab({
                         const prepared = row.txs.every(flowPrepared);
                         const loaded = row.txs.every(flowLoaded);
                         const locked = outLoadingTab && !prepared;
-                        const flowNote = !outTabs
+                        // Site Check: how many customers on the lorry are checked on site.
+                        const siteChecked = row.txs.filter((t) => arrivedJobs.has(t.reference)).length;
+                        const flowNote = stockOutSiteCheck
+                          ? siteChecked === row.txs.length
+                            ? { text: "✓ Checked", color: "var(--green)" }
+                            : null
+                          : !outTabs
                           ? null
                           : outLoadingTab
                             ? locked
@@ -9148,8 +9212,9 @@ function HomeTab({
                             : prepared
                               ? { text: "✓ Submitted", color: "var(--green)" }
                               : null;
+                        // Site Check opens a customer (below), not the lorry.
                         const open = () =>
-                          locked
+                          locked || stockOutSiteCheck
                             ? undefined
                             : onOpenLorry
                             ? onOpenLorry({ driver: row.driver, plate: row.plate, txIds: row.txs.map((t) => t.id), stage: pageStage, day: selectedDay })
@@ -9165,7 +9230,7 @@ function HomeTab({
                         return (
                           <tr
                             key={row.key}
-                            className={`${styles.loadingPicRow} ${locked ? "" : styles.loadingPicRowClickable}`}
+                            className={`${styles.loadingPicRow} ${locked || stockOutSiteCheck ? "" : styles.loadingPicRowClickable}`}
                             style={locked ? { opacity: 0.55, cursor: "not-allowed" } : undefined}
                             tabIndex={locked ? -1 : 0}
                             role="button"
@@ -9204,7 +9269,27 @@ function HomeTab({
                             <td>
                               {row.txs.map((tx) => (
                                 <div key={tx.id}>
-                                  {tx.schedule?.customerName ?? tx.party}
+                                  {stockOutSiteCheck ? (
+                                    // Site Check: each customer opens its own on-site check
+                                    <button
+                                      type="button"
+                                      className={styles.siteCustBtn}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onInspectTx(tx.id);
+                                      }}
+                                      title="Open this customer's Site Check"
+                                    >
+                                      {tx.schedule?.customerName ?? tx.party}
+                                    </button>
+                                  ) : (
+                                    tx.schedule?.customerName ?? tx.party
+                                  )}
+                                  {stockOutSiteCheck && arrivedJobs.has(tx.reference) && (
+                                    <span style={{ marginLeft: "6px", color: "var(--green)", fontWeight: 700 }} title="Checked on site">
+                                      ✓
+                                    </span>
+                                  )}
                                   {/* Stock Out › Preparing: ✓ once the customer is scanned */}
                                   {outPreparing && scannedRefs.has(tx.reference) && (
                                     <span style={{ marginLeft: "6px", color: "var(--green)", fontWeight: 700 }} title="Scanned">
