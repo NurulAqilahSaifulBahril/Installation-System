@@ -69,7 +69,7 @@ export const WAREHOUSE_NOTICES: WarehouseNotice[] = [
     time: "1h",
     title: "300 × Jinko 650W",
     category: "Panel",
-    detail: "Received from supplier. KL now has 355.",
+    detail: "Received from supplier. Klang now has 355.",
   },
   {
     id: "faulty-h2-8k",

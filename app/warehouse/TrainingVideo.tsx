@@ -8,9 +8,10 @@ import styles from "./warehouse.module.css";
 // next time). The video (public/training, every customer detail blurred) is downloaded only when
 // Watch is pressed, and streams as it plays.
 
-const VIDEO_SRC = "/training/how-to-part1.mp4";
+// ?v= changes with each rebuild, so a browser does not keep playing an older copy.
+const VIDEO_SRC = "/training/how-to-part1.mp4?v=2";
 // Length of the video in seconds, used until the browser has read it from the file.
-const VIDEO_LENGTH = 578;
+const VIDEO_LENGTH = 579;
 
 // Chapters, YouTube style: the progress bar is split at each one, hovering shows its name, and
 // the list under the video jumps to it. Start times (seconds) come from the video build
@@ -18,13 +19,12 @@ const VIDEO_LENGTH = 578;
 const CHAPTERS = [
   { start: 0, title: "Sign in" },
   { start: 30.6, title: "Home page" },
-  { start: 118.6, title: "Stock Out" },
-  { start: 206.2, title: "New Stock Out" },
-  { start: 280, title: "Preparing a job (scanning)" },
-  { start: 373, title: "Submit and Verified" },
-  { start: 412.8, title: "Loading" },
-  { start: 496.6, title: "Lorry photos" },
-  { start: 525.8, title: "Loading: Submit and Verified" },
+  { start: 100.2, title: "Stock Out" },
+  { start: 179.2, title: "New Stock Out" },
+  { start: 253, title: "Preparing a lorry" },
+  { start: 420, title: "Report" },
+  { start: 444.5, title: "Loading" },
+  { start: 509, title: "Site Check" },
 ];
 
 function clock(seconds: number) {

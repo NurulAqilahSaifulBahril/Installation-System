@@ -356,7 +356,7 @@ function NoticeList() {
               <span className={`${styles.noticeIcon} ${NOTICE_KIND[notice.kind].dot}`} aria-hidden="true">
                 {NOTICE_KIND[notice.kind].icon}
               </span>
-              {NOTICE_KIND[notice.kind].label} · {notice.warehouse}
+              {NOTICE_KIND[notice.kind].label} · {notice.warehouse === "KL" ? "Klang" : notice.warehouse}
             </span>
             <span>{notice.time}</span>
           </span>
@@ -2540,7 +2540,8 @@ function catClass(cat: string): string {
 type WarehouseCode = "JB" | "KL" | "KLG";
 type WhFilter = "all" | WarehouseCode;
 const WH_FILTERS: WarehouseCode[] = ["JB", "KL", "KLG"];
-const WH_BUTTON_LABEL: Record<WhFilter, string> = { all: "All", JB: "JB", KL: "KL", KLG: "Kluang" };
+// The KL code is the Klang warehouse (shown as "Klang"; the code stays KL in saved data).
+const WH_BUTTON_LABEL: Record<WhFilter, string> = { all: "All", JB: "JB", KL: "Klang", KLG: "Kluang" };
 
 const WH_SPLIT: Record<string, { JB: number; KL: number; KLG?: number }> = {
   inverter: { JB: 245, KL: 197 },
@@ -3062,7 +3063,7 @@ function StockInVerificationPage({
           <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "6px", flexWrap: "wrap" }}>
             <span className={`${styles.txBadge} ${styles.txIn}`}>🟢 STOCK IN</span>
             <span className={catClass(tx.category)}>{CAT_LABEL[tx.category] ?? tx.category}</span>
-            <span className={`${styles.tag} ${styles.check}`}>{tx.warehouse} Warehouse</span>
+            <span className={`${styles.tag} ${styles.check}`}>{tx.warehouse === "KL" ? "Klang" : tx.warehouse === "KLG" ? "Kluang" : tx.warehouse} Warehouse</span>
             {/* 1. When will receive */}
             <div className={styles.deliveryEtaBadge}>
               <span>📅</span>
@@ -3715,7 +3716,7 @@ function StockInVerificationPage({
                     No. 18, Jalan Industri 4, Taman Perindustrian Subang,<br />
                     47610 Subang Jaya, Selangor, Malaysia.<br />
                     Attn: <strong>Procurement / Warehouse Receiving Dept</strong><br />
-                    Receiving Hub: <strong>Eternalgy {tx.warehouse} Warehouse</strong>
+                    Receiving Hub: <strong>Eternalgy {tx.warehouse === "KL" ? "Klang" : tx.warehouse === "KLG" ? "Kluang" : tx.warehouse} Warehouse</strong>
                   </div>
                 </div>
 
@@ -4103,7 +4104,7 @@ function StockInVerificationPage({
                           Destination:
                         </td>
                         <td colSpan={3} className={styles.excelCell}>
-                          Kuala Lumpur Central Warehouse Hub (Lot 88, Jalan Subang 5)
+                          Klang Warehouse Hub (Lot 88, Jalan Subang 5)
                         </td>
                         <td className={styles.excelCell} style={{ background: "#f8fafc", fontWeight: 700, color: "#334155" }}>
                           DO Number:
@@ -6713,8 +6714,8 @@ function StockTransferVerificationPage({
     );
   }, [transferUnits, excelSearch]);
 
-  const fromLabel = fromWh === "JB" ? "Johor Bahru (JB)" : "Kuala Lumpur (KL)";
-  const toLabel = toWh === "JB" ? "Johor Bahru (JB)" : "Kuala Lumpur (KL)";
+  const fromLabel = fromWh === "JB" ? "Johor Bahru (JB)" : "Klang";
+  const toLabel = toWh === "JB" ? "Johor Bahru (JB)" : "Klang";
 
   return (
     <section className={styles.screen} aria-labelledby="stocktransfer-verify-title">
@@ -7579,7 +7580,7 @@ function TransactionInspectionPage({
               {txType === "in" ? "🟢 STOCK IN" : txType === "out" ? "🔴 STOCK OUT" : "🔄 TRANSFER"}
             </span>
             <span className={catClass(tx.category)}>{CAT_LABEL[tx.category] ?? tx.category}</span>
-            <span className={`${styles.tag} ${styles.check}`}>{tx.warehouse} Warehouse</span>
+            <span className={`${styles.tag} ${styles.check}`}>{tx.warehouse === "KL" ? "Klang" : tx.warehouse === "KLG" ? "Kluang" : tx.warehouse} Warehouse</span>
           </div>
           <h1 id="tx-inspection-title" className={styles.inspectHeroTitle}>
             {txType === "in" && `Stock In Verification: ${tx.model}`}
@@ -7632,7 +7633,7 @@ function TransactionInspectionPage({
             <li className={styles.inspectDataRow}>
               <span className={styles.inspectDataLabel}>Warehouse:</span>
               <span className={styles.inspectDataValue}>
-                {tx.warehouse === "JB" ? "Johor Bahru (JB)" : "Kuala Lumpur (KL)"}
+                {tx.warehouse === "JB" ? "Johor Bahru (JB)" : "Klang"}
               </span>
             </li>
             <li className={styles.inspectDataRow}>
@@ -7954,7 +7955,7 @@ function StockBalanceCards({
                 <div className={styles.onHandSplit}>
                   {/* A warehouse with no figure for this item is left out, not shown as "—". */}
                   {WH_SPLIT[card.id]?.JB != null && <span><strong>JB</strong> {WH_SPLIT[card.id]?.JB}</span>}
-                  {WH_SPLIT[card.id]?.KL != null && <span><strong>KL</strong> {WH_SPLIT[card.id]?.KL}</span>}
+                  {WH_SPLIT[card.id]?.KL != null && <span><strong>Klang</strong> {WH_SPLIT[card.id]?.KL}</span>}
                   {WH_SPLIT[card.id]?.KLG != null && <span><strong>Kluang</strong> {WH_SPLIT[card.id]?.KLG}</span>}
                 </div>
               ) : hideWhLabels ? null : (
@@ -10039,8 +10040,8 @@ function StockTransferTab({
   // No data sits on stock transfer.
   function handleAuthorizeVerifiedTransfer() {
     const trNum = `TR-2026-${String(Math.floor(1000 + Math.random() * 9000))}`;
-    const fromLabel = fromWh === "JB" ? "Johor Bahru (JB)" : "Kuala Lumpur (KL)";
-    const toLabel = toWh === "JB" ? "Johor Bahru (JB)" : "Kuala Lumpur (KL)";
+    const fromLabel = fromWh === "JB" ? "Johor Bahru (JB)" : "Klang";
+    const toLabel = toWh === "JB" ? "Johor Bahru (JB)" : "Klang";
 
     const verifiedTx: StockTransaction = {
       id: `tx-trf-${Date.now()}`,
@@ -10098,8 +10099,8 @@ function StockTransferTab({
     setLorryPhoto(null);
   }
 
-  const fromLabel = fromWh === "JB" ? "Johor Bahru (JB) Warehouse" : "Kuala Lumpur (KL) Warehouse";
-  const toLabel = toWh === "JB" ? "Johor Bahru (JB) Warehouse" : "Kuala Lumpur (KL) Warehouse";
+  const fromLabel = fromWh === "JB" ? "Johor Bahru (JB) Warehouse" : "Klang Warehouse";
+  const toLabel = toWh === "JB" ? "Johor Bahru (JB) Warehouse" : "Klang Warehouse";
 
   return (
     <section className={`${styles.screen} ${styles.arialPage} ${styles.transferPage}`} aria-labelledby="stock-transfer-title">
@@ -10171,7 +10172,7 @@ function StockTransferTab({
                 aria-label="From Warehouse"
               >
                 <option value="JB">Johor Bahru (JB) Warehouse</option>
-                <option value="KL">Kuala Lumpur (KL) Warehouse</option>
+                <option value="KL">Klang Warehouse</option>
               </select>
               <div className={styles.bankingAccountBalance}>
                 <span>📦 Available on Hand:</span>
@@ -10209,7 +10210,7 @@ function StockTransferTab({
                 }}
                 aria-label="To Warehouse"
               >
-                <option value="KL">Kuala Lumpur (KL) Warehouse</option>
+                <option value="KL">Klang Warehouse</option>
                 <option value="JB">Johor Bahru (JB) Warehouse</option>
               </select>
               <div className={styles.bankingAccountBalance}>
@@ -10721,7 +10722,7 @@ function StockDetailsTab({
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px" }}>
         <div style={{ minWidth: 0 }}>
           <h1 id="warehouse-stock-details">Stock Details</h1>
-          <p className={styles.kicker}>Current inventory across JB, KL and Kluang warehouses.</p>
+          <p className={styles.kicker}>Current inventory across JB, Klang and Kluang warehouses.</p>
         </div>
         <button type="button" className={styles.btnActionGhost} style={{ flex: "none" }} onClick={() => setReportOpen(true)}>
           Report
@@ -10870,7 +10871,7 @@ function StockDetailsReport({
   );
   outLines.sort((a, b) => a.customer.localeCompare(b.customer));
   const balances = WAREHOUSE_BALANCES[whFilter];
-  const whName = whFilter === "all" ? "All warehouses (JB, KL, Kluang)" : `${WH_BUTTON_LABEL[whFilter]} Warehouse`;
+  const whName = whFilter === "all" ? "All warehouses (JB, Klang, Kluang)" : `${WH_BUTTON_LABEL[whFilter]} Warehouse`;
   const cell = { border: "1px solid #999", padding: "4px 6px", textAlign: "left" as const, fontSize: "11px", color: "#000" };
   const num = { ...cell, textAlign: "right" as const, whiteSpace: "nowrap" as const };
   const head = { ...cell, background: "#f3f4f6", fontWeight: 700 };
