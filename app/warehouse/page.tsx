@@ -747,8 +747,9 @@ const TEST_LOADED_SLOT_DATE = "2026-10-20";
 // The jobs found on those runs (filled in once the Delivery Schedule has loaded).
 const TEST_LOADED_REFS = new Set<string>();
 // TEST ONLY: every Stock Out job on a delivery run of this slot day counts as submitted on
-// Preparing (Verified, not loaded), with sample scans and names, so Stock Out › Loading can be
-// tried. Nothing is saved: it lives in the page only. Remove once real preparing is in use.
+// Preparing and Loading (Verified, loaded), with sample scans, photos and names; Site Check has
+// sample panel scans but is not submitted, so its Submit can be tried. Nothing is saved: it lives in the page only. Remove once
+// real preparing is in use.
 const TEST_PREPARED_SLOT_DATE = "2026-11-24";
 // The jobs found on those runs (filled in once the Delivery Schedule has loaded).
 const TEST_PREPARED_REFS = new Set<string>();
@@ -1917,8 +1918,9 @@ function Dashboard({
       return missing.length > 0 ? [...prev, ...missing.map((jobRef) => ({ jobRef, material: "loaded", by: "Wei Hao" }))] : prev;
     });
   }, [testRuns, transactions, verifications]);
-  // TEST ONLY: TEST_PREPARED_SLOT_DATE jobs count as submitted on Preparing (Verified, not loaded),
-  // with "Checked by" (the job verification) as on a real Submit. In the page only, not saved.
+  // TEST ONLY: TEST_PREPARED_SLOT_DATE jobs count as submitted on Preparing and Loading (Verified,
+  // loaded), with who did each as on a real Submit; Site Check is left to Submit (its sample panel
+  // scans are on the job page). In the page only, not saved.
   useEffect(() => {
     const lookup = buildEtaLookup(testRuns);
     const refs = new Set(
@@ -1934,8 +1936,17 @@ function Dashboard({
         : prev,
     );
     setVerifications((prev) => {
-      const missing = Array.from(refs).filter((ref) => !prev.some((r) => r.jobRef === ref && r.material === "job"));
-      return missing.length > 0 ? [...prev, ...missing.map((jobRef) => ({ jobRef, material: "job", by: "Jia Keat" }))] : prev;
+      const add = (
+        [
+          ["job", "Jia Keat"],
+          ["loaded", "Hafiz"],
+        ] as const
+      ).flatMap(([material, by]) =>
+        Array.from(refs)
+          .filter((ref) => !prev.some((r) => r.jobRef === ref && r.material === material))
+          .map((jobRef) => ({ jobRef, material, by })),
+      );
+      return add.length > 0 ? [...prev, ...add] : prev;
     });
   }, [testRuns, transactions, verifications]);
   // "+ New Stock Out" form (last-minute item taken by the PIC) is open.
@@ -1945,6 +1956,14 @@ function Dashboard({
   // It is saved on the server (survives a reload) and written to the Inventory Management
   // audit log with that person's name.
   async function recordVerification(jobRef: string, material: VerificationMaterial): Promise<boolean> {
+    // TEST ONLY: a TEST_PREPARED_SLOT_DATE job (sample data) is never saved: its Submit (e.g. Site
+    // Check) is kept in the page only, so the real job is not marked.
+    if (TEST_PREPARED_REFS.has(jobRef)) {
+      setVerifications((prev) =>
+        prev.some((r) => r.jobRef === jobRef && r.material === material) ? prev : [...prev, { jobRef, material, by: "Test" }],
+      );
+      return true;
+    }
     try {
       const response = await fetch("/api/warehouse/verifications", {
         method: "POST",
@@ -4512,7 +4531,18 @@ function StockOutVerificationPage({
         if (cancelled) return;
         const saved = data.scans ?? [];
         const units = saved.filter((x) => x.stage === "warehouse" && x.kind === "serial" && serialLines[x.lineIdx]);
-        setSiteScans(saved.filter((x) => x.stage === "site").map((x) => x.code));
+        const siteSaved = saved.filter((x) => x.stage === "site").map((x) => x.code);
+        // TEST ONLY: a TEST_PREPARED_SLOT_DATE job with no site scans: every panel scanned on site
+        // (sample serials, page only).
+        const testPanels = TEST_PREPARED_REFS.has(tx.reference)
+          ? serialLines.filter((line) => line.category === "panel").reduce((sum, line) => sum + (line.qty ?? 0), 0)
+          : 0;
+        const digits = tx.reference.replace(/\D/g, "").slice(-7).padStart(7, "0");
+        setSiteScans(
+          siteSaved.length > 0 || testPanels === 0
+            ? siteSaved
+            : Array.from({ length: testPanels }, (_, i) => `E4FXJ425G21${digits}${String(i + 1).padStart(6, "0")}`),
+        );
         // Test job with nothing saved at the warehouse: keep the sample boxes and serials.
         if (sample && !saved.some((x) => x.stage === "warehouse")) return;
         if (sample) setScans([]);
@@ -12685,6 +12715,7 @@ function sampleLorrySignoffs(lorryKey: string): Record<string, string> {
     electrical: crew.electrical,
     commercial: crew.electrical,
     checked: crew.checked,
+    loading_checked: second ? "Hafiz" : "Farish",
   };
 }
 
@@ -13240,6 +13271,11 @@ function StockOutLorryPage({
   // Stock Out › Preparing, lorry already submitted: view only (names and quantities cannot be
   // changed any more). Loading keeps its own editing.
   const preparingLocked = stage === "preparing" && txs.length > 0 && txs.every((tx) => tx.status === "Verified");
+  // Stock Out › Loading, lorry already submitted (every customer loaded): "Loading Checked by"
+  // is view only too.
+  const loadingLocked = stage === "verified" && txs.length > 0 && txs.every((tx) => loadedRefs.has(tx.reference));
+  // The sign-off names can no longer be changed.
+  const signoffLocked = preparingLocked || loadingLocked;
   // Stock Out › Loading: the tables follow Preparing, and every quantity is shown as text (no box).
   const qtyTextOnly = stage === "verified";
   // Stock Out › Loading: Preparing's Packed / Prepared by names are shown as text only; Loading's
@@ -13279,15 +13315,15 @@ function StockOutLorryPage({
         value={signoff[key] ?? recorded}
         placeholder="—"
         maxLength={100}
-        readOnly={preparingLocked}
+        readOnly={signoffLocked}
         onChange={(e) => {
-          if (preparingLocked) return;
+          if (signoffLocked) return;
           signoffEdited.current = true;
           const value = e.target.value;
           setSignoff((prev) => ({ ...prev, [key]: value }));
         }}
-        aria-label={preparingLocked ? label : `${label} (editable)`}
-        title={preparingLocked ? "Submitted: view only" : `Type to change who this is ${label.toLowerCase()}`}
+        aria-label={signoffLocked ? label : `${label} (editable)`}
+        title={signoffLocked ? "Submitted: view only" : `Type to change who this is ${label.toLowerCase()}`}
         style={{
           width: "220px",
           padding: "6px 8px",
@@ -13296,8 +13332,8 @@ function StockOutLorryPage({
           fontSize: "13px",
           color: "#000",
           fontWeight: 600,
-          background: preparingLocked ? "#f1f5f9" : undefined,
-          cursor: preparingLocked ? "default" : undefined,
+          background: signoffLocked ? "#f1f5f9" : undefined,
+          cursor: signoffLocked ? "default" : undefined,
         }}
       />
     </label>
