@@ -3034,6 +3034,19 @@ tr.needs-reschedule-date.selected td {
   color: #000000 !important;
 }
 
+/* The customer hover card is dark, so its text stays white despite the
+   black-text rule above. */
+.delivery-schedule-table tbody td .rti-customer-popover,
+.delivery-schedule-table tbody td .rti-customer-popover div,
+.delivery-schedule-table tbody td .rti-customer-popover span,
+.delivery-schedule-table tbody td .rti-customer-popover .rti-customer-popover-val {
+  color: #ffffff !important;
+}
+
+.delivery-schedule-table tbody td .rti-customer-popover .rti-customer-popover-label {
+  color: rgba(255, 255, 255, 0.78) !important;
+}
+
 .delivery-schedule-table tbody td svg,
 .delivery-schedule-table .rti-eta-icon,
 .delivery-schedule-table .rti-inst-date-tag svg,

@@ -411,6 +411,12 @@ def parse_customer_cell(cell_text):
         clean_name = parts[0].strip()
         if parts[1].strip():
             remarks.append('** ' + parts[1].strip())
+    elif re.search(r'\s\*\s*\S', clean_name):
+        # "Otto Tie Lok Loong  *materials will reach 10am..." -- a single-star note
+        parts = re.split(r'\s\*', clean_name, maxsplit=1)
+        clean_name = parts[0].strip()
+        if parts[1].strip():
+            remarks.append('* ' + parts[1].strip())
     if ' - ' in clean_name:
         parts = clean_name.split(' - ', 1)
         if re.search(r'(add on|change|no need|pending|proceed|phase|panel|inverter|batt|tnb|selco|hold)', parts[1], re.I):
@@ -498,6 +504,14 @@ def base_person_name(name):
     n = re.sub(r'\bno\.?\s*\d+[a-z-]*\d*\b', ' ', n, flags=re.I)
     n = re.sub(r'\b(atap|selco|nem|shop-?\s?lot)\b', ' ', n, flags=re.I)
     return re.sub(r'[^A-Z0-9]', '', n.upper())
+
+def names_agree(sheet_name, db_name):
+    a = base_person_name(sheet_name)
+    b = base_person_name(db_name)
+    if len(a) >= 4 and len(b) >= 4 and (a in b or b in a):
+        return True
+    na, nb = normalize(sheet_name), normalize(db_name)
+    return len(na) >= 6 and len(nb) >= 6 and (na in nb or nb in na)
 
 def extract_panel_line(text):
     if not text:
@@ -949,13 +963,22 @@ def sync_schedule():
                         matched_ops = jb
                         break
 
+        # A phone shared by two customers (TAN KIAN HENG's rows carry QIN TCM
+        # ACUMEDIC CENTRE's number) must not hand one the other's invoice: a
+        # phone hit only counts when the names agree, otherwise the name match
+        # below decides and the phone hit is the last resort.
+        phone_fallback = None
         if not matched_source and not matched_ops and len(phone_digits) >= 7:
             phone_cands = []
             for s_row in source_rows:
                 s_phone = re.sub(r'[^0-9]', '', s_row.get('customer_phone') or '')
                 if phone_digits in s_phone or (len(s_phone) >= 7 and s_phone in phone_digits):
                     phone_cands.append(s_row)
-            matched_source = pick_best_source(phone_cands)
+            agreeing = [s_row for s_row in phone_cands if names_agree(cust_info['cleanName'], s_row.get('customer_name'))]
+            if agreeing:
+                matched_source = pick_best_source(agreeing)
+            else:
+                phone_fallback = pick_best_source(phone_cands)
 
         if not matched_source and not matched_ops and len(target_norm) >= 3:
             name_cands = []
@@ -968,6 +991,9 @@ def sync_schedule():
                 ):
                     name_cands.append(s_row)
             matched_source = pick_best_source(name_cands)
+
+        if not matched_source and not matched_ops and phone_fallback:
+            matched_source = phone_fallback
 
         if not matched_source and not matched_ops and len(phone_digits) >= 7:
             for jb in ops_jobs:
@@ -1506,6 +1532,7 @@ def sync_schedule():
         colA = c_map.get(f'A{r}', '')
         colB = c_map.get(f'B{r}', '')
         colC = c_map.get(f'C{r}', '')
+        colH = c_map.get(f'H{r}', '')
         colI = c_map.get(f'I{r}', '')
         colJ = c_map.get(f'J{r}', '')
         colK = c_map.get(f'K{r}', '')
@@ -1568,6 +1595,7 @@ def sync_schedule():
                     'customerName': cust_name,
                     'remark': remark,
                     'address': strC,
+                    'phone': str(colH).strip() if colH else '',
                     'eta': str(colI).strip() if colI else '',
                     'instDate': str(colJ).strip() if colJ else '',
                     'instTeam': str(colK).strip() if colK else '',
@@ -1595,10 +1623,30 @@ def sync_schedule():
             n = normalize(name)
             matched_job = norm_ops.get(n)
             if not matched_job:
-                for db_n, j in norm_ops.items():
-                    if len(n) > 5 and (n in db_n or db_n in n):
-                        matched_job = j
-                        break
+                # Substring match only between real names (both 6+ chars): a
+                # one-letter job name like "C" sits inside almost every name and
+                # stole "Qin TCM Acumedic Centre" on 22/11/2026.
+                cands = [
+                    j for db_n, j in norm_ops.items()
+                    if len(n) >= 6 and len(db_n) >= 6 and (n in db_n or db_n in n)
+                ]
+                if len(cands) > 1:
+                    # Several jobs share the name (e.g. the Qin TCM shop lot and
+                    # "TAN KIAN HENG (QIN TCM ...)"): the sheet phone decides,
+                    # then the closest name.
+                    phone = re.sub(r'[^0-9]', '', c.get('phone') or '')[-8:]
+                    if len(phone) >= 7:
+                        by_phone = [
+                            j for j in cands
+                            if phone in re.sub(r'[^0-9]', '', j.get('delivery_contact_number') or '')
+                        ]
+                        if by_phone:
+                            cands = by_phone
+                    cands.sort(key=lambda j: (
+                        not normalize(j.get('customer_name') or '').startswith(n),
+                        abs(len(normalize(j.get('customer_name') or '')) - len(n)),
+                    ))
+                matched_job = cands[0] if cands else None
             if matched_job:
                 jid = matched_job['id']
                 matched_job_ids.append(jid)
