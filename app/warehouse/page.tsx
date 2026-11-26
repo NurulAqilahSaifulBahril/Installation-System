@@ -13409,6 +13409,10 @@ function StockOutLorryPage({
       setLoadingPhotoBusy(false);
     }
   }
+  // Loading's Submit waits for a photo of every card the lorry has.
+  const loadingPhotosMissing = lorryCards
+    .filter((card) => card.count > 0 && LOADING_PHOTO_ITEMS.includes(card.id) && !loadingPhotos[card.id])
+    .map((card) => card.label);
   const [barcodeInput, setBarcodeInput] = useState("");
   const [feedback, setFeedback] = useState<{ type: "success" | "warning" | "error"; message: string } | null>(null);
   const canScan = pickedSerial && scanTxs.some((tx) => unitsNeeded(tx, itemPick) > 0);
@@ -14602,6 +14606,11 @@ function StockOutLorryPage({
               {unitsLeft > 0 ? ` (${unitsLeft} ${unitsLeft === 1 ? "unit" : "units"} to scan)` : ""}.
             </span>
           )}
+          {allVerified && stage === "verified" && notLoaded.length > 0 && loadingPhotosMissing.length > 0 && (
+            <span className={styles.note} style={{ margin: 0 }}>
+              Take a photo first: {loadingPhotosMissing.join(", ")}.
+            </span>
+          )}
           {submitError && (
             <span className={styles.note} style={{ color: "#b91c1c", margin: 0 }}>
               {submitError}
@@ -14622,9 +14631,14 @@ function StockOutLorryPage({
             ) : (
               <button
                 type="button"
-                className={`${styles.btnActionPrimary} ${styles.btnVerifiedGlow}`}
-                disabled={submitting}
-                title="Loaded onto the lorry: moves every customer to Site Check"
+                // Only once every card has its photo.
+                className={`${styles.btnActionPrimary} ${loadingPhotosMissing.length === 0 ? styles.btnVerifiedGlow : styles.btnVerifiedLocked}`}
+                disabled={submitting || loadingPhotosMissing.length > 0}
+                title={
+                  loadingPhotosMissing.length === 0
+                    ? "Loaded onto the lorry: moves every customer to Site Check"
+                    : `Take a photo of every card first (${loadingPhotosMissing.join(", ")})`
+                }
                 onClick={async () => {
                   setSubmitting(true);
                   setSubmitError(null);
@@ -14633,7 +14647,7 @@ function StockOutLorryPage({
                   if (!ok) setSubmitError("Not all saved. Check the connection and press Submit again.");
                 }}
               >
-                {submitting ? "Saving…" : "✓ Submit"}
+                {submitting ? "Saving…" : loadingPhotosMissing.length === 0 ? "✓ Submit" : "🔒 Submit"}
               </button>
             )
           ) : (
