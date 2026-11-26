@@ -76,17 +76,24 @@ export async function GET(request: NextRequest) {
   }
 }
 
+// "signoff": names typed over who packed / prepared / checked a Stock Out lorry (key = what was
+// signed off, e.g. "mounting_rail" or "checked"; value = the name).
+const KINDS = ["mounting_part", "mounting_box", "electrical_box", "bulk_line", "electrical_part", "pv_drawing", "lorry", "signoff"] as const;
+
 const putSchema = z.object({
   job: z.string().min(1).max(100),
   // The full current set for these kinds: anything saved earlier but not listed is removed.
-  kinds: z.array(z.enum(["mounting_part", "mounting_box", "electrical_box", "bulk_line", "electrical_part", "pv_drawing", "lorry"])).min(1),
+  kinds: z.array(z.enum(KINDS)).min(1),
   entries: z
     .array(
-      z.object({
-        kind: z.enum(["mounting_part", "mounting_box", "electrical_box", "bulk_line", "electrical_part", "pv_drawing", "lorry"]),
-        key: z.string().min(1).max(1000),
-        value: z.string().min(1).max(20),
-      }),
+      z
+        .object({
+          kind: z.enum(KINDS),
+          key: z.string().min(1).max(1000),
+          // Quantities are short; a sign-off name can be longer.
+          value: z.string().min(1).max(100),
+        })
+        .refine((entry) => entry.kind === "signoff" || entry.value.length <= 20, { message: "Value too long." }),
     )
     .max(200),
 });

@@ -8,6 +8,7 @@ import {
   CalendarDays,
   CalendarOff,
   Check,
+  ClipboardCheck,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -125,7 +126,7 @@ type JobsResponse = {
   sourceUpdatedAt: string | null;
 };
 
-type DashboardView = "project" | "groups" | "delivery" | "summary";
+type DashboardView = "project" | "groups" | "delivery" | "sitecheck" | "summary";
 
 const DASHBOARD_PAGES: Record<DashboardView, { title: string; blurb: string }> = {
   project: {
@@ -139,6 +140,10 @@ const DASHBOARD_PAGES: Record<DashboardView, { title: string; blurb: string }> =
   delivery: {
     title: "Delivery Schedule",
     blurb: "Group customer materials into warehouse delivery routes.",
+  },
+  sitecheck: {
+    title: "Site Check",
+    blurb: "",
   },
   summary: {
     title: "Project Summary",
@@ -3372,6 +3377,18 @@ function SpecRow({
 export default function DashboardPage() {
   const [view, setView] = useState<DashboardView>("groups");
   const [visitedViews, setVisitedViews] = useState<Set<DashboardView>>(() => new Set(["groups"]));
+  // Site Check's survey pop-up covers the whole window, like Add Project Summary: the frame
+  // says when it opens and closes, and goes full-window (transparent) while it is open.
+  const [siteCheckModalOpen, setSiteCheckModalOpen] = useState(false);
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      const data = event.data as { type?: string; open?: boolean } | null;
+      if (data?.type === "site-check-modal") setSiteCheckModalOpen(Boolean(data.open));
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
 
   const handleSelectView = useCallback((nextView: DashboardView) => {
     setVisitedViews((prev) => (prev.has(nextView) ? prev : new Set(prev).add(nextView)));
@@ -3474,6 +3491,7 @@ export default function DashboardPage() {
   const allowedDashboardViews = useMemo(() => {
     const allViews: [DashboardView, string][] = [
       ["project", "Project Team"],
+      ["sitecheck", "Site Check"],
       ["groups", "Installation Schedule"],
       ["delivery", "Delivery Schedule"],
       ["summary", "Project Summary"],
@@ -4879,6 +4897,7 @@ export default function DashboardPage() {
               {value === "project" && <Briefcase size={16} />}
               {value === "groups" && <CalendarDays size={16} />}
               {value === "delivery" && <Truck size={16} />}
+              {value === "sitecheck" && <ClipboardCheck size={16} />}
               {value === "summary" && <Columns size={16} />}
               <span className="tab-label">{label}</span>
             </button>
@@ -4979,7 +4998,7 @@ export default function DashboardPage() {
 
       <main
         className={`app-shell${
-          view === "delivery" || view === "groups" || view === "project" || view === "summary"
+          view === "delivery" || view === "groups" || view === "project" || view === "summary" || view === "sitecheck"
             ? ` app-shell-wide${isReadOnly ? " is-staff-readonly" : ""}`
             : ""
         }`}
@@ -5127,7 +5146,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {view !== "project" && view !== "summary" && (
+      {view !== "project" && view !== "summary" && view !== "sitecheck" && (
         <>
           <p className="metrics-note">* All visual cards count starting Jan 2026.</p>
 
@@ -5250,6 +5269,26 @@ export default function DashboardPage() {
               groups={scopedGroups}
               readOnly={isReadOnly}
             />
+          </div>
+        )}
+
+        {/* Site Check: the SiteFlow site survey app (public/site-check, built by
+            scripts/build-site-check.py), restyled to match this dashboard. Kept mounted
+            once opened so a half-filled survey survives switching tabs. */}
+        {visitedViews.has("sitecheck") && (
+          <div
+            className="workspace-panel-tab"
+            style={{ display: view === "sitecheck" ? "contents" : "none" }}
+          >
+            <section className="site-check-view" aria-label="Site Check">
+              <iframe
+                src="/site-check/index.html"
+                title="Site Check"
+                className={`site-check-frame${
+                  siteCheckModalOpen && view === "sitecheck" ? " is-modal" : ""
+                }`}
+              />
+            </section>
           </div>
         )}
 

@@ -440,6 +440,27 @@ def parse_customer_cell(cell_text):
         'isAtap': bool(re.search(r'\(ATAP\)', s, re.I)),
     }
 
+def is_phase_value(text):
+    # "SINGLE PHASE", "THREE PHASE", "3 phase", "1P", "(HYBRID INVERTER) SINGLE PHASE"...
+    t = (text or '').strip()
+    if not t:
+        return False
+    if re.search(r'\b(single|three|1|3)\s*-?\s*(phase|ph|p)\b', t, re.I):
+        return len(t) <= 60 and '\n' not in t
+    return bool(re.fullmatch(r'(single|three|1|3)', t, re.I))
+
+def is_phase_column_note(text):
+    # Column D text worth keeping as a remark: not a bare date / number and not
+    # the "Site Supervisor:" label that sits in that column on team rows.
+    t = (text or '').strip()
+    if not t:
+        return False
+    if re.fullmatch(r'[\d.\-/\s]+', t):
+        return False
+    if re.match(r'^site\s*supervisor\b', t, re.I):
+        return False
+    return True
+
 def sheet_availability_status(item, today):
     # The sheet's green tick is mirrored as the green tick on the job's row in
     # Arranged Installation, which the app stores as Complete. Never Propose:
@@ -1001,6 +1022,15 @@ def sync_schedule():
         final_email = k.strip()
         final_agent = i_val.strip()
         final_phase = d.strip()
+        # O&M rows put the job's work notes in the Phase column (D), e.g.
+        # ION GLOBAL LOGISTICS: "Check inverter fan condition. / Replace faulty
+        # fan. / ...". Anything there that isn't a phase is a remark, not a phase.
+        if final_phase and not is_phase_value(final_phase) and is_phase_column_note(final_phase):
+            phase_note = final_phase
+            final_phase = ''
+            existing = cust_info.get('remarks', '').strip()
+            if phase_note not in existing:
+                cust_info['remarks'] = f"{existing}\n{phase_note}".strip() if existing else phase_note
         final_panels = f_val.strip()
         final_inverter = g.strip()
 

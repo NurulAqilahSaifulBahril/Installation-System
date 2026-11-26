@@ -9954,3 +9954,32 @@ tr.schedule-band.rti-team-warehouse .rti-total-pcs-tag {
   cursor: default !important;
 }
 
+
+/* Site Check: the SiteFlow survey app shown in a frame filling the workspace. */
+.site-check-view {
+  grid-column: 1 / -1;
+  min-width: 0;
+  /* Holds the frame's place while it is lifted out to cover the window. */
+  min-height: max(560px, calc(100vh - 96px));
+}
+
+.site-check-frame {
+  display: block;
+  width: 100%;
+  height: calc(100vh - 96px);
+  min-height: 560px;
+  border: 0;
+  background: var(--bg);
+}
+
+/* While the survey pop-up is open the frame covers the whole window; its own page is
+   transparent apart from the pop-up and its dimmed backdrop. */
+.site-check-frame.is-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  width: 100vw;
+  height: 100vh;
+  min-height: 0;
+  background: transparent;
+}

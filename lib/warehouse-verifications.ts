@@ -73,6 +73,9 @@ export const MATERIALS = [
   "mounting_hook",
   "electrical",
   "commercial",
+  // Every unit of the job scanned on Stock Out › Preparing; the job waits there until its
+  // lorry's Submit verifies every customer on the lorry together ("job").
+  "scanned",
   "loaded",
   // All panels scanned on site by the driver (Loading tab): arrived safely.
   "arrived",

@@ -75,6 +75,7 @@ const MATERIAL_LABEL: Record<string, string> = {
   mounting_hook: "Mounting Structure (Hook, Bracket & Clamp)",
   electrical: "Electrical Item",
   commercial: "Special Material",
+  scanned: "All units scanned",
   loaded: "Loading",
   arrived: "Arrived safely",
 };
@@ -88,6 +89,9 @@ function auditEntry(material: string, jobRef: string): [string, string, string] 
     return ["stock_transfer_loaded", "stock_transfer", `Loaded Stock Transfer ${jobRef} to the other warehouse`];
   }
   if (material === "job") return ["stock_out_verified", "stock_out", `Verified Stock Out ${jobRef}`];
+  if (material === "scanned") {
+    return ["stock_out_scanned", "stock_out", `All units of Stock Out ${jobRef} scanned: waiting for its lorry's Submit`];
+  }
   if (material === "loaded") return ["stock_out_loaded", "stock_out", `Loaded Stock Out ${jobRef} to the customer's house`];
   if (material === "arrived") {
     return ["stock_out_arrived", "stock_out", `All panels of Stock Out ${jobRef} scanned on site: arrived safely`];

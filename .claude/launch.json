@@ -41,6 +41,34 @@
         "3002"
       ],
       "port": 3002
+    },
+    {
+      "name": "sitevisit-local-3020",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "3020",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "sitevisit-local"
+      ],
+      "port": 3020
+    },
+    {
+      "name": "site-check-styled-3021",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "3021",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "public/site-check"
+      ],
+      "port": 3021
     }
   ]
 }
