@@ -142,7 +142,7 @@ const DASHBOARD_PAGES: Record<DashboardView, { title: string; blurb: string }> =
     blurb: "Group customer materials into warehouse delivery routes.",
   },
   sitecheck: {
-    title: "Site Check",
+    title: "Site Assessment",
     blurb: "",
   },
   summary: {
@@ -261,10 +261,16 @@ type DeliveryRun = {
   installationGroupId: string;
   status: "pending_stock" | "ready" | "in_transit" | "delivered";
   jobIds: string[];
+  // What each stop carries on THIS trip, by job id, from the sheet's Panel /
+  // Inverter / Battery cells ("" = nothing of that kind). A battery-only stop
+  // ("[ INSTALL BATTERY ]") has no panel or inverter even though its invoice does.
+  stopItems?: Record<string, DeliveryStopItems>;
   weekLabel?: string;
   order?: number;
   isWarehouseTransfer?: boolean;
 };
+
+type DeliveryStopItems = { panel: string; inverter: string; battery: string };
 
 // The warehouses a delivery run can depart from, kept as their own list below
 // the Stock delivery table rather than retyped into every run. A run stores
@@ -3491,7 +3497,7 @@ export default function DashboardPage() {
   const allowedDashboardViews = useMemo(() => {
     const allViews: [DashboardView, string][] = [
       ["project", "Project Team"],
-      ["sitecheck", "Site Check"],
+      ["sitecheck", "Site Assessment"],
       ["groups", "Installation Schedule"],
       ["delivery", "Delivery Schedule"],
       ["summary", "Project Summary"],
@@ -5280,10 +5286,10 @@ export default function DashboardPage() {
             className="workspace-panel-tab"
             style={{ display: view === "sitecheck" ? "contents" : "none" }}
           >
-            <section className="site-check-view" aria-label="Site Check">
+            <section className="site-check-view" aria-label="Site Assessment">
               <iframe
                 src="/site-check/index.html"
-                title="Site Check"
+                title="Site Assessment"
                 className={`site-check-frame${
                   siteCheckModalOpen && view === "sitecheck" ? " is-modal" : ""
                 }`}
@@ -11718,6 +11724,7 @@ function DeliveryPlanningView({
               <col className="rti-col-phase" />
               <col className="rti-col-panel" />
               <col className="rti-col-inverter" />
+              <col className="rti-col-battery" />
               <col className="rti-col-eta" />
               <col className="rti-col-inst-date" />
               <col className="rti-col-scheduling-team" />
@@ -11726,7 +11733,7 @@ function DeliveryPlanningView({
             <tbody>
               {visibleRuns.length === 0 && (
                 <tr className="delivery-run-placeholder-row">
-                  <td colSpan={11}>
+                  <td colSpan={12}>
                     {runs.length
                       ? "No delivery run matches these filters."
                       : "No delivery runs yet."}
@@ -11763,7 +11770,7 @@ function DeliveryPlanningView({
                         isWarehouse ? " is-warehouse-sub" : ""
                       }${pinnedWeekKeys.has(weekKey) ? " is-pinned" : ""}`}
                     >
-                      <th colSpan={11} scope="colgroup">
+                      <th colSpan={12} scope="colgroup">
                         <div className="schedule-band-sub-content">
                           <button
                             type="button"
@@ -11803,7 +11810,7 @@ function DeliveryPlanningView({
                         isWarehouse ? " is-warehouse-main" : ""
                       }${pinnedWeekKeys.has(weekKey) ? " is-pinned" : ""}`}
                     >
-                      <th colSpan={11} scope="colgroup">
+                      <th colSpan={12} scope="colgroup">
                         <div className="rti-team-header-main">
                           <div className="rti-crew-grid">
                             <div className="rti-crew-col">
@@ -11963,6 +11970,7 @@ function DeliveryPlanningView({
                       <th>Phase</th>
                       <th>Panel</th>
                       <th>Inverter</th>
+                      <th>Battery</th>
                       <th className="rti-th-darker">ETA</th>
                       <th className="rti-th-darker">Installation Date</th>
                       <th>Scheduling Team</th>
@@ -11972,7 +11980,7 @@ function DeliveryPlanningView({
                     {runJobs.length === 0 && (
                       <tr>
                         <td
-                          colSpan={11}
+                          colSpan={12}
                           style={{
                             padding: "12px",
                             textAlign: "center",
@@ -12013,6 +12021,44 @@ function DeliveryPlanningView({
                       const instTimeLabel = formatSheetClock(instTime);
                       const rowRemark = cleanDeliveryStockRemark(
                         job.stockDetails || "",
+                      );
+                      // The sheet's Panel / Inverter / Battery cells for this stop, when
+                      // synced; edits then stay on this trip instead of the job's package.
+                      const stopItem = run.stopItems?.[job.id];
+                      const stopItemCell = (
+                        kind: keyof DeliveryStopItems,
+                        value: string,
+                        placeholder: string,
+                        label: string,
+                        saveToJob: (text: string) => void,
+                      ) => (
+                        <td
+                          className="rti-edit-cell"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <textarea
+                            className="rti-cell-textarea"
+                            rows={2}
+                            defaultValue={value}
+                            key={`${kind}-${run.id}-${job.id}-${stopIndex}-${value}`}
+                            onBlur={(event) => {
+                              const text = event.target.value;
+                              if (text === value) return;
+                              if (stopItem) {
+                                updateRun(run.id, {
+                                  stopItems: {
+                                    ...run.stopItems,
+                                    [job.id]: { ...stopItem, [kind]: text },
+                                  },
+                                });
+                              } else {
+                                saveToJob(text);
+                              }
+                            }}
+                            placeholder={placeholder}
+                            aria-label={label}
+                          />
+                        </td>
                       );
 
                       const installTeam =
@@ -12268,50 +12314,36 @@ function DeliveryPlanningView({
                           {/* 5. Phase */}
                           <td>{phaseText(job)}</td>
 
-                          {/* 6. Panel */}
-                          <td
-                            className="rti-edit-cell"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <textarea
-                              className="rti-cell-textarea"
-                              rows={2}
-                              defaultValue={derivedPowerOutput(job)}
-                              key={`panel-${run.id}-${job.id}-${stopIndex}-${job.powerOutput}`}
-                              onBlur={(event) => {
-                                const text = event.target.value;
-                                if (text === derivedPowerOutput(job)) return;
-                                onUpdateJob({ ...job, powerOutput: text });
-                              }}
-                              placeholder="e.g. 11X 650W JinkoSolar TIGER NEO 3.0 Panel N-Type TOPCon"
-                              aria-label={`Panel for ${displayName(
-                                job.customerName,
-                              )}`}
-                            />
-                          </td>
+                          {/* 6. Panel: this trip's panels (the sheet's own cell when synced) */}
+                          {stopItemCell(
+                            "panel",
+                            stopItem ? stopItem.panel : derivedPowerOutput(job),
+                            "e.g. 11X 650W JinkoSolar TIGER NEO 3.0 Panel N-Type TOPCon",
+                            `Panel for ${displayName(job.customerName)}`,
+                            (text) => onUpdateJob({ ...job, powerOutput: text }),
+                          )}
 
                           {/* 7. Inverter */}
-                          <td
-                            className="rti-edit-cell"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <textarea
-                              className="rti-cell-textarea"
-                              rows={2}
-                              defaultValue={inverterText(job)}
-                              key={`inverter-${run.id}-${job.id}-${stopIndex}-${job.inverterBattery}`}
-                              onBlur={(event) => {
-                                const text = event.target.value;
-                                const current = inverterText(job);
-                                if (text === current) return;
-                                onUpdateJob({ ...job, inverterBattery: text });
-                              }}
-                              placeholder="e.g. 10kW Hybrid"
-                              aria-label={`Inverter for ${displayName(
-                                job.customerName,
-                              )}`}
-                            />
-                          </td>
+                          {stopItemCell(
+                            "inverter",
+                            stopItem ? stopItem.inverter : inverterText(job),
+                            "e.g. 10kW Hybrid",
+                            `Inverter for ${displayName(job.customerName)}`,
+                            (text) => onUpdateJob({ ...job, inverterBattery: text }),
+                          )}
+
+                          {/* 7b. Battery */}
+                          {stopItemCell(
+                            "battery",
+                            stopItem
+                              ? stopItem.battery
+                              : job.battery && job.battery !== "Not available"
+                              ? job.battery
+                              : "",
+                            "e.g. 1 x SAJ B3-16.0-LV",
+                            `Battery for ${displayName(job.customerName)}`,
+                            (text) => onUpdateJob({ ...job, battery: text }),
+                          )}
 
                           {/* 8. ETA (Date and Time estimating arrival) */}
                           <td
@@ -12511,7 +12543,7 @@ function DeliveryPlanningView({
                     {/* Add Customer row for this run */}
                     <tr className={`rti-add-stop-row${isWarehouse ? " is-warehouse-add" : ""}`}>
                       <td
-                        colSpan={11}
+                        colSpan={12}
                         style={{
                           padding: "6px 12px",
                           background: "var(--surface-soft, #f8fafc)",

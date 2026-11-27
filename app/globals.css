@@ -2963,7 +2963,7 @@ tr.needs-reschedule-date.selected td {
 
 /* Delivery Schedule: column sizing with widened Inverter column and table min-width */
 .delivery-schedule-table table {
-  min-width: 1540px;
+  min-width: 1720px;
 }
 .delivery-schedule-table .rti-col-date { width: 110px; }
 .delivery-schedule-table .rti-col-customer { width: 200px; min-width: 190px; }
@@ -2971,7 +2971,8 @@ tr.needs-reschedule-date.selected td {
 .delivery-schedule-table .rti-col-agent { width: 85px; }
 .delivery-schedule-table .rti-col-phase { width: 55px; }
 .delivery-schedule-table .rti-col-panel { width: 140px; }
-.delivery-schedule-table .rti-col-inverter { width: 260px; min-width: 240px; }
+.delivery-schedule-table .rti-col-inverter { width: 220px; min-width: 200px; }
+.delivery-schedule-table .rti-col-battery { width: 200px; min-width: 180px; }
 .delivery-schedule-table .rti-col-eta { width: 130px; }
 .delivery-schedule-table .rti-col-inst-date { width: 140px; }
 .delivery-schedule-table .rti-col-remark { width: 250px; min-width: 220px; }

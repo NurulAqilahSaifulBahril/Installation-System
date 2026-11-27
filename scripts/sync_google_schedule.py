@@ -653,6 +653,52 @@ def parse_delivery_customer_cell(cell_b):
 
     return clean_name, '\n'.join(cleaned_remarks)
 
+BATTERY_LINE_RE = re.compile(r'batter|\bB3-\d|EK60|\bBAT\b', re.I)
+QTY_LINE_RE = re.compile(r'^\d+\s*[xX×]', re.I)
+
+
+def parse_delivery_stop_items(col_d, col_e, col_f):
+    """What this stop delivers, as the sheet writes it: the panels (col E, or
+    the count in col D), and col F split into inverter and battery lines.
+
+    Col F mixes both ("✅1 X H2-8K-LT2 / Hybrid Inverter / + / ✅1 x SAJ
+    B3-16.0-LV BATTERY"), and "N/A" means nothing of that kind on this trip,
+    e.g. an "[ INSTALL BATTERY ]" stop carries the battery only.
+    """
+    def empty(v):
+        s = str(v or '').strip()
+        return '' if re.fullmatch(r'(?:n/?a|-+|nil|none|0(?:\.0)?)', s, re.I) else s
+
+    panel = empty(col_e)
+    if not panel:
+        d = empty(col_d)
+        if d:
+            d = re.sub(r'\.0$', '', d)
+            panel = f"{d} panels" if re.fullmatch(r'\d+', d) else d
+
+    groups = {'inverter': [], 'battery': []}
+    last = None
+    for raw in str(col_f or '').splitlines():
+        line = re.sub(r'\s+', ' ', raw.replace('✅', '')).strip(' +')
+        if not line or not empty(line):
+            continue
+        kind = 'battery' if BATTERY_LINE_RE.search(line) else 'inverter'
+        if not QTY_LINE_RE.match(line) and kind == 'inverter' and last:
+            if last == 'inverter' and re.search(r'inverter', line, re.I):
+                # "Hybrid Inverter" describes the model line above it.
+                groups['inverter'][-1] = f"{groups['inverter'][-1]} {line}"
+                continue
+            # "ADD ON 1 X ATS" etc.: its own line, with the item above it.
+            kind = last
+        groups[kind].append(line)
+        last = kind
+    return {
+        'panel': panel,
+        'inverter': '\n'.join(groups['inverter']),
+        'battery': '\n'.join(groups['battery']),
+    }
+
+
 def extract_all_sheet_rows():
     if not os.path.exists(LOCAL_XLSX):
         raise FileNotFoundError(f"Missing {LOCAL_XLSX}")
@@ -1532,6 +1578,9 @@ def sync_schedule():
         colA = c_map.get(f'A{r}', '')
         colB = c_map.get(f'B{r}', '')
         colC = c_map.get(f'C{r}', '')
+        colD = c_map.get(f'D{r}', '')
+        colE = c_map.get(f'E{r}', '')
+        colF = c_map.get(f'F{r}', '')
         colH = c_map.get(f'H{r}', '')
         colI = c_map.get(f'I{r}', '')
         colJ = c_map.get(f'J{r}', '')
@@ -1599,7 +1648,8 @@ def sync_schedule():
                     'eta': str(colI).strip() if colI else '',
                     'instDate': str(colJ).strip() if colJ else '',
                     'instTeam': str(colK).strip() if colK else '',
-                    'extraStock': str(colM).strip() if colM else ''
+                    'extraStock': str(colM).strip() if colM else '',
+                    'items': parse_delivery_stop_items(colD, colE, colF),
                 })
 
     if current_run and current_run['customers']:
@@ -1618,6 +1668,7 @@ def sync_schedule():
 
     for idx, r in enumerate(del_runs):
         matched_job_ids = []
+        stop_items = {}
         for c in r['customers']:
             name = c['customerName']
             n = normalize(name)
@@ -1650,6 +1701,9 @@ def sync_schedule():
             if matched_job:
                 jid = matched_job['id']
                 matched_job_ids.append(jid)
+                # This trip's own Panel / Inverter / Battery cells, so a
+                # battery-only stop does not show the invoice's panels.
+                stop_items[jid] = c['items']
                 
                 final_remark = c['remark']
                 if c['extraStock']:
@@ -1677,6 +1731,7 @@ def sync_schedule():
                 'installationGroupId': '',
                 'status': 'delivered' if r['deliveryDate'] < '2026-10-25' else 'pending_stock',
                 'jobIds': matched_job_ids,
+                'stopItems': stop_items,
                 'weekLabel': r['weekLabel'],
                 'order': idx + 1
             }
