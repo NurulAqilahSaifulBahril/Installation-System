@@ -9385,22 +9385,9 @@ function HomeTab({
                             <td>
                               {row.txs.map((tx) => (
                                 <div key={tx.id}>
-                                  {stockOutSiteCheck ? (
-                                    // Site Check: each customer opens its own on-site check
-                                    <button
-                                      type="button"
-                                      className={styles.siteCustBtn}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        onInspectTx(tx.id);
-                                      }}
-                                      title="Open this customer's Site Check"
-                                    >
-                                      {tx.schedule?.customerName ?? tx.party}
-                                    </button>
-                                  ) : (
-                                    tx.schedule?.customerName ?? tx.party
-                                  )}
+                                  {/* Plain names, as on Loading: the whole row opens the lorry's page (Site
+                                      Check included, where each unit is scanned on site) */}
+                                  {tx.schedule?.customerName ?? tx.party}
                                   {stockOutSiteCheck && arrivedJobs.has(tx.reference) && (
                                     <span style={{ marginLeft: "6px", color: "var(--green)", fontWeight: 700 }} title="Checked on site">
                                       ✓
@@ -12767,6 +12754,9 @@ function StockOutLorryPage({
   const siteCheck = stageProp === "siteCheck";
   const stage: "preparing" | "verified" = siteCheck ? "verified" : stageProp;
   const photoLorryKey = siteCheck ? `site:${lorryKey}` : lorryKey;
+  // Site Check scans each panel, inverter and battery at the customer's house (stage "site", as
+  // the customer's own Site Check page does); Preparing / Loading keep the warehouse scans.
+  const scanStage: "warehouse" | "site" = siteCheck ? "site" : "warehouse";
   // Slot from the Delivery Schedule (matched by invoice, then customer name).
   const [deliveryRuns, setDeliveryRuns] = useState<TimelineRun[]>([]);
   useEffect(() => watchDeliveryRuns<TimelineRun>(setDeliveryRuns), []);
@@ -12784,7 +12774,7 @@ function StockOutLorryPage({
       jobRefs.split(",").map((ref) =>
         fetch(`/api/warehouse/job-scans?job=${encodeURIComponent(ref)}`, { credentials: "same-origin", cache: "no-store" })
           .then(async (res) => (res.ok ? ((await res.json()) as { scans?: (LorryScan & { stage: string })[] }) : null))
-          .then((data) => [ref, (data?.scans ?? []).filter((scan) => scan.stage === "warehouse")] as const)
+          .then((data) => [ref, (data?.scans ?? []).filter((scan) => scan.stage === scanStage)] as const)
           .catch(() => [ref, [] as LorryScan[]] as const),
       ),
     ).then((rows) => {
@@ -12794,7 +12784,7 @@ function StockOutLorryPage({
         Object.fromEntries(
           rows.map(([ref, scans]) => {
             const tx = txs.find((t) => t.reference === ref);
-            return [ref, scans.length === 0 && tx && isTestVerifiedJob(tx) ? sampleLorryScans(tx) : scans];
+            return [ref, !siteCheck && scans.length === 0 && tx && isTestVerifiedJob(tx) ? sampleLorryScans(tx) : scans];
           }),
         ),
       );
@@ -12903,8 +12893,9 @@ function StockOutLorryPage({
       }
       if (def.serial) {
         const need = list.reduce((sum, tx) => sum + unitsNeeded(tx, def.id), 0);
-        const left = list.reduce((sum, tx) => sum + (tx.status === "Verified" ? 0 : needOf(tx, def.id)), 0);
-        const doneVerified = list.reduce((sum, tx) => sum + (tx.status === "Verified" ? unitsNeeded(tx, def.id) : 0), 0);
+        const isDone = (tx: StockTransaction) => (siteCheck ? loadedRefs.has(tx.reference) : tx.status === "Verified");
+        const left = list.reduce((sum, tx) => sum + (isDone(tx) ? 0 : needOf(tx, def.id)), 0);
+        const doneVerified = list.reduce((sum, tx) => sum + (isDone(tx) ? unitsNeeded(tx, def.id) : 0), 0);
         const pendingNeed = need - doneVerified;
         return { ...def, count: need, sub: `${doneVerified + (pendingNeed - left)} scanned` };
       }
@@ -13375,7 +13366,8 @@ function StockOutLorryPage({
   // A picked customer row (Panel / Inverter / Battery): the scanner works for that customer only;
   // otherwise for the whole lorry.
   const scanFor = pickedSerial && pickedCustomer ? pickedCustomer : undefined;
-  const scanTxs = scanFor ? pendingTxs.filter((tx) => tx.reference === scanFor.reference) : pendingTxs;
+  const scanPending = siteCheck ? txs.filter((tx) => !loadedRefs.has(tx.reference)) : pendingTxs;
+  const scanTxs = scanFor ? scanPending.filter((tx) => tx.reference === scanFor.reference) : scanPending;
   const scanForName = scanFor ? scanFor.schedule?.customerName ?? scanFor.party : "";
   const targetTx = scanTxs.find((tx) => needOf(tx, itemPick) > 0);
   const [panelMode, setPanelMode] = useState<"box" | "loose">("box");
@@ -13510,9 +13502,18 @@ function StockOutLorryPage({
   // The photo shown full size (tapped thumbnail).
   const [loadingPhotoView, setLoadingPhotoView] = useState<string | null>(null);
   // Loading's Submit waits for at least one photo of every card the lorry has.
-  const loadingPhotosMissing = lorryCards
-    .filter((card) => card.count > 0 && LOADING_PHOTO_ITEMS.includes(card.id) && loadingPhotosOf(card.id).length === 0)
-    .map((card) => card.label);
+  const loadingPhotosMissing = [
+    ...lorryCards
+      .filter((card) => card.count > 0 && LOADING_PHOTO_ITEMS.includes(card.id) && loadingPhotosOf(card.id).length === 0)
+      .map((card) => (siteCheck ? `${card.label} photo` : card.label)),
+    // Site Check: the units still to scan on site, per item.
+    ...(siteCheck
+      ? (["panel", "inverter", "battery"] as const).flatMap((cat) => {
+          const left = txs.filter((tx) => !loadedRefs.has(tx.reference)).reduce((sum, tx) => sum + needOf(tx, cat), 0);
+          return left > 0 ? [`${cat === "panel" ? "Panel" : cat === "inverter" ? "Inverter" : "Battery"} scan (${left} left)`] : [];
+        })
+      : []),
+  ];
   const [barcodeInput, setBarcodeInput] = useState("");
   const [feedback, setFeedback] = useState<{ type: "success" | "warning" | "error"; message: string } | null>(null);
   const canScan = pickedSerial && scanTxs.some((tx) => unitsNeeded(tx, itemPick) > 0);
@@ -13523,7 +13524,7 @@ function StockOutLorryPage({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ job, stage: "warehouse", ...scan }),
+        body: JSON.stringify({ job, stage: scanStage, ...scan }),
       });
       if (res.ok) return null;
       const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -13547,7 +13548,7 @@ function StockOutLorryPage({
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
-      body: JSON.stringify({ job, stage: "warehouse", code }),
+      body: JSON.stringify({ job, stage: scanStage, code }),
     })
       .then((res) => {
         if (res.ok) {
@@ -13627,7 +13628,7 @@ function StockOutLorryPage({
     const ref = targetTx.schedule?.jobId ?? targetTx.reference;
     let scan: LorryScan;
     let message: { type: "success" | "warning"; message: string };
-    if (itemPick === "panel" && panelMode === "box") {
+    if (itemPick === "panel" && panelMode === "box" && !siteCheck) {
       const qty = Math.max(1, Math.min(1000, Math.round(Number(boxSize) || 36)));
       scan = { kind: "box", category: "panel", lineIdx: 0, code, qty };
       message =
@@ -13655,6 +13656,7 @@ function StockOutLorryPage({
         setFeedback({ type: "error", message: `❌ ${error}` });
         return;
       }
+      if (siteCheck) return;
       if (doneNow) onRecordMaterial(job, itemPick as VerificationMaterial);
       if (!lorryPackedBy[itemPick] && !recordedPick.current.has(itemPick)) {
         recordedPick.current.add(itemPick);
@@ -14203,7 +14205,7 @@ function StockOutLorryPage({
       )}
 
       {/* Inverter / Battery: one scanner for the whole lorry */}
-      {pickedSerial && (itemPick as string) !== "panel" && txs.length > 0 && (
+      {pickedSerial && ((itemPick as string) !== "panel" || siteCheck) && txs.length > 0 && (
         <div className={styles.scannerCard} style={{ marginBottom: "14px" }}>
           <div className={styles.scannerHeader}>
             <div>
@@ -14212,7 +14214,9 @@ function StockOutLorryPage({
               </h2>
               <p className={styles.scannerHelpText}>
                 {canScan
-                  ? "Scan with the camera or the barcode gun to check this lorry's items."
+                  ? siteCheck
+                    ? "At the customer's house: scan each unit's serial with the camera or the barcode gun."
+                    : "Scan with the camera or the barcode gun to check this lorry's items."
                   : `Every customer on this lorry is verified: the ${pickedLabel.toLowerCase()} scans are shown below.`}
               </p>
             </div>
@@ -14221,7 +14225,7 @@ function StockOutLorryPage({
           {canScan && (
             <>
               {/* Panels: by box (covers the panels inside) or one loose panel at a time */}
-              {itemPick === "panel" && (
+              {itemPick === "panel" && !siteCheck && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", alignItems: "center", margin: "0 0 12px" }}>
                   <div className={styles.txFilterPills} role="tablist" aria-label="Panel scan mode">
                     <button
@@ -14262,7 +14266,7 @@ function StockOutLorryPage({
 
               {/* Panel boxes photo, as on the job page: one for the lorry, taken in Box mode and
                   saved with every customer on the lorry that has panels. */}
-              {itemPick === "panel" && panelMode === "box" && panelJobs.length > 0 && (
+              {itemPick === "panel" && panelMode === "box" && !siteCheck && panelJobs.length > 0 && (
                 <div style={{ margin: "0 0 12px" }}>
                   <div className={styles.bankingFieldLabel}>Panel boxes photo</div>
                   {panelCamOpen ? (
@@ -14336,7 +14340,7 @@ function StockOutLorryPage({
                   type="text"
                   className={styles.scannerInput}
                   style={{ border: "1.5px solid #000" }}
-                  placeholder={itemPick === "panel" && panelMode === "box" ? "Scan the panel box barcode..." : "Scan barcode or type unit serial number..."}
+                  placeholder={itemPick === "panel" && panelMode === "box" && !siteCheck ? "Scan the panel box barcode..." : "Scan barcode or type unit serial number..."}
                   value={barcodeInput}
                   onChange={(e) => setBarcodeInput(e.target.value)}
                 />
@@ -14405,7 +14409,7 @@ function StockOutLorryPage({
                               <th scope="col">Serial Code</th>
                               <th scope="col">{pickedLabel} Brand</th>
                               <th scope="col" className={styles.num}>Quantity</th>
-                              <th scope="col">Prepared by</th>
+                              {!siteCheck && <th scope="col">Prepared by</th>}
                               <th scope="col" aria-label="Remove" />
                             </tr>
                           </thead>
@@ -14437,7 +14441,7 @@ function StockOutLorryPage({
                                   <td className={styles.num}>{scan.qty || 1}</td>
                                   {/* Who prepared this unit (saved for the lorry as "<item>|<serial>"); starts
                                       with who was recorded for the lorry's inverters / batteries */}
-                                  {(() => {
+                                  {!siteCheck && (() => {
                                     const preparedKey = `${itemPick}|${scan.code}`;
                                     const preparedName = signoff[preparedKey] ?? signoff[itemPick] ?? lorryPackedBy[itemPick] ?? "";
                                     return (
@@ -14478,8 +14482,9 @@ function StockOutLorryPage({
                                     );
                                   })()}
                                   <td style={{ textAlign: "center", width: "40px" }}>
-                                    {/* A submitted customer's scans can no longer be removed */}
-                                    {tx.status !== "Verified" && (
+                                    {/* A submitted customer's scans can no longer be removed (Site Check: once
+                                        checked on site) */}
+                                    {(siteCheck ? !loadedRefs.has(tx.reference) : tx.status !== "Verified") && (
                                       <button
                                         type="button"
                                         onClick={() => removeScan(tx.reference, scan.code)}
@@ -14507,7 +14512,7 @@ function StockOutLorryPage({
               })()}
               {/* Who prepared the lorry's inverters / batteries (saved on the first scan): a column in
                   the scanned table; here only while nothing is scanned yet */}
-              {!txs.some((tx) => (scansByJob[tx.reference] ?? []).some((scan) => scan.category === itemPick)) &&
+              {!siteCheck && !txs.some((tx) => (scansByJob[tx.reference] ?? []).some((scan) => scan.category === itemPick)) &&
                 signoffField(itemPick, "Prepared by", lorryPackedBy[itemPick] || "")}
 
         </div>
@@ -14983,7 +14988,7 @@ function StockOutLorryPage({
           )}
           {allVerified && stage === "verified" && notLoaded.length > 0 && loadingPhotosMissing.length > 0 && (
             <span className={styles.note} style={{ margin: 0 }}>
-              Take a photo first: {loadingPhotosMissing.join(", ")}.
+              {siteCheck ? "Still to do" : "Take a photo first"}: {loadingPhotosMissing.join(", ")}.
             </span>
           )}
           {submitError && (
@@ -15019,7 +15024,9 @@ function StockOutLorryPage({
                     ? siteCheck
                       ? "Checked on site: marks every customer on this lorry checked"
                       : "Loaded onto the lorry: moves every customer to Site Check"
-                    : `Take a photo of every card first (${loadingPhotosMissing.join(", ")})`
+                    : siteCheck
+                      ? `Still to do: ${loadingPhotosMissing.join(", ")}`
+                      : `Take a photo of every card first (${loadingPhotosMissing.join(", ")})`
                 }
                 onClick={async () => {
                   setSubmitting(true);
