@@ -20,6 +20,9 @@ export default function SerialCamera({ onRead }: { onRead: (serial: string) => v
   const [error, setError] = useState<string | null>(null);
   const [torchOn, setTorchOn] = useState(false);
   const [zoom, setZoom] = useState<number | null>(null);
+  // Snap: one full-resolution photo decoded carefully, for a label the live picture misses.
+  const [snapping, setSnapping] = useState(false);
+  const [snapNote, setSnapNote] = useState<string | null>(null);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -59,8 +62,23 @@ export default function SerialCamera({ onRead }: { onRead: (serial: string) => v
           <div style={{ fontSize: "11px", color: "#e2e8f0", marginTop: "2px" }}>{error}</div>
         </div>
       )}
-      {(ctl?.torch || ctl?.zoom) && (
+      {ctl && (
         <div className={styles.serialCamTools}>
+          <button
+            type="button"
+            className={styles.serialCamTorch}
+            disabled={snapping}
+            onClick={async () => {
+              setSnapping(true);
+              setSnapNote(null);
+              const serial = await ctl.snap().catch(() => null);
+              setSnapping(false);
+              if (serial) onReadRef.current(serial);
+              else setSnapNote("No barcode found in the photo. Hold the phone steady, a little further back, with the label level across the frame, and snap again.");
+            }}
+          >
+            {snapping ? "Reading…" : "📸 Snap"}
+          </button>
           {ctl.torch && (
             <button
               type="button"
@@ -91,6 +109,11 @@ export default function SerialCamera({ onRead }: { onRead: (serial: string) => v
               <span>{zoom.toFixed(1)}×</span>
             </label>
           )}
+        </div>
+      )}
+      {snapNote && (
+        <div style={{ padding: "8px 12px", background: "rgba(0,0,0,0.65)", borderRadius: "6px", margin: "6px 0 0", fontSize: "11px", color: "#fde68a" }}>
+          {snapNote}
         </div>
       )}
     </>

@@ -754,7 +754,7 @@ export const MOUNTING_SYSTEMS: MountingSystem[] = [
           "L-feet c/w screw",
         ]),
       },
-      { label: "Clamp", parts: mountingParts(["Mid clamp", "Earthing clip", "End clamp", "Bolt & nut"]) },
+      { label: "Clamp", parts: mountingParts(["Mid clamp", "Earthing clip", "End clamp", "Bolt & nut", "Breaker"]) },
     ],
   },
   {
@@ -773,7 +773,7 @@ export const MOUNTING_SYSTEMS: MountingSystem[] = [
           "L-bracket c/w screw",
         ]),
       },
-      { label: "Clamp", parts: mountingParts(["Mid clamp", "Earthing clip", "End clamp", "Bolt & nut"]) },
+      { label: "Clamp", parts: mountingParts(["Mid clamp", "Earthing clip", "End clamp", "Bolt & nut", "Breaker"]) },
     ],
   },
 ];

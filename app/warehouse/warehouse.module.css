@@ -7134,3 +7134,21 @@ button.lorryPhotoBox {
   cursor: pointer;
   text-align: left;
 }
+
+/* Stock Out / Loading lorry rows: green background once the lorry is submitted for the stage */
+.lorryRowsTable .lorryRowSubmitted td,
+.lorryRowsTable .lorryRowSubmitted.loadingPicRowClickable:hover td {
+  background: var(--green-soft);
+}
+
+/* Every table column header in the inventory system is black */
+.page th,
+.lockPage th {
+  color: #000 !important;
+}
+
+/* Dark theme: black would vanish on the dark background, so headers use the theme's text colour */
+:global(:root[data-theme="dark"]) .page th,
+:global(:root[data-theme="dark"]) .lockPage th {
+  color: var(--ink) !important;
+}

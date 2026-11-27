@@ -78,7 +78,21 @@ export async function GET(request: NextRequest) {
 
 // "signoff": names typed over who packed / prepared / checked a Stock Out lorry (key = what was
 // signed off, e.g. "mounting_rail" or "checked"; value = the name).
-const KINDS = ["mounting_part", "mounting_box", "electrical_box", "bulk_line", "electrical_part", "pv_drawing", "lorry", "signoff"] as const;
+// "panel_plan": a Stock Out lorry's panel loading checklist (how each panel model is loaded,
+// full boxes or box + loose, and the ticked lines). "panel_return": the panels Site Check
+// confirmed came back (key = "returned|<model>", value = the count).
+const KINDS = [
+  "mounting_part",
+  "mounting_box",
+  "electrical_box",
+  "bulk_line",
+  "electrical_part",
+  "pv_drawing",
+  "lorry",
+  "signoff",
+  "panel_plan",
+  "panel_return",
+] as const;
 
 const putSchema = z.object({
   job: z.string().min(1).max(100),

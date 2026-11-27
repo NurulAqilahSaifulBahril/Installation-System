@@ -1848,7 +1848,7 @@ function Dashboard({
     driver: string;
     plate: string;
     txIds: string[];
-    stage: "preparing" | "verified";
+    stage: "preparing" | "verified" | "siteCheck";
     // The Stock Out list's day: with driver and plate it names the lorry (its saved entries).
     day: string;
     // The Delivery Schedule run (names a lorry that has no driver or plate yet).
@@ -1858,6 +1858,8 @@ function Dashboard({
   const [lorryDialog, setLorryDialog] = useState<{ txId: string; kind: "do" | "report" | "pv" } | null>(null);
   // The lorry page's Report button: back on the Stock Out list (same day), with its Report open.
   const [openDayReport, setOpenDayReport] = useState(false);
+  // The lorry page that opened that Report: Close on the Report goes back to it.
+  const [reportReturnLorry, setReportReturnLorry] = useState<typeof outLorryView>(null);
   const [dashboardAdmin, setDashboardAdmin] = useState(false);
   // Admin: every page. Staff: every page except Admin. A phone number that is not
   // registered falls back to the dashboard session (an admin there can open Admin).
@@ -2116,11 +2118,18 @@ function Dashboard({
           verifications.filter((r) => r.material === "job" && r.by).map((r) => [r.jobRef, r.by]),
         )}
         onRecordMaterial={(jobRef, material) => void recordVerification(jobRef, material)}
-        loadedRefs={new Set(verifications.filter((r) => r.material === "loaded").map((r) => r.jobRef))}
+        loadedRefs={
+          new Set(
+            verifications
+              .filter((r) => r.material === (outLorryView.stage === "siteCheck" ? "arrived" : "loaded"))
+              .map((r) => r.jobRef),
+          )
+        }
         onLoadAll={async (lorryTxs) => {
           // Stock Out › Verified: every customer on the lorry is loaded and moves to Site Check
-          // (as the Loading page's Submit did).
-          const results = await Promise.all(lorryTxs.map((tx) => recordVerification(tx.reference, "loaded")));
+          // (as the Loading page's Submit did). Site Check: every customer is checked on site.
+          const done = outLorryView.stage === "siteCheck" ? "arrived" : "loaded";
+          const results = await Promise.all(lorryTxs.map((tx) => recordVerification(tx.reference, done)));
           return results.every(Boolean);
         }}
         onSubmitAll={async (lorryTxs) => {
@@ -2136,6 +2145,11 @@ function Dashboard({
         onBack={() => setOutLorryView(null)}
         onOpenReport={() => {
           setHomeDay(outLorryView.day);
+          // Behind the Report: the tab the lorry was opened from (Preparing or Loading).
+          setHomeTxStatusTab(
+            outLorryView.stage === "preparing" ? "toVerify" : outLorryView.stage === "siteCheck" ? "siteCheck" : "verified",
+          );
+          setReportReturnLorry(outLorryView);
           setOpenDayReport(true);
           setOutLorryView(null);
         }}
@@ -2428,6 +2442,7 @@ function Dashboard({
           key="stock-out-site-check"
           outLoaded={outLoaded}
           stockOutSiteCheck
+          onOpenOutLorry={setOutLorryView}
           transactions={transactions}
           onInspectTx={(id) => setInspectTxId(id)}
           onSignOut={onSignOut}
@@ -2472,6 +2487,10 @@ function Dashboard({
           onOpenOutLorry={setOutLorryView}
           openDayReport={openDayReport}
           onDayReportOpened={() => setOpenDayReport(false)}
+          onDayReportClosed={() => {
+            if (reportReturnLorry) setOutLorryView(reportReturnLorry);
+            setReportReturnLorry(null);
+          }}
           onOpenTransfer={() => setTab("transfer")}
           onNewStockOut={() => setNewStockOutOpen(true)}
           onOpenStock={(item, wh) => {
@@ -7999,6 +8018,7 @@ function HomeTab({
   onOpenOutLorry,
   openDayReport = false,
   onDayReportOpened,
+  onDayReportClosed,
   stockOutSiteCheck = false,
 }: {
   // The Stock Out jobs have been read (see Dashboard).
@@ -8007,10 +8027,12 @@ function HomeTab({
   // Preparing / Loading / Site Check tabs on top of the Site Check page.
   stockOutSiteCheck?: boolean;
   // Stock Out › Preparing / Verified: a lorry row opens that lorry's Stock Out page.
-  onOpenOutLorry?: (lorry: { driver: string; plate: string; txIds: string[]; stage: "preparing" | "verified"; day: string; runId?: string }) => void;
+  onOpenOutLorry?: (lorry: { driver: string; plate: string; txIds: string[]; stage: "preparing" | "verified" | "siteCheck"; day: string; runId?: string }) => void;
   // The Stock Out lorry page's Report button: open the day's Report (once) on arrival.
   openDayReport?: boolean;
   onDayReportOpened?: () => void;
+  // The Report opened from a lorry page was closed (go back to that lorry page).
+  onDayReportClosed?: () => void;
   transactions: StockTransaction[];
   onInspectTx: (id: string) => void;
   txType: HomeTxType;
@@ -8044,9 +8066,19 @@ function HomeTab({
   const [whFilter, setWhFilter] = useState<WhFilter>("all");
   const [txSearch, setTxSearch] = useState("");
   const [prepReportOpen, setPrepReportOpen] = useState(false);
+  // True while the Report open came from a lorry page's Report button.
+  const prepReportFromLorry = useRef(false);
+  const closePrepReport = () => {
+    setPrepReportOpen(false);
+    if (prepReportFromLorry.current) {
+      prepReportFromLorry.current = false;
+      onDayReportClosed?.();
+    }
+  };
   useEffect(() => {
     if (!openDayReport) return;
     setPrepReportOpen(true);
+    prepReportFromLorry.current = true;
     onDayReportOpened?.();
     // Runs when the request arrives; the callback only clears it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -8181,6 +8213,10 @@ function HomeTab({
   // to Loading; a verified job not yet sent (older ones, test data) also shows under Loading, with
   // its 🚚 Loading button.
   const outTabs = txType === "out" && !loadingOnly;
+  // Stock Out's item cards are count only, so no item filter can be left on there.
+  useEffect(() => {
+    if (outTabs && txCat !== "all") setTxCat("all");
+  }, [outTabs, txCat, setTxCat]);
   const showLoading = loadingOnly || txType === "out" || isTransferList;
   const isLoadedTx = (t: StockTransaction) =>
     showLoading && (t.type === "out" ? isVerifiedTx(t.status) : t.type === "transfer") && loadedJobs.has(t.reference);
@@ -8416,6 +8452,71 @@ function HomeTab({
   // that lorry's own page (no customer table here).
   // Stock Out › Site Check: the same lorry rows; each customer in a row opens its own Site Check.
   const showLorryRows = !!onOpenLorry || outTabs || stockOutSiteCheck;
+  // Site Check: each lorry's panel loading checklist (Preparing) and the panels confirmed
+  // returned. A model loaded as full boxes has spare panels that come back with the lorry.
+  const lorryKeyOfRow = (row: { driver: string; plate: string; txs: StockTransaction[] }) =>
+    stockOutLorryKey(selectedDay, row.driver, row.plate, etaOf(row.txs[0])?.runId);
+  const siteLorryKeyList = stockOutSiteCheck ? Array.from(new Set(lorryRows.map(lorryKeyOfRow))).sort().join(",") : "";
+  const [siteLorryEntries, setSiteLorryEntries] = useState<{ job: string; kind: string; key: string; value: string }[]>([]);
+  useEffect(() => {
+    if (!siteLorryKeyList) {
+      setSiteLorryEntries([]);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/warehouse/entries?jobs=${encodeURIComponent(siteLorryKeyList)}`, { credentials: "same-origin", cache: "no-store" })
+      .then(async (res) => (res.ok ? ((await res.json()) as { entries?: typeof siteLorryEntries }).entries ?? [] : []))
+      .then((entries) => {
+        if (!cancelled) setSiteLorryEntries(entries.filter((e) => e.kind === "panel_plan" || e.kind === "panel_return"));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [siteLorryKeyList]);
+  const [returnDraft, setReturnDraft] = useState<Record<string, string>>({});
+  const [returnSaving, setReturnSaving] = useState<string | null>(null);
+  const panelReturnsOf = (row: { driver: string; plate: string; txs: StockTransaction[] }) => {
+    const lorry = lorryKeyOfRow(row);
+    const mine = siteLorryEntries.filter((e) => e.job === lorry);
+    return panelLoadGroups(row.txs).flatMap((group) => {
+      // Spare panels: what Preparing saved as loaded (boxes x 36 + loose) over what is needed.
+      const plan = Object.fromEntries(mine.filter((e) => e.kind === "panel_plan").map((e) => [e.key, e.value]));
+      if (plan[`box|${group.model}`] === undefined && plan[`loose|${group.model}`] === undefined) return [];
+      const spare = panelPlanLoad(plan, group).spare;
+      if (spare === 0) return [];
+      const saved = mine.find((e) => e.kind === "panel_return" && e.key === `returned|${group.model}`)?.value;
+      return [{ lorry, model: group.model, spare, returned: saved === undefined ? null : Number(saved) }];
+    });
+  };
+  async function confirmPanelReturn(lorry: string, model: string, count: number) {
+    const draftKey = `${lorry}|${model}`;
+    setReturnSaving(draftKey);
+    // The lorry's full set of returns (other models kept).
+    const entries = [
+      ...siteLorryEntries
+        .filter((e) => e.job === lorry && e.kind === "panel_return" && e.key !== `returned|${model}`)
+        .map((e) => ({ kind: "panel_return", key: e.key, value: e.value })),
+      { kind: "panel_return", key: `returned|${model}`, value: String(count) },
+    ];
+    try {
+      const res = await fetch("/api/warehouse/entries", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ job: lorry, kinds: ["panel_return"], entries }),
+      });
+      if (!res.ok) throw new Error("not saved");
+      setSiteLorryEntries((prev) => [
+        ...prev.filter((e) => !(e.job === lorry && e.kind === "panel_return" && e.key === `returned|${model}`)),
+        { job: lorry, kind: "panel_return", key: `returned|${model}`, value: String(count) },
+      ]);
+    } catch {
+      window.alert("The returned panels were not saved. Check the connection and try again.");
+    } finally {
+      setReturnSaving(null);
+    }
+  }
   // Stock Out › Preparing: jobs whose units are all scanned (job page Submit), ticked in the
   // Customers column.
   const scannedRefs = new Set(verifications.filter((r) => r.material === "scanned").map((r) => r.jobRef));
@@ -9116,10 +9217,22 @@ function HomeTab({
             )}
 
             {/* Stock Out and the Loading page: one card per item, above the table.
-                Tap a card to show only jobs with that item; tap it again to show all. */}
+                Stock Out (Preparing, Loading, Site Check): count only, not tappable.
+                Loading page: tap a card to show only jobs with that item; tap again to show all. */}
             {(loadingOnly || txType === "out") && (
               <div className={styles.outItemGrid} role="group" aria-label="Stock Out by item">
-                {outItems.map((item) => (
+                {outItems.map((item) =>
+                  outTabs ? (
+                    <div key={item.id} className={`${styles.txKpiCatChip} ${styles.outItemCard}`} style={{ cursor: "default" }}>
+                      <span className={styles.txKpiCatName}>
+                        <span className={styles.catLabelFull}>{item.label}</span>
+                        <span className={styles.catLabelShort}>{item.short}</span>
+                      </span>
+                      <span className={styles.txKpiCatValOut}>
+                        {item.count} <span className={styles.txKpiUnit}>{item.unit}</span>
+                      </span>
+                    </div>
+                  ) : (
                   <button
                     key={item.id}
                     type="button"
@@ -9136,7 +9249,8 @@ function HomeTab({
                       {item.count} <span className={styles.txKpiUnit}>{item.unit}</span>
                     </span>
                   </button>
-                ))}
+                  ),
+                )}
               </div>
             )}
 
@@ -9198,24 +9312,13 @@ function HomeTab({
                         const locked = outLoadingTab && !prepared;
                         // Site Check: how many customers on the lorry are checked on site.
                         const siteChecked = row.txs.filter((t) => arrivedJobs.has(t.reference)).length;
-                        const flowNote = stockOutSiteCheck
-                          ? siteChecked === row.txs.length
-                            ? { text: "✓ Checked", color: "var(--green)" }
-                            : null
-                          : !outTabs
-                          ? null
-                          : outLoadingTab
-                            ? locked
-                              ? { text: "Waiting for Preparing", color: "#b45309" }
-                              : loaded
-                                ? { text: "✓ Loaded", color: "var(--green)" }
-                                : null
-                            : prepared
-                              ? { text: "✓ Submitted", color: "var(--green)" }
-                              : null;
-                        // Site Check opens a customer (below), not the lorry.
+                        // Submitted / loaded / checked show as the green row background; only
+                        // the waiting note stays here.
+                        const flowNote = locked ? { text: "Waiting for Preparing", color: "#b45309" } : null;
+                        // Site Check: the row opens the lorry's Site Check page (as Loading does); each
+                        // customer name still opens that customer's own Site Check.
                         const open = () =>
-                          locked || stockOutSiteCheck
+                          locked
                             ? undefined
                             : onOpenLorry
                             ? onOpenLorry({ driver: row.driver, plate: row.plate, txIds: row.txs.map((t) => t.id), stage: pageStage, day: selectedDay })
@@ -9223,15 +9326,25 @@ function HomeTab({
                                 driver: row.driver,
                                 plate: row.plate,
                                 txIds: row.txs.map((t) => t.id),
-                                stage: statusTab === "toVerify" ? "preparing" : "verified",
+                                stage: stockOutSiteCheck ? "siteCheck" : statusTab === "toVerify" ? "preparing" : "verified",
                                 day: selectedDay,
                                 runId: etaOf(row.txs[0])?.runId || undefined,
                               });
                         const slotTime = row.slot ? sheetClock(row.slot.slotTime) || row.slot.slotTime : "";
+                        // Submitted for this page's stage (row turns green): Site Check (every customer checked),
+                        // Loading (tab or page: loaded), else Preparing (prepared).
+                        const submitted = stockOutSiteCheck
+                          ? siteChecked === row.txs.length
+                          : outLoadingTab || (!outTabs && pageStage === "verified")
+                            ? loaded
+                            : outTabs
+                              ? prepared
+                              : loaded;
+                        const submittedFor = stockOutSiteCheck ? "Site Check" : outTabs && !outLoadingTab ? "Preparing" : "Loading";
                         return (
                           <tr
                             key={row.key}
-                            className={`${styles.loadingPicRow} ${locked || stockOutSiteCheck ? "" : styles.loadingPicRowClickable}`}
+                            className={`${styles.loadingPicRow} ${locked ? "" : styles.loadingPicRowClickable} ${submitted ? styles.lorryRowSubmitted : ""}`}
                             style={locked ? { opacity: 0.55, cursor: "not-allowed" } : undefined}
                             tabIndex={locked ? -1 : 0}
                             role="button"
@@ -9239,7 +9352,9 @@ function HomeTab({
                             title={
                               locked
                                 ? "Waiting for Preparing: Submit this lorry on Stock Out › Preparing first"
-                                : onOpenLorry
+                                : submitted
+                                  ? `Submitted for ${submittedFor}`
+                                  : onOpenLorry
                                   ? "Open this lorry's loading page"
                                   : "Open this lorry's Stock Out page"
                             }
@@ -9302,6 +9417,54 @@ function HomeTab({
                               {flowNote && (
                                 <div style={{ marginTop: "4px", fontSize: "11px", fontWeight: 700, color: flowNote.color }}>{flowNote.text}</div>
                               )}
+                              {/* Site Check: spare panels (loaded as full boxes) to confirm returned */}
+                              {stockOutSiteCheck &&
+                                panelReturnsOf(row).map((ret) => {
+                                  const draftKey = `${ret.lorry}|${ret.model}`;
+                                  const draft = returnDraft[draftKey] ?? String(ret.spare);
+                                  return (
+                                    <div
+                                      key={ret.model}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onKeyDown={(e) => e.stopPropagation()}
+                                      style={{ marginTop: "6px", fontSize: "12px", color: "#000" }}
+                                    >
+                                      {ret.returned !== null ? (
+                                        <span style={{ color: "var(--green)", fontWeight: 700 }}>
+                                          ↩ ✓ {ret.returned} panels returned
+                                          {ret.returned !== ret.spare && (
+                                            <span style={{ color: "#b45309" }}> (expected {ret.spare})</span>
+                                          )}
+                                          <span style={{ color: "#555", fontWeight: 400 }}> · {ret.model}</span>
+                                        </span>
+                                      ) : (
+                                        <span style={{ display: "inline-flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+                                          <span style={{ fontWeight: 700, color: "#b45309" }}>
+                                            ↩ {ret.spare} panels to return
+                                          </span>
+                                          <span style={{ color: "#555" }}>{ret.model}</span>
+                                          <input
+                                            type="number"
+                                            min={0}
+                                            inputMode="numeric"
+                                            aria-label={`Panels returned for ${ret.model}`}
+                                            value={draft}
+                                            onChange={(e) => setReturnDraft((prev) => ({ ...prev, [draftKey]: e.target.value }))}
+                                            style={{ width: "60px", padding: "4px 6px", border: "1px solid #cbd5e1", borderRadius: "6px" }}
+                                          />
+                                          <button
+                                            type="button"
+                                            className={styles.btnActionGhost}
+                                            disabled={returnSaving === draftKey || draft.trim() === "" || Number(draft) < 0}
+                                            onClick={() => void confirmPanelReturn(ret.lorry, ret.model, Math.round(Number(draft)))}
+                                          >
+                                            {returnSaving === draftKey ? "Saving…" : "Confirm returned"}
+                                          </button>
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
                             </td>
                             <td>
                               {/* A lorry carries Stock Out jobs: the same ▼ mark as Stock Details */}
@@ -9654,7 +9817,7 @@ function HomeTab({
           </div>
 
       {prepReportOpen && (
-        <div className={styles.bankingReceiptBackdrop} onClick={() => setPrepReportOpen(false)}>
+        <div className={styles.bankingReceiptBackdrop} onClick={closePrepReport}>
           <div
             className={`${styles.transferReportCard} ${styles.prepReportCard}`}
             role="dialog"
@@ -9696,7 +9859,7 @@ function HomeTab({
                   Print
                 </button>
                 <DownloadReportButton fileName={reportFileName("Warehouse-Preparation-Record", selectedDay)} />
-                <button type="button" className={styles.btnActionGhost} onClick={() => setPrepReportOpen(false)}>
+                <button type="button" className={styles.btnActionGhost} onClick={closePrepReport}>
                   Close
                 </button>
               </div>
@@ -11524,45 +11687,8 @@ function StockTable({
 // ---------------------------------------------------------------------------
 
 
-
-// ---------------------------------------------------------------------------
-// Project Team: read-only copy of the dashboard's Arranged Installation
-// (only when signed in to the dashboard; otherwise the sample page below shows)
-// ---------------------------------------------------------------------------
-
-type ArrangedCustomerPayload = {
-  jobId: string;
-  invoice: string;
-  name: string;
-  address: string;
-  phone: string;
-  email: string;
-  agent: string;
-  phase: string;
-  panel: string;
-  inverter: string;
-  remark: string;
-  date: string;
-  time: string;
-  hasBattery: boolean;
-};
-
-type ArrangedGroupPayload = {
-  id: string;
-  teamLabel: string;
-  baseLocation: string;
-  installationTeam: string;
-  wiringTeam: string;
-  supervisors: string[];
-  members: string[];
-  cars: string[];
-  installationDate: string;
-  installationEndDate: string;
-  customers: ArrangedCustomerPayload[];
-};
-
+// Project Team: date helpers shared by the Delivery Schedule below.
 const ARR_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const ARR_BAND_COLOURS = ["#2563eb", "#ea580c", "#16a34a", "#9333ea", "#0891b2", "#be123c"];
 
 function arrParts(iso: string) {
   const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
@@ -11590,206 +11716,6 @@ function arrWeekLabel(mondayIso: string) {
   const { y, m, d } = arrParts(mondayIso);
   const sat = new Date(Date.UTC(y, m - 1, d + 5)).toISOString().slice(0, 10);
   return `${arrShort(mondayIso)} – ${arrShort(sat)} ${arrParts(sat).y}`;
-}
-
-function ArrangedInstallationView({ groups, tabs }: { groups: ArrangedGroupPayload[]; tabs?: React.ReactNode }) {
-  const weeks = useMemo(
-    () => Array.from(new Set(groups.map((g) => arrMonday(g.installationDate)))).sort(),
-    [groups],
-  );
-  const todayWeek = arrMonday(new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kuala_Lumpur" }));
-  const [weekIndex, setWeekIndex] = useState<number | null>(null);
-  const index =
-    weekIndex ?? Math.max(0, weeks.includes(todayWeek) ? weeks.indexOf(todayWeek) : weeks.length - 1);
-  const week = weeks[index];
-  // Bookings are grouped by team (the "Group by" picker was removed).
-  const groupBy = "team" as "team" | "installation" | "wiring";
-  const [nameQuery, setNameQuery] = useState("");
-  const query = nameQuery.trim().toLowerCase();
-
-  // Combine a week's bookings that share the chosen key into one section. Crew fields
-  // that differ between the combined bookings are listed together.
-  const mergeWeek = (rawGroups: ArrangedGroupPayload[]): ArrangedGroupPayload[] => {
-    const keyOf = (g: ArrangedGroupPayload) =>
-      groupBy === "team"
-        ? g.teamLabel || "No team"
-        : groupBy === "installation"
-        ? g.installationTeam || "No installation team"
-        : g.wiringTeam || "No wiring team";
-    const merged = new Map<string, ArrangedGroupPayload>();
-    rawGroups.forEach((g) => {
-      const key = keyOf(g);
-      const join = (a: string, b: string) => (b && !a.split(" / ").includes(b) ? (a ? `${a} / ${b}` : b) : a);
-      const union = (a: string[], b: string[]) => Array.from(new Set([...a, ...b]));
-      const existing = merged.get(key);
-      if (!existing) {
-        merged.set(key, { ...g, id: key, teamLabel: key, customers: [...g.customers] });
-        return;
-      }
-      existing.baseLocation = join(existing.baseLocation, g.baseLocation);
-      existing.installationTeam = join(existing.installationTeam, g.installationTeam);
-      existing.wiringTeam = join(existing.wiringTeam, g.wiringTeam);
-      existing.supervisors = union(existing.supervisors, g.supervisors);
-      existing.members = union(existing.members, g.members);
-      existing.cars = union(existing.cars, g.cars);
-      existing.customers = [...existing.customers, ...g.customers];
-    });
-    return Array.from(merged.values()).map((g) => ({
-      ...g,
-      customers: [...g.customers].sort((a, b) => (a.date + (a.time || "")).localeCompare(b.date + (b.time || ""))),
-    }));
-  };
-
-  // No search: the chosen week. Searching: every week with a customer whose name (or
-  // invoice number) matches, showing only the matching customers.
-  const matches = (c: ArrangedCustomerPayload) =>
-    c.name.toLowerCase().includes(query) || c.invoice.toLowerCase().includes(query);
-  const sections: { week: string; groups: ArrangedGroupPayload[] }[] = query
-    ? weeks
-        .map((w) => ({
-          week: w,
-          groups: mergeWeek(groups.filter((g) => arrMonday(g.installationDate) === w))
-            .map((g) => ({ ...g, customers: g.customers.filter(matches) }))
-            .filter((g) => g.customers.length > 0),
-        }))
-        .filter((section) => section.groups.length > 0)
-    : [{ week, groups: mergeWeek(groups.filter((g) => arrMonday(g.installationDate) === week)) }];
-  const matchCount = sections.reduce((sum, sec) => sum + sec.groups.reduce((n, g) => n + g.customers.length, 0), 0);
-
-  return (
-    <section className={styles.screen} aria-labelledby="warehouse-arranged">
-      <div className={styles.arrHeader}>
-        <div>
-          <h1 id="warehouse-arranged">Project Team</h1>
-          <p className={styles.kicker}>Details are from Project Team</p>
-        </div>
-        <div className={styles.arrNav}>
-          {/* ‹ calendar › : previous week, the week of a picked day, next week */}
-          <DateNav
-            value={weeks[index] ?? ""}
-            onPick={(day) => {
-              // The latest listed week that starts on or before the picked day.
-              const monday = arrMonday(day);
-              let pick = 0;
-              weeks.forEach((w, i) => {
-                if (w <= monday) pick = i;
-              });
-              setWeekIndex(pick);
-            }}
-            onPrev={() => setWeekIndex(index - 1)}
-            onNext={() => setWeekIndex(index + 1)}
-            prevDisabled={index <= 0}
-            nextDisabled={index >= weeks.length - 1}
-            prevLabel="Previous week"
-            nextLabel="Next week"
-            pickLabel={weeks[index] ? `Week ${arrWeekLabel(weeks[index])} · pick a day` : "Pick a day"}
-          />
-        </div>
-      </div>
-      {/* Tabs on the left, Sync on the right, across the full width */}
-      <div style={{ margin: "-4px 0 12px" }}>{tabs}</div>
-
-      {/* Customer search, below the week buttons */}
-      <div style={{ display: "flex", justifyContent: "flex-end", margin: "0 0 12px" }}>
-        <input
-          type="search"
-          className={styles.searchCompact}
-          placeholder="Search customer name"
-          aria-label="Search customer name"
-          value={nameQuery}
-          onChange={(e) => setNameQuery(e.target.value)}
-        />
-      </div>
-
-      {query && (
-        <p className={styles.note} style={{ margin: "0 0 10px" }}>
-          {matchCount === 0
-            ? `No customer matches "${nameQuery.trim()}" in any week.`
-            : `${matchCount} customer${matchCount === 1 ? "" : "s"} matching "${nameQuery.trim()}", across all weeks.`}
-        </p>
-      )}
-      {!query && sections[0].groups.length === 0 ? (
-        <p className={styles.note}>
-          No arranged installation in this period{weeks[index] ? ` (week ${arrWeekLabel(weeks[index])})` : ""}.
-        </p>
-      ) : (
-        sections.flatMap((section) => section.groups.map((group, gi) => (
-          <div key={`${section.week}-${group.id}`} className={styles.arrGroup}>
-            <div className={styles.arrWeekBar}>Week {arrWeekLabel(section.week)}</div>
-            <div className={styles.arrTeamBand} style={{ background: ARR_BAND_COLOURS[gi % ARR_BAND_COLOURS.length] }}>
-              <div className={styles.arrTeamName}>
-                <strong>{group.teamLabel || "Team"}</strong>
-              </div>
-              <div className={styles.arrCrew}>
-                <div>
-                  <small>INSTALLATION TEAM</small>
-                  <span>{group.installationTeam || "—"}</span>
-                </div>
-                <div>
-                  <small>WIRING TEAM</small>
-                  <span>{group.wiringTeam || "—"}</span>
-                </div>
-                <div>
-                  <small>SITE SUPERVISOR</small>
-                  <span>{group.supervisors.join(", ") || "—"}</span>
-                </div>
-                <div>
-                  <small>TEAM MEMBER</small>
-                  <span>{group.members.join(", ") || "—"}</span>
-                </div>
-                <div>
-                  <small>CAR</small>
-                  <span>{group.cars.join(", ") || "—"}</span>
-                </div>
-              </div>
-            </div>
-
-            <div className={styles.arrTableWrap}>
-            <table className={styles.arrTable}>
-              <thead>
-                <tr>
-                  <th>SLOT</th>
-                  <th>CUSTOMER</th>
-                  <th>ADDRESS</th>
-                  <th>PHONE</th>
-                  <th>EMAIL</th>
-                  <th>AGENT</th>
-                  <th>PHASE</th>
-                  <th>PANEL</th>
-                  <th>INVERTER</th>
-                  <th>REMARK</th>
-                </tr>
-              </thead>
-              <tbody>
-                {group.customers.map((c) => (
-                  <tr key={c.jobId}>
-                    <td data-label="Slot" className={styles.arrSlot}>
-                      <strong>{c.date ? arrLong(c.date) : "—"}</strong>
-                      {c.time && <span>{c.time}</span>}
-                    </td>
-                    <td data-label="Customer">
-                      <strong>{c.name || "—"}</strong>
-                      {c.invoice && <span className={styles.arrInvoice}>{c.invoice}</span>}
-                      {c.hasBattery && <span className={styles.arrBatteryTag}>Battery</span>}
-                    </td>
-                    <td data-label="Address">{c.address || "—"}</td>
-                    <td data-label="Phone">{c.phone || "—"}</td>
-                    <td data-label="Email">{c.email || "—"}</td>
-                    <td data-label="Agent">{c.agent || "—"}</td>
-                    <td data-label="Phase">{c.phase || "—"}</td>
-                    <td data-label="Panel">{c.panel || "—"}</td>
-                    <td data-label="Inverter">{c.inverter || "—"}</td>
-                    <td data-label="Remark">{c.remark || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            </div>
-          </div>
-        )))
-      )}
-    </section>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -12123,19 +12049,13 @@ function DeliveryScheduleView({ runs, tabs }: { runs: DeliveryRunPayload[]; tabs
   );
 }
 
-// Project Team page tabs: Installation Schedule (the arranged installations) and Delivery
-// Schedule (the dashboard's delivery runs, read-only).
-type ProjectTeamView = "installation" | "delivery";
-
+// Project Team page header: the Delivery Schedule (the dashboard's delivery runs, read-only)
+// and its sync button. The Installation Schedule is no longer shown in the inventory system.
 function ProjectTeamTabs({
-  view,
-  onView,
   onSync,
   syncing,
   syncNote,
 }: {
-  view: ProjectTeamView;
-  onView: (view: ProjectTeamView) => void;
   // "Sync from Scheduling Dashboard": reads the latest saved schedule now.
   onSync: () => void;
   syncing: boolean;
@@ -12143,25 +12063,9 @@ function ProjectTeamTabs({
 }) {
   return (
     <div className={styles.projectTeamBar}>
-    <div className={styles.txFilterPills} role="tablist" aria-label="Project Team" style={{ marginTop: "10px" }}>
-      {(
-        [
-          ["installation", "Installation Schedule"],
-          ["delivery", "Delivery Schedule"],
-        ] as const
-      ).map(([id, label]) => (
-        <button
-          key={id}
-          type="button"
-          role="tab"
-          aria-selected={view === id}
-          className={`${styles.txPill} ${view === id ? styles.txPillActive : ""}`}
-          onClick={() => onView(id)}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
+      <h2 className={styles.sectionTitle} style={{ margin: "10px 0 0" }}>
+        Delivery Schedule
+      </h2>
       <div className={styles.projectTeamSync}>
         {syncNote && <span className={styles.note} style={{ margin: 0 }}>{syncNote}</span>}
         <button
@@ -12169,7 +12073,7 @@ function ProjectTeamTabs({
           className={styles.btnActionGhost}
           onClick={onSync}
           disabled={syncing}
-          title="Read the latest Installation and Delivery Schedule from the Scheduling dashboard now"
+          title="Read the latest Delivery Schedule from the Scheduling dashboard now"
         >
           {/* Grey circular-arrows icon (spins while syncing) */}
           <svg
@@ -12198,65 +12102,34 @@ function ProjectTeamTabs({
 }
 
 function StockByCustomerTab() {
-  const [view, setView] = useState<ProjectTeamView>("installation");
-  const [arranged, setArranged] = useState<ArrangedGroupPayload[] | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/warehouse/arranged", { credentials: "same-origin", cache: "no-store" })
-      .then(async (res) => (res.ok ? ((await res.json()) as { groups?: ArrangedGroupPayload[] }) : null))
-      .then((data) => {
-        if (!cancelled && data?.groups && data.groups.length > 0) setArranged(data.groups);
-      })
-      .catch((err) => console.error("Arranged installation failed", err))
-      .finally(() => {
-        if (!cancelled) setLoaded(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Delivery runs: read when the Delivery Schedule tab is opened, then kept current with the
-  // Scheduling system while it stays open.
+  // Delivery runs: read on open, then kept current with the Scheduling system while open.
   const [delivery, setDelivery] = useState<DeliveryRunPayload[] | null>(null);
   const [deliveryLoaded, setDeliveryLoaded] = useState(false);
-  const wantDelivery = view === "delivery";
-  useEffect(() => {
-    if (!wantDelivery) return;
-    return watchDeliveryRuns<DeliveryRunPayload>(
-      (runs) => {
-        if (runs.length > 0) setDelivery(runs);
-      },
-      () => setDeliveryLoaded(true),
-    );
-  }, [wantDelivery]);
+  useEffect(
+    () =>
+      watchDeliveryRuns<DeliveryRunPayload>(
+        (runs) => {
+          if (runs.length > 0) setDelivery(runs);
+        },
+        () => setDeliveryLoaded(true),
+      ),
+    [],
+  );
 
-  // Sync from Scheduling Dashboard: both schedules read fresh (past the inventory's job copy).
+  // Sync from Scheduling Dashboard: the delivery schedule read fresh (past the inventory's job copy).
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
   async function syncFromScheduling() {
     setSyncing(true);
     setSyncNote(null);
     try {
-      const [arrangedRes, deliveryRes] = await Promise.all([
-        fetch("/api/warehouse/arranged?fresh=1", { credentials: "same-origin", cache: "no-store" }),
-        fetch("/api/warehouse/delivery?fresh=1", { credentials: "same-origin", cache: "no-store" }),
-      ]);
-      if (!arrangedRes.ok || !deliveryRes.ok) throw new Error("not ok");
-      const arrangedData = (await arrangedRes.json()) as { groups?: ArrangedGroupPayload[]; savedAt?: string | null };
+      const deliveryRes = await fetch("/api/warehouse/delivery?fresh=1", { credentials: "same-origin", cache: "no-store" });
+      if (!deliveryRes.ok) throw new Error("not ok");
       const deliveryData = (await deliveryRes.json()) as { runs?: DeliveryRunPayload[] };
-      if (arrangedData.groups) setArranged(arrangedData.groups);
       if (deliveryData.runs) setDelivery(deliveryData.runs);
-      setLoaded(true);
       setDeliveryLoaded(true);
-      const clock = (value: string | Date) =>
-        new Date(value).toLocaleString("en-GB", { timeZone: "Asia/Kuala_Lumpur", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-      // Also say when the Scheduling system itself last saved, so it is clear the inventory now
-      // shows exactly that version.
-      setSyncNote(
-        `Synced ${clock(new Date())}${arrangedData.savedAt ? ` · Scheduling data saved ${clock(arrangedData.savedAt)}` : ""}`,
-      );
+      const clock = new Date().toLocaleString("en-GB", { timeZone: "Asia/Kuala_Lumpur", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+      setSyncNote(`Synced ${clock}`);
     } catch {
       setSyncNote("Sync failed. Check the connection and try again.");
     } finally {
@@ -12264,30 +12137,19 @@ function StockByCustomerTab() {
     }
   }
 
-  const tabs = (
-    <ProjectTeamTabs view={view} onView={setView} onSync={() => void syncFromScheduling()} syncing={syncing} syncNote={syncNote} />
-  );
+  const tabs = <ProjectTeamTabs onSync={() => void syncFromScheduling()} syncing={syncing} syncNote={syncNote} />;
 
-  if (view === "installation" && arranged) return <ArrangedInstallationView groups={arranged} tabs={tabs} />;
-  if (view === "delivery" && delivery) return <DeliveryScheduleView runs={delivery} tabs={tabs} />;
+  if (delivery) return <DeliveryScheduleView runs={delivery} tabs={tabs} />;
 
   return (
     <section className={styles.screen} aria-labelledby="warehouse-stock-customer">
       <h1 id="warehouse-stock-customer">Project Team</h1>
       {tabs}
-      {view === "installation" ? (
-        <p className={styles.note}>
-          {loaded
-            ? "No arranged installations to show. Sign in to the dashboard (same browser) to see them."
-            : "Loading…"}
-        </p>
-      ) : (
-        <p className={styles.note}>
-          {deliveryLoaded
-            ? "No delivery runs to show. Sign in to the dashboard (same browser) to see them."
-            : "Loading…"}
-        </p>
-      )}
+      <p className={styles.note}>
+        {deliveryLoaded
+          ? "No delivery runs to show. Sign in to the dashboard (same browser) to see them."
+          : "Loading…"}
+      </p>
     </section>
   );
 }
@@ -12809,6 +12671,49 @@ function sampleLorrySignoffs(lorryKey: string): Record<string, string> {
 // named by the day with its driver and plate, in place of a job reference.
 // A run with no driver and no plate yet is told apart by its run id (two such runs on one day
 // are two lorries, each with its own names).
+// Panels always come in boxes of 36. Stock Out › Preparing shows a lorry's panels in a table,
+// one row per panel model, with how many boxes and loose panels are loaded (no scanning).
+const PANEL_BOX_SIZE = 36;
+
+type PanelLoadGroup = { model: string; total: number; customers: { name: string; qty: number }[] };
+
+// The lorry's panels by model (different wattages never share a box).
+function panelLoadGroups(txs: StockTransaction[]): PanelLoadGroup[] {
+  const groups = new Map<string, PanelLoadGroup>();
+  txs.forEach((tx) => {
+    const name = tx.schedule?.customerName ?? tx.party;
+    txLines(tx)
+      .filter((line) => line.category === "panel" && (line.qty ?? 0) > 0)
+      .forEach((line) => {
+        // One row per panel model, by brand and wattage: "650W JinkoSolar TIGER NEO 3.0 ..." and
+        // "Jinko 650W" are the same panel, shown as "Jinko 650W".
+        const raw = (line.model || "Panel").trim();
+        const watts = raw.match(/(\d{3})\s*W/i);
+        const brand = detectPanelBrand(raw);
+        const model = panelModelCode(raw) ?? (watts && brand !== "—" ? `${brand} ${watts[1]}W` : raw);
+        const group = groups.get(model) ?? { model, total: 0, customers: [] };
+        group.total += line.qty ?? 0;
+        const cust = group.customers.find((c) => c.name === name);
+        if (cust) cust.qty += line.qty ?? 0;
+        else group.customers.push({ name, qty: line.qty ?? 0 });
+        groups.set(model, group);
+      });
+  });
+  return Array.from(groups.values());
+}
+
+// One model's load: the saved Box Qty / Loose Qty ("box|<model>", "loose|<model>"), else the
+// suggestion (full boxes, the rest loose). Short = fewer loaded than needed; spare = extra
+// panels loaded, which come back and are confirmed at Site Check.
+function panelPlanLoad(plan: Record<string, string>, group: PanelLoadGroup) {
+  const num = (value: string | undefined, fallback: number) =>
+    value === undefined ? fallback : Math.max(0, Math.round(Number(value) || 0));
+  const box = num(plan[`box|${group.model}`], Math.floor(group.total / PANEL_BOX_SIZE));
+  const loose = num(plan[`loose|${group.model}`], group.total % PANEL_BOX_SIZE);
+  const loaded = box * PANEL_BOX_SIZE + loose;
+  return { box, loose, loaded, short: Math.max(0, group.total - loaded), spare: Math.max(0, loaded - group.total) };
+}
+
 function stockOutLorryKey(day: string, driver: string, plate: string, runId?: string): string {
   const d = driver.trim().toUpperCase();
   const p = plate.trim().toUpperCase();
@@ -12818,7 +12723,7 @@ function stockOutLorryKey(day: string, driver: string, plate: string, runId?: st
 function StockOutLorryPage({
   driver,
   plate,
-  stage,
+  stage: stageProp,
   lorryKey,
   lorryPackedBy,
   txs,
@@ -12836,7 +12741,7 @@ function StockOutLorryPage({
   driver: string;
   plate: string;
   // The Stock Out tab it was opened from.
-  stage: "preparing" | "verified";
+  stage: "preparing" | "verified" | "siteCheck";
   // The lorry's own saved entries (see stockOutLorryKey).
   lorryKey: string;
   // Who packed each mounting tab for the lorry (material -> name).
@@ -12857,6 +12762,11 @@ function StockOutLorryPage({
   onSubmitAll: (txs: StockTransaction[]) => Promise<boolean>;
   onBack: () => void;
 }) {
+  // Site Check opens the same page as Loading: it works as Loading ("verified") throughout, with
+  // its own title, photos (saved under "site:<lorry>"), "Site Checked by" and Submit.
+  const siteCheck = stageProp === "siteCheck";
+  const stage: "preparing" | "verified" = siteCheck ? "verified" : stageProp;
+  const photoLorryKey = siteCheck ? `site:${lorryKey}` : lorryKey;
   // Slot from the Delivery Schedule (matched by invoice, then customer name).
   const [deliveryRuns, setDeliveryRuns] = useState<TimelineRun[]>([]);
   useEffect(() => watchDeliveryRuns<TimelineRun>(setDeliveryRuns), []);
@@ -13059,6 +12969,10 @@ function StockOutLorryPage({
   // Names typed over who packed / prepared / checked the lorry (key: mounting_rail,
   // mounting_hook, electrical, commercial, checked). Empty = the recorded name.
   const [signoff, setSignoff] = useState<Record<string, string>>({});
+  // Panel table (replaces scanning panels): "box|<model>" and "loose|<model>" = the Box Qty and
+  // Loose Qty typed, saved for the lorry as "panel_plan".
+  const [panelPlan, setPanelPlan] = useState<Record<string, string>>({});
+  const panelPlanLoaded = useRef(false);
   // Saved lorry quantities, read once; then saved (after a short pause) whenever one changes.
   const mountLoaded = useRef(false);
   useEffect(() => {
@@ -13072,7 +12986,9 @@ function StockOutLorryPage({
         let box = "";
         let elecBox = "";
         const signoffs: Record<string, string> = {};
+        const plan: Record<string, string> = {};
         (data?.entries ?? []).forEach((entry) => {
+          if (entry.kind === "panel_plan") plan[entry.key] = entry.value;
           if (entry.kind === "mounting_part") parts[entry.key] = entry.value;
           if (entry.kind === "mounting_box") box = entry.value;
           if (entry.kind === "electrical_part") elec[entry.key] = entry.value;
@@ -13084,8 +13000,12 @@ function StockOutLorryPage({
         setMountBoxQty((prev) => prev || box);
         setElecQty((prev) => ({ ...elec, ...prev }));
         setElecBoxQty((prev) => prev || elecBox);
+        setPanelPlan((prev) => ({ ...plan, ...prev }));
         // Only a successful read lets later edits save (so a failed read cannot wipe them).
-        if (data) mountLoaded.current = true;
+        if (data) {
+          mountLoaded.current = true;
+          panelPlanLoaded.current = true;
+        }
       })
       .catch(() => {});
     return () => {
@@ -13114,6 +13034,29 @@ function StockOutLorryPage({
     }, 600);
     return () => clearTimeout(timer);
   }, [partQty, mountBoxQty, elecQty, elecBoxQty, lorryKey]);
+  // The lorry's panels by model. Once a quantity is changed, every model's Box Qty and Loose Qty
+  // are saved (so Site Check knows how many spare panels come back).
+  const panelGroups = useMemo(() => panelLoadGroups(txs), [txs]);
+  useEffect(() => {
+    if (!panelPlanLoaded.current) return;
+    const timer = setTimeout(() => {
+      const entries = panelGroups.flatMap((group) => {
+        const load = panelPlanLoad(panelPlan, group);
+        return [
+          { kind: "panel_plan" as const, key: `box|${group.model}`, value: String(load.box) },
+          { kind: "panel_plan" as const, key: `loose|${group.model}`, value: String(load.loose) },
+        ];
+      });
+      void fetch("/api/warehouse/entries", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ job: lorryKey, kinds: ["panel_plan"], entries }),
+      }).catch(() => {});
+    }, 600);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelPlan, lorryKey]);
   // Electrical items and special materials share one quantity list (as on the job page); they
   // are told apart by name. Record who prepared each, once, when a quantity is first entered.
   const recordedElec = useRef<Set<string>>(new Set());
@@ -13367,7 +13310,7 @@ function StockOutLorryPage({
   // Stock Out › Loading: Preparing's Packed / Prepared by names are shown as text only; Loading's
   // own "Loading Checked by" (key "loading_checked") is the one name typed there.
   const signoffField = (key: string, label: string, recorded: string, align: "right" | "left" = "right") =>
-    stage === "verified" && key !== "loading_checked" ? (
+    stage === "verified" && key !== "loading_checked" && key !== "site_checked" ? (
       <div
         style={{
           display: "flex",
@@ -13505,13 +13448,13 @@ function StockOutLorryPage({
     let cancelled = false;
     // TEST ONLY: a TEST_PREPARED_SLOT_DATE lorry shows a sample photo on every card (page only,
     // never saved); a photo taken or saved for the lorry shows instead.
-    if (lorryKey.startsWith(`lorry:${TEST_PREPARED_SLOT_DATE}|`)) {
+    if (!siteCheck && lorryKey.startsWith(`lorry:${TEST_PREPARED_SLOT_DATE}|`)) {
       setLoadingPhotos((prev) => ({
         ...Object.fromEntries(LOADING_PHOTO_ITEMS.map((item) => [item, "/dummy-lorry-load.jpg"])),
         ...prev,
       }));
     }
-    fetch(`/api/warehouse/lorry-photos?lorry=${encodeURIComponent(lorryKey)}`, { credentials: "same-origin", cache: "no-store" })
+    fetch(`/api/warehouse/lorry-photos?lorry=${encodeURIComponent(photoLorryKey)}`, { credentials: "same-origin", cache: "no-store" })
       .then(async (res) => (res.ok ? ((await res.json()) as { photos?: Record<string, string> }) : null))
       .then((data) => {
         if (!cancelled && data?.photos) setLoadingPhotos((prev) => ({ ...prev, ...data.photos }));
@@ -13520,7 +13463,7 @@ function StockOutLorryPage({
     return () => {
       cancelled = true;
     };
-  }, [stage, lorryKey]);
+  }, [stage, lorryKey, photoLorryKey]);
   async function saveLoadingPhoto(item: string, photo: string) {
     setLoadingPhotoBusy(true);
     setLoadingPhotoError(null);
@@ -13529,19 +13472,46 @@ function StockOutLorryPage({
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ lorry: lorryKey, item, photo }),
+        body: JSON.stringify({ lorry: photoLorryKey, item, photo, add: true }),
       });
       if (!res.ok) throw new Error("The photo was not saved. Take it again.");
-      setLoadingPhotos((prev) => ({ ...prev, [item]: photo }));
+      const saved = (await res.json().catch(() => ({}))) as { key?: string };
+      const key = saved.key || `${item}#${Date.now().toString(36)}`;
+      setLoadingPhotos((prev) => ({ ...prev, [key]: photo }));
     } catch (err) {
       setLoadingPhotoError(err instanceof Error ? err.message : "Could not save the photo.");
     } finally {
       setLoadingPhotoBusy(false);
     }
   }
-  // Loading's Submit waits for a photo of every card the lorry has.
+  // Loading: every photo of a card ("panel", then the ones added as "panel#<id>"), in the order taken.
+  const loadingPhotosOf = (item: string) =>
+    Object.entries(loadingPhotos)
+      .filter(([key]) => key === item || key.startsWith(`${item}#`))
+      .sort(([a], [b]) => (a === item ? -1 : b === item ? 1 : a.localeCompare(b)))
+      .map(([key, photo]) => ({ key, photo }));
+  async function removeLoadingPhoto(key: string) {
+    setLoadingPhotoError(null);
+    try {
+      const res = await fetch(
+        `/api/warehouse/lorry-photos?lorry=${encodeURIComponent(photoLorryKey)}&item=${encodeURIComponent(key)}`,
+        { method: "DELETE", credentials: "same-origin" },
+      );
+      if (!res.ok) throw new Error("The photo was not removed. Try again.");
+      setLoadingPhotos((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    } catch (err) {
+      setLoadingPhotoError(err instanceof Error ? err.message : "Could not remove the photo.");
+    }
+  }
+  // The photo shown full size (tapped thumbnail).
+  const [loadingPhotoView, setLoadingPhotoView] = useState<string | null>(null);
+  // Loading's Submit waits for at least one photo of every card the lorry has.
   const loadingPhotosMissing = lorryCards
-    .filter((card) => card.count > 0 && LOADING_PHOTO_ITEMS.includes(card.id) && !loadingPhotos[card.id])
+    .filter((card) => card.count > 0 && LOADING_PHOTO_ITEMS.includes(card.id) && loadingPhotosOf(card.id).length === 0)
     .map((card) => card.label);
   const [barcodeInput, setBarcodeInput] = useState("");
   const [feedback, setFeedback] = useState<{ type: "success" | "warning" | "error"; message: string } | null>(null);
@@ -13726,14 +13696,27 @@ function StockOutLorryPage({
   // quantity in the lorry's Mounting Structure, Electrical Item and (with a commercial customer)
   // Special Material tables.
   // Panels count as checked when every panel is scanned OR the lorry's panel boxes photo is taken.
+  // Panels: no model short (boxes x 36 + loose covers what the invoices need).
+  const panelChecklistDone = panelGroups.length > 0 && panelGroups.every((group) => panelPlanLoad(panelPlan, group).short === 0);
+  // Who prepared the panels: recorded once, when the Panel table is first opened on Preparing
+  // (for the lorry and on each customer with panels, as a full scan used to).
+  const recordedPanelChecklist = useRef(false);
+  useEffect(() => {
+    if (itemPick !== "panel" || recordedPanelChecklist.current || stage !== "preparing") return;
+    if (pendingTxs.length === 0) return;
+    recordedPanelChecklist.current = true;
+    if (!lorryPackedBy.panel) onRecordMaterial(lorryKey, "panel");
+    pendingTxs.filter((tx) => unitsNeeded(tx, "panel") > 0).forEach((tx) => onRecordMaterial(tx.reference, "panel"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemPick]);
   const unitsLeftOf = (cats: readonly ("panel" | "inverter" | "battery")[]) =>
     cats.reduce((sum, cat) => sum + pendingTxs.reduce((s, tx) => s + needOf(tx, cat), 0), 0);
   const panelsLeft = unitsLeftOf(["panel"]);
   const unitsLeft = unitsLeftOf(["inverter", "battery"]);
   const lorryChecks = [
     {
-      label: "Panel scanned or photo taken",
-      done: panelsLeft === 0 || !!lorryPanelPhoto,
+      label: "Panel (short)",
+      done: panelChecklistDone,
       show: pendingTxs.some((tx) => unitsNeeded(tx, "panel") > 0),
     },
     {
@@ -13792,7 +13775,7 @@ function StockOutLorryPage({
         </h1>
         <p style={{ margin: "12px 0 0", fontSize: "16px", fontWeight: 700, color: "#000" }}>
           {/* Follows the tab it was opened from: a submitted lorry stays on Preparing too */}
-          {stage === "verified" ? "Item List - Loading" : "Item List - Preparing"}
+          {siteCheck ? "Item List - Site Check" : stage === "verified" ? "Item List - Loading" : "Item List - Preparing"}
         </p>
       </div>
 
@@ -13936,7 +13919,7 @@ function StockOutLorryPage({
                 type="button"
                 className={`${styles.soCard} ${itemPick === item.id ? styles.soCardActive : ""}`}
                 aria-pressed={itemPick === item.id}
-                title={itemPick === item.id ? "Show all customers" : item.serial ? `Scan ${item.label.toLowerCase()} for this lorry` : `Show each customer's ${item.label.toLowerCase()}`}
+                title={itemPick === item.id ? "Show all customers" : item.id === "panel" ? "Set the panel boxes and loose panels for this lorry" : item.serial ? `Scan ${item.label.toLowerCase()} for this lorry` : `Show each customer's ${item.label.toLowerCase()}`}
                 onClick={() => setItemPick((cur) => (cur === item.id ? "all" : item.id))}
               >
                 <span className={styles.soCardLabel}>{item.label}</span>
@@ -13944,7 +13927,12 @@ function StockOutLorryPage({
                 <span className={styles.soCardSub}>
                   {/* Mounting Structure / Electrical Item / Special Material: what is entered in the
                       lorry's own table (a picked customer: what is saved on its job) */}
-                  {pickedCustomer
+                  {/* Panel: the lorry's loading checklist (no scanning) */}
+                  {item.id === "panel"
+                    ? panelChecklistDone
+                      ? "✓ Box / loose set"
+                      : "Panels short"
+                    : pickedCustomer
                     ? item.sub
                     : item.id === "mounting"
                     ? `${lorryMountCount} item count`
@@ -13963,39 +13951,130 @@ function StockOutLorryPage({
       {/* Loading: take a photo of the active card's items on the lorry, below the cards. */}
       {stage === "verified" && LOADING_PHOTO_ITEMS.includes(itemPick) && txs.length > 0 && (
         <div className={styles.scannerCard} style={{ marginBottom: "14px" }}>
-          <div className={styles.bankingFieldLabel}>Take photo</div>
-          {loadingCamOpen ? (
-            <PhotoCamera
-              title={`${loadingPhotoLabel} on the lorry`}
-              onClose={() => setLoadingCamOpen(false)}
-              onCapture={(photo) => {
-                setLoadingCamOpen(false);
-                void saveLoadingPhoto(itemPick, photo);
-              }}
-            />
-          ) : (
-            <button
-              type="button"
-              className={styles.lorryPhotoBox}
-              disabled={loadingPhotoBusy}
-              onClick={() => setLoadingCamOpen(true)}
-              aria-label={`Take a picture of the ${loadingPhotoLabel.toLowerCase()} on the lorry`}
-            >
-              {loadingPhotos[itemPick] ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={loadingPhotos[itemPick]} alt={`${loadingPhotoLabel} on the lorry`} className={styles.lorryPhotoImg} />
-              ) : (
-                <span className={styles.lorryPhotoEmpty}>
-                  {loadingPhotoBusy ? "Saving…" : `📷 Tap to take a picture of the ${loadingPhotoLabel.toLowerCase()} on the lorry`}
-                </span>
-              )}
-            </button>
-          )}
-          {loadingPhotos[itemPick] && !loadingCamOpen && (
-            <p className={styles.note} style={{ margin: "4px 0 0" }}>
-              {loadingPhotoBusy ? "Saving…" : "Tap the photo to take it again."}
-            </p>
-          )}
+          {(() => {
+            const shots = loadingPhotosOf(itemPick);
+            // After the lorry's Submit (every customer loaded): photos are view only.
+            const photosLocked = txs.every((tx) => loadedRefs.has(tx.reference));
+            return (
+              <>
+                <div className={styles.bankingFieldLabel}>
+                  Photos ({shots.length})
+                </div>
+                {loadingCamOpen ? (
+                  <PhotoCamera
+                    title={`${loadingPhotoLabel} on the lorry`}
+                    onClose={() => setLoadingCamOpen(false)}
+                    onCapture={(photo) => {
+                      setLoadingCamOpen(false);
+                      void saveLoadingPhoto(itemPick, photo);
+                    }}
+                  />
+                ) : (
+                  <div>
+                    {!photosLocked && (
+                      <button
+                        type="button"
+                        disabled={loadingPhotoBusy}
+                        onClick={() => setLoadingCamOpen(true)}
+                        aria-label={`Add a photo of the ${loadingPhotoLabel.toLowerCase()} on the lorry`}
+                        style={{
+                          width: "100%",
+                          height: "48px",
+                          border: "1.5px dashed #94a3b8",
+                          borderRadius: "8px",
+                          background: "#f8fafc",
+                          color: "#000",
+                          fontSize: "13px",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          display: "flex",
+                          flexDirection: "row",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: "8px",
+                          marginTop: "6px",
+                        }}
+                      >
+                        {loadingPhotoBusy ? (
+                          "Saving…"
+                        ) : (
+                          <>
+                            <span style={{ fontSize: "18px" }}>📷</span>+ Add photo
+                          </>
+                        )}
+                      </button>
+                    )}
+                    {shots.length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "nowrap", gap: "8px", marginTop: "8px", overflowX: "auto", paddingBottom: "4px" }}>
+                    {shots.map((shot, n) => (
+                      <div key={shot.key} style={{ position: "relative", width: "110px", height: "110px", flex: "none" }}>
+                        <button
+                          type="button"
+                          onClick={() => setLoadingPhotoView(shot.photo)}
+                          aria-label={`View photo ${n + 1} of the ${loadingPhotoLabel.toLowerCase()}`}
+                          style={{ width: "100%", height: "100%", padding: 0, border: "1px solid #cbd5e1", borderRadius: "8px", overflow: "hidden", cursor: "zoom-in", background: "#f8fafc" }}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={shot.photo} alt={`${loadingPhotoLabel} on the lorry, photo ${n + 1}`} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                        </button>
+                        {!photosLocked && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (window.confirm("Remove this photo?")) void removeLoadingPhoto(shot.key);
+                            }}
+                            aria-label={`Remove photo ${n + 1}`}
+                            title="Remove this photo"
+                            style={{
+                              position: "absolute",
+                              top: "4px",
+                              right: "4px",
+                              width: "24px",
+                              height: "24px",
+                              borderRadius: "50%",
+                              border: 0,
+                              background: "rgba(0,0,0,0.65)",
+                              color: "#fff",
+                              fontWeight: 700,
+                              cursor: "pointer",
+                              lineHeight: "24px",
+                              padding: 0,
+                            }}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    </div>
+                    )}
+                    {photosLocked && shots.length === 0 && <p className={styles.note} style={{ margin: "6px 0 0" }}>No photo.</p>}
+                  </div>
+                )}
+                {!photosLocked && !loadingCamOpen && shots.length === 0 && (
+                  <p className={styles.note} style={{ margin: "6px 0 0" }}>
+                    Take at least one photo of the {loadingPhotoLabel.toLowerCase()} on the lorry. Add as many as needed.
+                  </p>
+                )}
+                {loadingPhotoView && (
+                  <div
+                    className={styles.bankingReceiptBackdrop}
+                    onClick={() => setLoadingPhotoView(null)}
+                    role="dialog"
+                    aria-label="Photo"
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={loadingPhotoView}
+                      alt={`${loadingPhotoLabel} on the lorry`}
+                      style={{ maxWidth: "100%", maxHeight: "90vh", borderRadius: "8px", boxShadow: "0 8px 30px rgba(0,0,0,0.4)" }}
+                    />
+                  </div>
+                )}
+              </>
+            );
+          })()}
           {loadingPhotoError && (
             <p className={styles.note} style={{ color: "#b91c1c", margin: "4px 0 0" }}>
               {loadingPhotoError}
@@ -14004,8 +14083,127 @@ function StockOutLorryPage({
         </div>
       )}
 
-      {/* Panel / Inverter / Battery: one scanner for the whole lorry */}
-      {pickedSerial && txs.length > 0 && (
+      {/* Panel: one row per panel model, with the boxes (36 pcs each) and loose panels loaded */}
+      {itemPick === "panel" && panelGroups.length > 0 && (
+        <div className={styles.scannerCard} style={{ marginBottom: "14px" }}>
+          <h2 className={styles.inspectCardTitle}>Panels for this lorry</h2>
+          <p className={styles.note} style={{ margin: "0 0 10px", color: "#000" }}>
+            One box holds {PANEL_BOX_SIZE} panels. Change Box Qty or Loose Qty if the lorry is loaded differently.
+          </p>
+          <div className={styles.tableWrap}>
+            <table className={`${styles.detailTable} ${styles.lorryTable}`}>
+              <thead>
+                <tr>
+                  <th scope="col">Panel Model</th>
+                  {/* Panel Pcs: from the invoices (not edited), one shade darker */}
+                  <th scope="col" className={styles.num} style={{ background: "#e2e8f0" }}>Panel Pcs</th>
+                  <th scope="col" className={styles.num}>Box Qty</th>
+                  <th scope="col" className={styles.num}>Loose Qty</th>
+                  <th scope="col">Prepared by</th>
+                </tr>
+              </thead>
+              <tbody>
+                {panelGroups.map((group) => {
+                  const editable = stage === "preparing" && pendingTxs.length > 0;
+                  const load = panelPlanLoad(panelPlan, group);
+                  const qtyInput = (field: "box" | "loose", value: number) =>
+                    editable ? (
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        inputMode="numeric"
+                        aria-label={`${field === "box" ? "Box" : "Loose"} qty for ${group.model}`}
+                        value={panelPlan[`${field}|${group.model}`] ?? String(value)}
+                        onChange={(e) => {
+                          const next = e.target.value.replace(/[^0-9]/g, "");
+                          setPanelPlan((prev) => ({ ...prev, [`${field}|${group.model}`]: next }));
+                        }}
+                        style={{
+                          width: "70px",
+                          height: "32px",
+                          boxSizing: "border-box",
+                          padding: "6px 8px",
+                          border: "1px solid #cbd5e1",
+                          borderRadius: "6px",
+                          fontSize: "13px",
+                          textAlign: "right",
+                          verticalAlign: "middle",
+                        }}
+                      />
+                    ) : (
+                      value
+                    );
+                  return (
+                    <tr key={group.model}>
+                      <td>
+                        <strong>{group.model}</strong>
+                        {load.short > 0 && (
+                          <span style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#b91c1c" }}>Short {load.short}</span>
+                        )}
+                        {load.spare > 0 && (
+                          <span style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#b45309" }}>
+                            {load.spare} to return after install
+                          </span>
+                        )}
+                      </td>
+                      <td className={styles.num} style={{ verticalAlign: "middle", background: "#f1f5f9", fontWeight: 600 }}>{group.total}</td>
+                      <td className={styles.num} style={{ verticalAlign: "middle" }}>{qtyInput("box", load.box)}</td>
+                      <td className={styles.num} style={{ verticalAlign: "middle" }}>{qtyInput("loose", load.loose)}</td>
+                      {/* Who prepared this panel model (saved for the lorry as "panel|<model>");
+                          starts with who was recorded for the lorry's panels */}
+                      {(() => {
+                        const preparedKey = `panel|${group.model}`;
+                        const preparedName = signoff[preparedKey] ?? signoff.panel ?? lorryPackedBy.panel ?? "";
+                        return (
+                        <td style={{ verticalAlign: "middle" }}>
+                          {stage === "verified" ? (
+                            <span style={{ color: "#000", fontWeight: 600 }}>{preparedName || "—"}</span>
+                          ) : (
+                            <input
+                              type="text"
+                              value={preparedName}
+                              placeholder="—"
+                              maxLength={100}
+                              readOnly={signoffLocked}
+                              onChange={(e) => {
+                                if (signoffLocked) return;
+                                signoffEdited.current = true;
+                                const value = e.target.value;
+                                setSignoff((prev) => ({ ...prev, [preparedKey]: value }));
+                              }}
+                              aria-label={signoffLocked ? `Prepared by for ${group.model}` : `Prepared by for ${group.model} (editable)`}
+                              title={signoffLocked ? "Submitted: view only" : `Type to change who prepared the ${group.model} panels`}
+                              style={{
+                                width: "100%",
+                                minWidth: "120px",
+                                height: "32px",
+                                boxSizing: "border-box",
+                                padding: "6px 0",
+                                verticalAlign: "middle",
+                                border: "1px solid transparent",
+                                outline: "none",
+                                background: "transparent",
+                                fontSize: "13px",
+                                color: "#000",
+                                fontWeight: 600,
+                              }}
+                            />
+                          )}
+                        </td>
+                        );
+                      })()}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Inverter / Battery: one scanner for the whole lorry */}
+      {pickedSerial && (itemPick as string) !== "panel" && txs.length > 0 && (
         <div className={styles.scannerCard} style={{ marginBottom: "14px" }}>
           <div className={styles.scannerHeader}>
             <div>
@@ -14207,6 +14405,7 @@ function StockOutLorryPage({
                               <th scope="col">Serial Code</th>
                               <th scope="col">{pickedLabel} Brand</th>
                               <th scope="col" className={styles.num}>Quantity</th>
+                              <th scope="col">Prepared by</th>
                               <th scope="col" aria-label="Remove" />
                             </tr>
                           </thead>
@@ -14236,6 +14435,48 @@ function StockOutLorryPage({
                                   </td>
                                   <td>{brand}</td>
                                   <td className={styles.num}>{scan.qty || 1}</td>
+                                  {/* Who prepared this unit (saved for the lorry as "<item>|<serial>"); starts
+                                      with who was recorded for the lorry's inverters / batteries */}
+                                  {(() => {
+                                    const preparedKey = `${itemPick}|${scan.code}`;
+                                    const preparedName = signoff[preparedKey] ?? signoff[itemPick] ?? lorryPackedBy[itemPick] ?? "";
+                                    return (
+                                    <td style={{ verticalAlign: "middle" }}>
+                                      {stage === "verified" ? (
+                                        <span style={{ color: "#000", fontWeight: 600 }}>{preparedName || "—"}</span>
+                                      ) : (
+                                        <input
+                                          type="text"
+                                          value={preparedName}
+                                          placeholder="—"
+                                          maxLength={100}
+                                          readOnly={signoffLocked}
+                                          onChange={(e) => {
+                                            if (signoffLocked) return;
+                                            signoffEdited.current = true;
+                                            const value = e.target.value;
+                                            setSignoff((prev) => ({ ...prev, [preparedKey]: value }));
+                                          }}
+                                          aria-label={signoffLocked ? `Prepared by for ${scan.code}` : `Prepared by for ${scan.code} (editable)`}
+                                          title={signoffLocked ? "Submitted: view only" : `Type to change who prepared ${scan.code}`}
+                                          style={{
+                                            width: "100%",
+                                            minWidth: "120px",
+                                            height: "32px",
+                                            boxSizing: "border-box",
+                                            padding: "6px 0",
+                                            border: "1px solid transparent",
+                                            outline: "none",
+                                            background: "transparent",
+                                            fontSize: "13px",
+                                            color: "#000",
+                                            fontWeight: 600,
+                                          }}
+                                        />
+                                      )}
+                                    </td>
+                                    );
+                                  })()}
                                   <td style={{ textAlign: "center", width: "40px" }}>
                                     {/* A submitted customer's scans can no longer be removed */}
                                     {tx.status !== "Verified" && (
@@ -14264,8 +14505,10 @@ function StockOutLorryPage({
                   </div>
                 );
               })()}
-              {/* Who prepared the lorry's panels / inverters / batteries: saved on the first scan */}
-              {signoffField(itemPick, "Prepared by", lorryPackedBy[itemPick] || "")}
+              {/* Who prepared the lorry's inverters / batteries (saved on the first scan): a column in
+                  the scanned table; here only while nothing is scanned yet */}
+              {!txs.some((tx) => (scansByJob[tx.reference] ?? []).some((scan) => scan.category === itemPick)) &&
+                signoffField(itemPick, "Prepared by", lorryPackedBy[itemPick] || "")}
 
         </div>
       )}
@@ -14720,7 +14963,9 @@ function StockOutLorryPage({
           its own "Loading Checked by", typed by whoever checks the loading. */}
       {txs.length > 0 &&
         (stage === "verified"
-          ? signoffField("loading_checked", "Loading Checked by", "")
+          ? siteCheck
+            ? signoffField("site_checked", "Site Checked by", "")
+            : signoffField("loading_checked", "Loading Checked by", "")
           : signoffField(
               "checked",
               "Checked by",
@@ -14755,7 +15000,12 @@ function StockOutLorryPage({
             // Loading: Submit sends every customer to Site Check (loaded onto the lorry), as the
             // Loading page's Submit did. Once all are sent it is greyed.
             notLoaded.length === 0 ? (
-              <button className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`} type="button" disabled title="Every customer is on Site Check">
+              <button
+                className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`}
+                type="button"
+                disabled
+                title={siteCheck ? "Every customer is checked on site" : "Every customer is on Site Check"}
+              >
                 ✓ Submitted
               </button>
             ) : (
@@ -14766,7 +15016,9 @@ function StockOutLorryPage({
                 disabled={submitting || loadingPhotosMissing.length > 0}
                 title={
                   loadingPhotosMissing.length === 0
-                    ? "Loaded onto the lorry: moves every customer to Site Check"
+                    ? siteCheck
+                      ? "Checked on site: marks every customer on this lorry checked"
+                      : "Loaded onto the lorry: moves every customer to Site Check"
                     : `Take a photo of every card first (${loadingPhotosMissing.join(", ")})`
                 }
                 onClick={async () => {

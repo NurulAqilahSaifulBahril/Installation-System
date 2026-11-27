@@ -15,6 +15,9 @@ export const dynamic = "force-dynamic";
 //
 //  - GET ?lorry=<key>: { photos: { panel: "data:image/jpeg;base64,…", … } }
 //  - PUT { lorry, item, photo }: saves (or replaces) that card's photo.
+//  - PUT { lorry, item, photo, add: true }: adds one more photo to the card (Stock Out › Loading
+//    takes as many as needed), saved as "<item>#<id>"; returns { key }.
+//  - DELETE ?lorry=<key>&item=<item or item#id>: removes that photo.
 // Any signed-in Inventory Management user, Loading access included (drivers take these).
 
 const ITEMS = ["panel", "inverter", "battery", "mounting", "electrical", "commercial"] as const;
@@ -50,6 +53,8 @@ function authFailure(error: unknown) {
 }
 
 const lorryKey = z.string().min(3).max(200);
+// A card's photo: "panel", or one of its added photos "panel#<id>".
+const photoKey = z.string().regex(new RegExp(`^(${ITEMS.join("|")})(#[a-z0-9]{1,24})?$`));
 
 export async function GET(request: NextRequest) {
   try {
@@ -77,6 +82,7 @@ export async function GET(request: NextRequest) {
 const putSchema = z.object({
   lorry: lorryKey,
   item: z.enum(ITEMS),
+  add: z.boolean().optional(),
   // A resized JPEG / PNG / WebP as a data: URL (about 3 MB at most), as for New Stock Out.
   photo: z
     .string()
@@ -93,6 +99,10 @@ export async function PUT(request: NextRequest) {
   }
   const parsed = putSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "A lorry, an item and a photo are required." }, { status: 400 });
+  // An added photo gets its own key (time first, so the keys sort in the order taken).
+  const key = parsed.data.add
+    ? `${parsed.data.item}#${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+    : parsed.data.item;
   try {
     await ensureTable();
     await queryProxy(
@@ -100,12 +110,33 @@ export async function PUT(request: NextRequest) {
         "insert into public.warehouse_lorry_photos (lorry_key, item, photo, taken_by) values ($1, $2, $3, $4)",
         "on conflict (lorry_key, item) do update set photo = excluded.photo, taken_by = excluded.taken_by, taken_at = now()",
       ].join(String.fromCharCode(10)),
-      [parsed.data.lorry, parsed.data.item, parsed.data.photo, user.displayName || user.username],
+      [parsed.data.lorry, key, parsed.data.photo, user.displayName || user.username],
     );
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, key });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Could not save the photo." },
+      { status: 503 },
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    await requireUser();
+  } catch (error) {
+    return authFailure(error);
+  }
+  const lorry = lorryKey.safeParse(request.nextUrl.searchParams.get("lorry")?.trim() ?? "");
+  const item = photoKey.safeParse(request.nextUrl.searchParams.get("item")?.trim() ?? "");
+  if (!lorry.success || !item.success) return NextResponse.json({ error: "A lorry and a photo are required." }, { status: 400 });
+  try {
+    await ensureTable();
+    await queryProxy("delete from public.warehouse_lorry_photos where lorry_key = $1 and item = $2", [lorry.data, item.data]);
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Could not remove the photo." },
       { status: 503 },
     );
   }

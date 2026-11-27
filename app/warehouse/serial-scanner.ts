@@ -12,6 +12,12 @@
 //  - The browser's own BarcodeDetector when there is one (Android Chrome), else ZXing (iPhone
 //    Safari and others), set to try harder.
 //  - A fast loop (a try every ~16 ms) and the same serial ignored for 1.2 s after a read.
+//  - Frames take turns: auto contrast or the plain picture, and (ZXing) its two binarizers, the
+//    global one being kinder to a slightly blurred 1D code.
+//  - The camera starts at 2x zoom where the phone allows it: a long, dense label (panel serials,
+//    25 characters) is then read from a distance the phone can still focus at.
+//  - Snap: one full-resolution photo decoded carefully (several strips, both binarizers), for a
+//    label the live picture cannot read.
 //  - A beep and a vibration on each read.
 
 import { cameraErrorMessage } from "./camera";
@@ -22,6 +28,8 @@ const SCAN_INTERVAL_MS = 16;
 const ENHANCE_CLIP = 0.01;
 const ENHANCE_STRIDE = 4;
 const ENHANCE_MIN_SPAN = 16;
+// Starting zoom for the back camera, where the phone supports zoom.
+const START_ZOOM = 2;
 
 export type SerialScanner = {
   stop: () => void;
@@ -30,6 +38,8 @@ export type SerialScanner = {
   zoom: { min: number; max: number; step: number; value: number } | null;
   setTorch: (on: boolean) => Promise<boolean>;
   setZoom: (value: number) => Promise<void>;
+  // Decodes one full-resolution photo of the label; the serial, or null when none is found.
+  snap: () => Promise<string | null>;
   engine: "native" | "zxing";
 };
 
@@ -150,8 +160,9 @@ export async function startSerialScanner(video: HTMLVideoElement, onRead: (seria
       detector = null;
     }
   }
+  // ZXing is also loaded with a native reader, for Snap's careful decode.
+  zx = await import("@zxing/library");
   if (!detector) {
-    zx = await import("@zxing/library");
     const hints = new Map();
     hints.set(zx.DecodeHintType.TRY_HARDER, true);
     hints.set(zx.DecodeHintType.POSSIBLE_FORMATS, [zx.BarcodeFormat.CODE_128, zx.BarcodeFormat.CODE_39]);
@@ -173,7 +184,9 @@ export async function startSerialScanner(video: HTMLVideoElement, onRead: (seria
   let buf: Int32Array | null = null;
   let w = 0;
   let h = 0;
-  const band = () => {
+  // Frames take turns: even = auto contrast + hybrid binarizer, odd = plain + global binarizer.
+  let frameNo = 0;
+  const band = (enhance: boolean) => {
     const vw = video.videoWidth;
     const vh = video.videoHeight;
     if (!vw || !vh) return null;
@@ -190,8 +203,10 @@ export async function startSerialScanner(video: HTMLVideoElement, onRead: (seria
     if (!ctx) return null;
     ctx.drawImage(video, 0, bandY, vw, bandH, 0, 0, vw, bandH);
     const img = ctx.getImageData(0, 0, vw, bandH);
-    const levels = measureLevels(img.data);
-    if (levels) applyLevels(img.data, levels);
+    if (enhance) {
+      const levels = measureLevels(img.data);
+      if (levels) applyLevels(img.data, levels);
+    }
     return img;
   };
 
@@ -214,7 +229,9 @@ export async function startSerialScanner(video: HTMLVideoElement, onRead: (seria
     if (!running) return;
     if (video.readyState >= 2 && !video.paused && !document.hidden) {
       try {
-        const img = band();
+        frameNo++;
+        const even = frameNo % 2 === 0;
+        const img = band(even);
         if (img && detector && ctx) {
           ctx.putImageData(img, 0, 0);
           const codes = await detector.detect(canvas);
@@ -223,7 +240,8 @@ export async function startSerialScanner(video: HTMLVideoElement, onRead: (seria
           const data = img.data;
           for (let i = 0, j = 0; j < buf.length; i += 4, j++) buf[j] = (0xff << 24) | (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
           // RGBLuminanceSource (not the canvas source, which inverts every second frame).
-          const bitmap = new zx.BinaryBitmap(new zx.HybridBinarizer(new zx.RGBLuminanceSource(buf, w, h)));
+          const source = new zx.RGBLuminanceSource(buf, w, h);
+          const bitmap = new zx.BinaryBitmap(even ? new zx.HybridBinarizer(source) : new zx.GlobalHistogramBinarizer(source));
           read(reader.decodeWithState(bitmap).getText());
         }
       } catch {
@@ -239,12 +257,99 @@ export async function startSerialScanner(video: HTMLVideoElement, onRead: (seria
     zoom?: { min: number; max: number; step?: number };
   };
   const settings = (track?.getSettings?.() ?? {}) as MediaTrackSettings & { zoom?: number };
+  let zoomNow = settings.zoom ?? caps.zoom?.min ?? 1;
+  if (caps.zoom && typeof caps.zoom.max === "number" && caps.zoom.max >= START_ZOOM && zoomNow < START_ZOOM) {
+    try {
+      await track.applyConstraints({ advanced: [{ zoom: START_ZOOM } as MediaTrackConstraintSet] });
+      zoomNow = START_ZOOM;
+    } catch {
+      // keeps the phone's own zoom
+    }
+  }
+
+  // Snap: a full-resolution still (the camera's own photo where the browser allows it, else the
+  // current video frame), then several horizontal strips of it, each tried with both binarizers
+  // and, where there is one, the browser's reader.
+  const snap = async (): Promise<string | null> => {
+    let source: CanvasImageSource = video;
+    let sw = video.videoWidth;
+    let sh = video.videoHeight;
+    const IC = (window as unknown as { ImageCapture?: new (t: MediaStreamTrack) => { takePhoto: () => Promise<Blob> } }).ImageCapture;
+    if (IC && track) {
+      try {
+        const bitmap = await createImageBitmap(await new IC(track).takePhoto());
+        source = bitmap;
+        sw = bitmap.width;
+        sh = bitmap.height;
+      } catch {
+        // the video frame instead
+      }
+    }
+    if (!sw || !sh) return null;
+    const still = document.createElement("canvas");
+    const sctx = still.getContext("2d", { willReadFrequently: true });
+    if (!sctx) return null;
+    // Strips across the middle (the scan frame), then the whole picture.
+    const strips: [number, number][] = [
+      [0.4, 0.2],
+      [0.3, 0.4],
+      [0.45, 0.1],
+      [0.35, 0.3],
+      [0, 1],
+    ];
+    for (const [top, height] of strips) {
+      const y = Math.round(sh * top);
+      const hh = Math.max(32, Math.round(sh * height));
+      still.width = sw;
+      still.height = hh;
+      sctx.drawImage(source, 0, y, sw, hh, 0, 0, sw, hh);
+      if (detector) {
+        try {
+          const codes = await detector.detect(still);
+          if (codes?.length && codes[0].rawValue) return codes[0].rawValue.trim();
+        } catch {
+          // ZXing below
+        }
+      }
+      if (zx) {
+        for (const enhance of [false, true]) {
+          const img = sctx.getImageData(0, 0, sw, hh);
+          if (enhance) {
+            const levels = measureLevels(img.data);
+            if (levels) applyLevels(img.data, levels);
+          }
+          const px = new Int32Array(sw * hh);
+          for (let i = 0, j = 0; j < px.length; i += 4, j++) px[j] = (0xff << 24) | (img.data[i] << 16) | (img.data[i + 1] << 8) | img.data[i + 2];
+          const hints = new Map();
+          hints.set(zx.DecodeHintType.TRY_HARDER, true);
+          hints.set(zx.DecodeHintType.POSSIBLE_FORMATS, [zx.BarcodeFormat.CODE_128, zx.BarcodeFormat.CODE_39]);
+          const multi = new zx.MultiFormatReader();
+          multi.setHints(hints);
+          for (const global of [true, false]) {
+            try {
+              const lum = new zx.RGBLuminanceSource(px, sw, hh);
+              const text = multi
+                .decode(new zx.BinaryBitmap(global ? new zx.GlobalHistogramBinarizer(lum) : new zx.HybridBinarizer(lum)))
+                .getText()
+                .trim();
+              if (text) return text;
+            } catch {
+              // next try
+            }
+          }
+        }
+      }
+    }
+    return null;
+  };
+
   return {
+    snap,
     engine: detector ? "native" : "zxing",
     torch: "torch" in caps,
     zoom:
       caps.zoom && typeof caps.zoom.min === "number"
-        ? { min: caps.zoom.min, max: caps.zoom.max, step: caps.zoom.step || 0.1, value: settings.zoom ?? caps.zoom.min }
+        ? { min: caps.zoom.min, max: caps.zoom.max, step: caps.zoom.step || 0.1, value: zoomNow }
         : null,
     setTorch: async (on) => {
       try {
