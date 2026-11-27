@@ -6172,7 +6172,7 @@ function StockOutVerificationPage({
             viewOnly ? null : preparedBy.scanned ? (
               // Already scanned: it waits on Stock Out › Preparing for its lorry's Submit.
               <button
-                className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`}
+                className={`${styles.btnActionPrimary} ${styles.btnSubmitDone}`}
                 type="button"
                 disabled
                 title={`Scanned by ${preparedBy.scanned}. Submit its lorry on Stock Out › Preparing to verify it.`}
@@ -6181,9 +6181,7 @@ function StockOutVerificationPage({
               </button>
             ) : (
             <button
-              className={`${styles.btnActionPrimary} ${
-                isAllVerified ? styles.btnVerifiedGlow : styles.btnVerifiedLocked
-              }`}
+              className={`${styles.btnActionPrimary} ${isAllVerified ? styles.btnSubmitReady : styles.btnSubmitHidden}`}
               type="button"
               disabled={!isAllVerified}
               onClick={() => {
@@ -6194,9 +6192,7 @@ function StockOutVerificationPage({
               }}
               title="All items scanned: saves the job as scanned. Submit its lorry to verify it."
             >
-              {isAllVerified
-                ? "✓ Submit"
-                : "🔒 Submit"}
+              Submit
             </button>
             )
           ) : !loaded ? (
@@ -6205,7 +6201,7 @@ function StockOutVerificationPage({
             null
           ) : siteVerified ? (
             // Loading Verification, done: greyed.
-            <button className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`} type="button" disabled title="Arrived safely">
+            <button className={`${styles.btnActionPrimary} ${styles.btnSubmitDone}`} type="button" disabled title="Arrived safely">
               ✓ Submitted
             </button>
           ) : (
@@ -6219,7 +6215,7 @@ function StockOutVerificationPage({
             )}
             <button
               className={`${styles.btnActionPrimary} ${
-                siteAllDone ? styles.btnVerifiedGlow : styles.btnVerifiedLocked
+                siteAllDone ? styles.btnSubmitReady : styles.btnSubmitHidden
               }`}
               type="button"
               disabled={!siteAllDone}
@@ -6230,7 +6226,7 @@ function StockOutVerificationPage({
               }}
               title="Every panel, inverter and battery scanned on site: confirm the delivery arrived safely"
             >
-              {siteAllDone ? "✓ Submit" : "🔒 Submit"}
+              Submit
             </button>
             </>
           )}
@@ -12525,13 +12521,13 @@ function LorryLoadingPage({
             </span>
           )}
           {allLoaded ? (
-            <button className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`} type="button" disabled>
+            <button className={`${styles.btnActionPrimary} ${styles.btnSubmitDone}`} type="button" disabled>
               ✓ Submitted
             </button>
           ) : (
             <button
               type="button"
-              className={`${styles.btnActionPrimary} ${allPhotos ? styles.btnVerifiedGlow : styles.btnVerifiedLocked}`}
+              className={`${styles.btnActionPrimary} ${allPhotos ? styles.btnSubmitReady : styles.btnSubmitHidden}`}
               disabled={!allPhotos || submitting}
               title={allPhotos ? "Loaded onto the lorry: moves these jobs to Site Check" : "Take a lorry photo for every card first"}
               onClick={async () => {
@@ -12542,7 +12538,7 @@ function LorryLoadingPage({
                 if (!ok) setSubmitError("Not all saved. Check the connection and press Submit again.");
               }}
             >
-              {submitting ? "Saving…" : allPhotos ? "✓ Submit" : "🔒 Submit"}
+              {submitting ? "Saving…" : "Submit"}
             </button>
           )}
         </div>
@@ -13735,6 +13731,146 @@ function StockOutLorryPage({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  // Loading / Site Check: take photos of the active card's items on the lorry.
+  const renderLoadingPhotoCard = () => (
+    <>
+      {/* Loading: take a photo of the active card's items on the lorry, below the cards. */}
+      {stage === "verified" && LOADING_PHOTO_ITEMS.includes(itemPick) && txs.length > 0 && (
+        <div className={styles.scannerCard} style={{ marginBottom: "14px" }}>
+          {(() => {
+            const shots = loadingPhotosOf(itemPick);
+            // After the lorry's Submit (every customer loaded): photos are view only.
+            const photosLocked = txs.every((tx) => loadedRefs.has(tx.reference));
+            return (
+              <>
+                <div className={styles.bankingFieldLabel}>
+                  Photos ({shots.length})
+                </div>
+                {loadingCamOpen ? (
+                  <PhotoCamera
+                    title={`${loadingPhotoLabel} on the lorry`}
+                    onClose={() => setLoadingCamOpen(false)}
+                    onCapture={(photo) => {
+                      setLoadingCamOpen(false);
+                      void saveLoadingPhoto(itemPick, photo);
+                    }}
+                  />
+                ) : (
+                  <div>
+                    {!photosLocked && (
+                      <button
+                        type="button"
+                        disabled={loadingPhotoBusy}
+                        onClick={() => setLoadingCamOpen(true)}
+                        aria-label={`Add a photo of the ${loadingPhotoLabel.toLowerCase()} on the lorry`}
+                        style={{
+                          width: "100%",
+                          height: "48px",
+                          border: "1.5px dashed #94a3b8",
+                          borderRadius: "8px",
+                          background: "#f8fafc",
+                          color: "#000",
+                          fontSize: "13px",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          display: "flex",
+                          flexDirection: "row",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: "8px",
+                          marginTop: "6px",
+                        }}
+                      >
+                        {loadingPhotoBusy ? (
+                          "Saving…"
+                        ) : (
+                          <>
+                            <span style={{ fontSize: "18px" }}>📷</span>+ Add photo
+                          </>
+                        )}
+                      </button>
+                    )}
+                    {shots.length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "nowrap", gap: "8px", marginTop: "8px", overflowX: "auto", paddingBottom: "4px" }}>
+                    {shots.map((shot, n) => (
+                      <div key={shot.key} style={{ position: "relative", width: "110px", height: "110px", flex: "none" }}>
+                        <button
+                          type="button"
+                          onClick={() => setLoadingPhotoView(shot.photo)}
+                          aria-label={`View photo ${n + 1} of the ${loadingPhotoLabel.toLowerCase()}`}
+                          style={{ width: "100%", height: "100%", padding: 0, border: "1px solid #cbd5e1", borderRadius: "8px", overflow: "hidden", cursor: "zoom-in", background: "#f8fafc" }}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={shot.photo} alt={`${loadingPhotoLabel} on the lorry, photo ${n + 1}`} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                        </button>
+                        {!photosLocked && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (window.confirm("Remove this photo?")) void removeLoadingPhoto(shot.key);
+                            }}
+                            aria-label={`Remove photo ${n + 1}`}
+                            title="Remove this photo"
+                            style={{
+                              position: "absolute",
+                              top: "4px",
+                              right: "4px",
+                              width: "24px",
+                              height: "24px",
+                              borderRadius: "50%",
+                              border: 0,
+                              background: "rgba(0,0,0,0.65)",
+                              color: "#fff",
+                              fontWeight: 700,
+                              cursor: "pointer",
+                              lineHeight: "24px",
+                              padding: 0,
+                            }}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    </div>
+                    )}
+                    {photosLocked && shots.length === 0 && <p className={styles.note} style={{ margin: "6px 0 0" }}>No photo.</p>}
+                  </div>
+                )}
+                {!photosLocked && !loadingCamOpen && shots.length === 0 && (
+                  <p className={styles.note} style={{ margin: "6px 0 0" }}>
+                    Take at least one photo of the {loadingPhotoLabel.toLowerCase()} on the lorry. Add as many as needed.
+                  </p>
+                )}
+                {loadingPhotoView && (
+                  <div
+                    className={styles.bankingReceiptBackdrop}
+                    onClick={() => setLoadingPhotoView(null)}
+                    role="dialog"
+                    aria-label="Photo"
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={loadingPhotoView}
+                      alt={`${loadingPhotoLabel} on the lorry`}
+                      style={{ maxWidth: "100%", maxHeight: "90vh", borderRadius: "8px", boxShadow: "0 8px 30px rgba(0,0,0,0.4)" }}
+                    />
+                  </div>
+                )}
+              </>
+            );
+          })()}
+          {loadingPhotoError && (
+            <p className={styles.note} style={{ color: "#b91c1c", margin: "4px 0 0" }}>
+              {loadingPhotoError}
+            </p>
+          )}
+        </div>
+      )}
+    </>
+  );
+
   return (
     <section className={`${styles.screen} ${styles.soPage}`} aria-labelledby="stockout-lorry-title">
       <div className={styles.inspectTopBar}>
@@ -13950,140 +14086,8 @@ function StockOutLorryPage({
         </div>
       )}
 
-      {/* Loading: take a photo of the active card's items on the lorry, below the cards. */}
-      {stage === "verified" && LOADING_PHOTO_ITEMS.includes(itemPick) && txs.length > 0 && (
-        <div className={styles.scannerCard} style={{ marginBottom: "14px" }}>
-          {(() => {
-            const shots = loadingPhotosOf(itemPick);
-            // After the lorry's Submit (every customer loaded): photos are view only.
-            const photosLocked = txs.every((tx) => loadedRefs.has(tx.reference));
-            return (
-              <>
-                <div className={styles.bankingFieldLabel}>
-                  Photos ({shots.length})
-                </div>
-                {loadingCamOpen ? (
-                  <PhotoCamera
-                    title={`${loadingPhotoLabel} on the lorry`}
-                    onClose={() => setLoadingCamOpen(false)}
-                    onCapture={(photo) => {
-                      setLoadingCamOpen(false);
-                      void saveLoadingPhoto(itemPick, photo);
-                    }}
-                  />
-                ) : (
-                  <div>
-                    {!photosLocked && (
-                      <button
-                        type="button"
-                        disabled={loadingPhotoBusy}
-                        onClick={() => setLoadingCamOpen(true)}
-                        aria-label={`Add a photo of the ${loadingPhotoLabel.toLowerCase()} on the lorry`}
-                        style={{
-                          width: "100%",
-                          height: "48px",
-                          border: "1.5px dashed #94a3b8",
-                          borderRadius: "8px",
-                          background: "#f8fafc",
-                          color: "#000",
-                          fontSize: "13px",
-                          fontWeight: 600,
-                          cursor: "pointer",
-                          display: "flex",
-                          flexDirection: "row",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          gap: "8px",
-                          marginTop: "6px",
-                        }}
-                      >
-                        {loadingPhotoBusy ? (
-                          "Saving…"
-                        ) : (
-                          <>
-                            <span style={{ fontSize: "18px" }}>📷</span>+ Add photo
-                          </>
-                        )}
-                      </button>
-                    )}
-                    {shots.length > 0 && (
-                    <div style={{ display: "flex", flexWrap: "nowrap", gap: "8px", marginTop: "8px", overflowX: "auto", paddingBottom: "4px" }}>
-                    {shots.map((shot, n) => (
-                      <div key={shot.key} style={{ position: "relative", width: "110px", height: "110px", flex: "none" }}>
-                        <button
-                          type="button"
-                          onClick={() => setLoadingPhotoView(shot.photo)}
-                          aria-label={`View photo ${n + 1} of the ${loadingPhotoLabel.toLowerCase()}`}
-                          style={{ width: "100%", height: "100%", padding: 0, border: "1px solid #cbd5e1", borderRadius: "8px", overflow: "hidden", cursor: "zoom-in", background: "#f8fafc" }}
-                        >
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={shot.photo} alt={`${loadingPhotoLabel} on the lorry, photo ${n + 1}`} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                        </button>
-                        {!photosLocked && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (window.confirm("Remove this photo?")) void removeLoadingPhoto(shot.key);
-                            }}
-                            aria-label={`Remove photo ${n + 1}`}
-                            title="Remove this photo"
-                            style={{
-                              position: "absolute",
-                              top: "4px",
-                              right: "4px",
-                              width: "24px",
-                              height: "24px",
-                              borderRadius: "50%",
-                              border: 0,
-                              background: "rgba(0,0,0,0.65)",
-                              color: "#fff",
-                              fontWeight: 700,
-                              cursor: "pointer",
-                              lineHeight: "24px",
-                              padding: 0,
-                            }}
-                          >
-                            ✕
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    </div>
-                    )}
-                    {photosLocked && shots.length === 0 && <p className={styles.note} style={{ margin: "6px 0 0" }}>No photo.</p>}
-                  </div>
-                )}
-                {!photosLocked && !loadingCamOpen && shots.length === 0 && (
-                  <p className={styles.note} style={{ margin: "6px 0 0" }}>
-                    Take at least one photo of the {loadingPhotoLabel.toLowerCase()} on the lorry. Add as many as needed.
-                  </p>
-                )}
-                {loadingPhotoView && (
-                  <div
-                    className={styles.bankingReceiptBackdrop}
-                    onClick={() => setLoadingPhotoView(null)}
-                    role="dialog"
-                    aria-label="Photo"
-                    style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={loadingPhotoView}
-                      alt={`${loadingPhotoLabel} on the lorry`}
-                      style={{ maxWidth: "100%", maxHeight: "90vh", borderRadius: "8px", boxShadow: "0 8px 30px rgba(0,0,0,0.4)" }}
-                    />
-                  </div>
-                )}
-              </>
-            );
-          })()}
-          {loadingPhotoError && (
-            <p className={styles.note} style={{ color: "#b91c1c", margin: "4px 0 0" }}>
-              {loadingPhotoError}
-            </p>
-          )}
-        </div>
-      )}
+      {/* Loading: the photos of the active card, below the cards (Site Check: below the scanner) */}
+      {!siteCheck && renderLoadingPhotoCard()}
 
       {/* Panel: one row per panel model, with the boxes (36 pcs each) and loose panels loaded */}
       {itemPick === "panel" && panelGroups.length > 0 && (
@@ -14517,6 +14521,9 @@ function StockOutLorryPage({
 
         </div>
       )}
+
+      {/* Site Check: the photos come after the scanner */}
+      {siteCheck && renderLoadingPhotoCard()}
 
       {/* Mounting Structure card: the job page's Mounting Structure table, for the whole lorry */}
       {itemPick === "mounting" && txs.length > 0 && (
@@ -14998,7 +15005,7 @@ function StockOutLorryPage({
           )}
           {allVerified && stage === "preparing" ? (
             // Preparing, already submitted: kept on Preparing (view only); Loading takes it on.
-            <button className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`} type="button" disabled title="Submitted: continue on Stock Out › Loading">
+            <button className={`${styles.btnActionPrimary} ${styles.btnSubmitDone}`} type="button" disabled title="Submitted: continue on Stock Out › Loading">
               ✓ Submitted
             </button>
           ) : allVerified ? (
@@ -15006,7 +15013,7 @@ function StockOutLorryPage({
             // Loading page's Submit did. Once all are sent it is greyed.
             notLoaded.length === 0 ? (
               <button
-                className={`${styles.btnActionPrimary} ${styles.btnVerifiedLocked}`}
+                className={`${styles.btnActionPrimary} ${styles.btnSubmitDone}`}
                 type="button"
                 disabled
                 title={siteCheck ? "Every customer is checked on site" : "Every customer is on Site Check"}
@@ -15017,7 +15024,7 @@ function StockOutLorryPage({
               <button
                 type="button"
                 // Only once every card has its photo.
-                className={`${styles.btnActionPrimary} ${loadingPhotosMissing.length === 0 ? styles.btnVerifiedGlow : styles.btnVerifiedLocked}`}
+                className={`${styles.btnActionPrimary} ${loadingPhotosMissing.length === 0 ? styles.btnSubmitReady : styles.btnSubmitHidden}`}
                 disabled={submitting || loadingPhotosMissing.length > 0}
                 title={
                   loadingPhotosMissing.length === 0
@@ -15036,13 +15043,13 @@ function StockOutLorryPage({
                   if (!ok) setSubmitError("Not all saved. Check the connection and press Submit again.");
                 }}
               >
-                {submitting ? "Saving…" : loadingPhotosMissing.length === 0 ? "✓ Submit" : "🔒 Submit"}
+                {submitting ? "Saving…" : "Submit"}
               </button>
             )
           ) : (
             <button
               type="button"
-              className={`${styles.btnActionPrimary} ${allScanned ? styles.btnVerifiedGlow : styles.btnVerifiedLocked}`}
+              className={`${styles.btnActionPrimary} ${allScanned ? styles.btnSubmitReady : styles.btnSubmitHidden}`}
               disabled={!allScanned || submitting}
               title={allScanned ? "The lorry is checked: verify every customer and move them to Verified" : "Check every item card first"}
               onClick={async () => {
@@ -15053,7 +15060,7 @@ function StockOutLorryPage({
                 if (!ok) setSubmitError("Not all saved. Check the connection and press Submit again.");
               }}
             >
-              {submitting ? "Saving…" : allScanned ? "✓ Submit" : "🔒 Submit"}
+              {submitting ? "Saving…" : "Submit"}
             </button>
           )}
         </div>
